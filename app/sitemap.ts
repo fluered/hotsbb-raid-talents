@@ -1,7 +1,7 @@
 import { MetadataRoute } from 'next';
 import { POPULAR_SPECS } from '../lib/wow';
 
-const BASE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://hotsbb.gg';
+const BASE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://hotsbbtalents.io';
 
 export default function sitemap(): MetadataRoute.Sitemap {
   const entries: MetadataRoute.Sitemap = [
