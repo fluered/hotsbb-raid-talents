@@ -149,7 +149,7 @@ export async function getTalentTreeLayout(treeId: number, specId: number, access
       maxRanks: node.ranks?.length ?? 1,
       spellId: spellId ?? null,
       iconUrl,
-      description: spellTooltip?.description ?? '',
+      description: (spellTooltip?.description ?? '').replace(/\|n/gi, '\n'),
       castTime: spellTooltip?.cast_time ?? '',
       range: spellTooltip?.range ?? '',
       cost: spellTooltip?.power_cost ?? '',

@@ -62,7 +62,7 @@ function Tooltip({ tip, colors }: { tip: TooltipState; colors: { color: string }
         </div>
       )}
       {node.description && (
-        <p className="px-3 py-2 text-[11px] text-zinc-300 leading-relaxed">{node.description}</p>
+        <p className="px-3 py-2 text-[11px] text-zinc-300 leading-relaxed whitespace-pre-line">{node.description}</p>
       )}
     </div>,
     document.body
@@ -75,12 +75,22 @@ export default function NewFeature({
   colors,
   frequencyMap,
   heroOnly = false,
+  heroTreeImageUrl,
+  heroTreeName,
+  wowClass,
+  specName,
+  heroTrees,
 }: {
   telemetry: any;
   layout: any[];
   colors: { color: string; border: string; activeBg: string };
   frequencyMap?: Record<number, number>;
   heroOnly?: boolean;
+  heroTreeImageUrl?: string;
+  heroTreeName?: string;
+  wowClass?: string;
+  specName?: string;
+  heroTrees?: Array<{ name: string; imageUrl?: string; pct: number }>;
 }) {
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
   const activeNodes = telemetry?.event?.talentTree || [];
@@ -142,12 +152,53 @@ export default function NewFeature({
 
   const renderNodes = heroOnly ? heroSectionNodes : visibleLayout;
 
+  // 1 label row only — portrait is absolutely positioned so it doesn't affect class/spec layout
+  const HERO_ROW_OFFSET = (!heroOnly && hasSections) ? 1 : 0;
+
+  // Shift hero nodes up so they start near the portrait bottom (not at the very top of the tree).
+  // Portrait is ~4.5rem tall starting at ~1.875rem, so it covers ~2 class rows.
+  // We shift hero nodes so their first row is ~2 rows below the first class row.
+  const classMinRow  = classSectionNodes.length > 0 ? Math.min(...classSectionNodes.map((n: any) => n.row)) : 1;
+  const heroMinRow   = heroSectionNodes.length  > 0 ? Math.min(...heroSectionNodes.map((n: any) => n.row))  : 1;
+  const heroRowShift = Math.max(0, heroMinRow - classMinRow - 2);
+
+  function getMappedRow(node: any): number {
+    if (hasSections && !heroOnly && node.section === 'hero' && heroMaxCol > 0) {
+      return node.row - heroRowShift + HERO_ROW_OFFSET;
+    }
+    return node.row + HERO_ROW_OFFSET;
+  }
+
+  // Center any hero node that is the only node in its row
+  const heroRows         = [...new Set(heroSectionNodes.map((n: any) => n.row))].sort((a: number, b: number) => a - b);
+  const heroCenterCol    = Math.ceil(heroMaxCol / 2);
+  const heroSingleRows   = new Set<number>(
+    heroRows.filter(row => heroSectionNodes.filter((n: any) => n.row === row).length === 1)
+  );
+  const heroGatewayIds   = new Set<number>(
+    heroSectionNodes.filter((n: any) => heroSingleRows.has(n.row)).map((n: any) => n.nodeID)
+  );
+
   function getMappedCol(node: any): number {
     if (heroOnly) return heroOnlyColMap!.get(node.column) ?? 1;
     if (!hasSections) return legacyColMap!.get(node.column) ?? 1;
     if (node.section === 'class') return classColMap.get(node.column) ?? 1;
-    if (node.section === 'hero')  return heroOffset + (heroColMap.get(node.column) ?? 1);
+    if (node.section === 'hero') {
+      // For even heroMaxCol, gateway start col is the left-center column (span 2 finishes centering)
+      // For odd heroMaxCol, gateway start col is the exact center column (span 1)
+      const col = heroGatewayIds.has(node.nodeID) ? heroCenterCol : (heroColMap.get(node.column) ?? 1);
+      return heroOffset + col;
+    }
     return specOffset + (specColMap.get(node.column) ?? 1);
+  }
+
+  // Gateway nodes in even-column hero sections span 2 columns so the icon floats
+  // in the gap between the two center nodes of each regular row.
+  function getColSpan(node: any): number {
+    if (hasSections && !heroOnly && node.section === 'hero' && heroGatewayIds.has(node.nodeID) && heroMaxCol % 2 === 0) {
+      return 2;
+    }
+    return 1;
   }
 
   const handleMouseEnter = useCallback((e: React.MouseEvent, node: any, rank: number, showRank: boolean, freq?: number) => {
@@ -161,21 +212,100 @@ export default function NewFeature({
   return (
     <>
       <div
-        className="grid gap-1.5 py-1 mx-auto"
-        style={{ gridTemplateColumns: `repeat(${effectiveTotalCols}, 2.5rem)`, width: 'max-content' }}
+        className="grid gap-1.5 py-1 mx-auto relative"
+        style={{
+          gridTemplateColumns: `repeat(${effectiveTotalCols}, 2.5rem)`,
+          gridTemplateRows: HERO_ROW_OFFSET === 1 ? '1.25rem' : undefined,
+          width: 'max-content',
+        }}
       >
+        {/* Section labels — all in row 1, perfectly aligned */}
+        {HERO_ROW_OFFSET > 0 && (
+          <>
+            {wowClass && classMaxCol > 0 && (
+              <div
+                style={{ gridRow: 1, gridColumn: `1 / span ${classMaxCol}` }}
+                className="flex items-center justify-center"
+              >
+                <span className="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">{wowClass}</span>
+              </div>
+            )}
+            {heroMaxCol > 0 && (
+              <div
+                style={{ gridRow: 1, gridColumn: `${heroOffset + 1} / span ${heroMaxCol}` }}
+                className="flex items-center justify-center"
+              >
+                <span className="text-[11px] font-bold tracking-widest text-zinc-400 uppercase">
+                  {heroTreeName ?? (heroTrees && heroTrees.length > 0 ? 'Hero Talents' : undefined)}
+                </span>
+              </div>
+            )}
+            {specName && specMaxCol > 0 && (
+              <div
+                style={{ gridRow: 1, gridColumn: `${specOffset + 1} / span ${specMaxCol}` }}
+                className="flex items-center justify-center"
+              >
+                <span className="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">{specName}</span>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* Portrait / multi-icons: absolutely positioned over the hero column's natural empty space */}
+        {HERO_ROW_OFFSET > 0 && heroMaxCol > 0 && (heroTreeImageUrl || (heroTrees && heroTrees.length > 0)) && (
+          <div
+            style={{
+              position: 'absolute',
+              // py-1 top padding (0.25rem) + label row (1.25rem) + grid gap (0.375rem)
+              top: '1.875rem',
+              left: `${heroOffset * 2.875}rem`,
+              width: `${heroMaxCol * 2.875 - 0.375}rem`,
+              display: 'flex',
+              justifyContent: 'center',
+              alignItems: 'flex-start',
+              pointerEvents: 'none',
+            }}
+          >
+            {heroTreeImageUrl ? (
+              <img
+                src={heroTreeImageUrl}
+                alt={heroTreeName ?? ''}
+                style={{ width: '4.5rem', height: '4.5rem' }}
+                className="rounded-full object-cover ring-2 ring-zinc-600"
+              />
+            ) : heroTrees && heroTrees.length > 0 ? (
+              <div className="flex items-start gap-3">
+                {heroTrees.map(ht => (
+                  <div key={ht.name} className="flex flex-col items-center gap-0.5">
+                    {ht.imageUrl
+                      ? <img src={ht.imageUrl} alt={ht.name} className="w-16 h-16 rounded-full object-cover ring-1 ring-zinc-600" />
+                      : <div className="w-16 h-16 rounded-full bg-zinc-800 ring-1 ring-zinc-600" />
+                    }
+                    <span className="text-[10px] font-bold text-zinc-400">{ht.pct}%</span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        )}
+
         {renderNodes.map((node: any) => {
           const activeNode = activeNodes.find((t: any) => t.nodeID === node.nodeID);
           const isActive = !!activeNode;
           const rank = activeNode?.rank ?? 0;
           const showRank = isActive && node.maxRanks > 1;
           const mappedColumn = getMappedCol(node);
+          const colSpan = getColSpan(node);
           const freq = frequencyMap?.[node.nodeID];
 
           return (
             <div
               key={node.nodeID}
-              style={{ gridRow: node.row, gridColumn: mappedColumn }}
+              style={{
+                gridRow: getMappedRow(node),
+                gridColumn: colSpan > 1 ? `${mappedColumn} / span ${colSpan}` : mappedColumn,
+              }}
+              className={colSpan > 1 ? 'flex justify-center' : undefined}
               onMouseEnter={(e) => handleMouseEnter(e, node, rank, showRank, freq)}
               onMouseLeave={handleMouseLeave}
             >

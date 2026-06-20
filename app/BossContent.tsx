@@ -938,6 +938,7 @@ export default async function BossContent({
           spec={spec}
           totalParses={totalAvailableParses}
           wclUrl={wclUrl ?? undefined}
+          wowClass={className}
         />
       );
     }
@@ -962,6 +963,7 @@ export default async function BossContent({
           spec={spec}
           totalParses={totalAvailableParses}
           wclUrl={wclUrl ?? undefined}
+          wowClass={className}
         />
       );
     }

@@ -86,6 +86,7 @@ export default function BossView({
   spec,
   totalParses,
   wclUrl,
+  wowClass,
 }: {
   variants: HeroVariant[];
   layout: any[];
@@ -94,6 +95,7 @@ export default function BossView({
   spec: string;
   totalParses?: number;
   wclUrl?: string;
+  wowClass?: string;
 }) {
   const [activeIdx, setActiveIdx] = useState(0);
   const [activeTip, setActiveTip] = useState<ItemTip | null>(null);
@@ -262,6 +264,17 @@ export default function BossView({
               layout={layout}
               colors={colors}
               frequencyMap={active.consensus.frequencyPct}
+              heroTreeImageUrl={active.id !== null ? active.imageUrl : undefined}
+              heroTreeName={active.id !== null ? active.name : undefined}
+              heroTrees={active.id === null
+                ? variants
+                    .filter(v => v.id !== null && v.totalPlayers > 0)
+                    .map(v => ({ name: v.name, imageUrl: v.imageUrl, pct: Math.round(v.count / v.totalPlayers * 100) }))
+                    .filter(v => v.pct > 0)
+                    .sort((a, b) => b.pct - a.pct)
+                : undefined}
+              wowClass={wowClass}
+              specName={spec}
             />
           </div>
         ) : (
