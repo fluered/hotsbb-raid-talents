@@ -16,7 +16,7 @@ export async function generateMetadata({ searchParams }: PageProps): Promise<Met
   const diffLabel = diff === 4 ? 'Heroic' : 'Mythic';
   const title = bossName
     ? `${diffLabel} ${bossName} Healer Tier List | HotsBB`
-    : 'Midnight Season 1 Healer Tier List — All Bosses | HotsBB';
+    : 'Midnight Season 1 Healer DPS Tier List — All Bosses | HotsBB';
   const description = bossName
     ? `Healer spec tier list for ${diffLabel} ${bossName} — ranked by avg DPS of top 50 parses.`
     : 'Overall healer spec tier list for WoW Midnight Season 1 — avg DPS across all raid bosses, ranked from top parses.';
@@ -143,7 +143,7 @@ export default async function HealerTierListPage({ searchParams }: PageProps) {
               region={activeRegion}
               role="healer"
               metric="dps"
-              title="Midnight Season 1 Raid Healer Tier List"
+              title="Midnight Season 1 Raid Healer DPS Tier List"
               footerNote="Avg DPS per spec across all Midnight bosses · excludes DPS and tanks · click any row to view talent builds"
             />
           </Suspense>

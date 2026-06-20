@@ -16,7 +16,7 @@ export async function generateMetadata({ searchParams }: PageProps): Promise<Met
   const diffLabel = diff === 4 ? 'Heroic' : 'Mythic';
   const title = bossName
     ? `${diffLabel} ${bossName} Tank Tier List | HotsBB`
-    : 'Midnight Season 1 Tank Tier List — All Bosses | HotsBB';
+    : 'Midnight Season 1 Tank DPS Tier List — All Bosses | HotsBB';
   const description = bossName
     ? `Tank spec tier list for ${diffLabel} ${bossName} — ranked by avg DPS of top 50 parses.`
     : 'Overall tank spec tier list for WoW Midnight Season 1 — avg DPS across all raid bosses, ranked from top parses.';
@@ -146,7 +146,7 @@ export default async function TankTierListPage({ searchParams }: PageProps) {
               difficulty={activeDifficulty}
               region={activeRegion}
               role="tank"
-              title="Midnight Season 1 Raid Tank Tier List"
+              title="Midnight Season 1 Raid Tank DPS Tier List"
               footerNote="Avg DPS per spec across all Midnight bosses · excludes DPS and healers · click any row to view talent builds"
             />
           </Suspense>
