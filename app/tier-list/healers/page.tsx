@@ -89,14 +89,6 @@ export default async function HealerTierListPage({ searchParams }: PageProps) {
               <span className="px-3 py-1 rounded-md text-xs font-bold bg-zinc-700/50 text-zinc-200">Healers</span>
             </div>
             <div className="flex items-center gap-1 bg-zinc-900 rounded-lg p-0.5 border border-zinc-800/80">
-              {(['us', 'eu'] as const).map(r => (
-                <Link key={r} href={url({ region: r })}
-                  className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${activeRegion === r ? 'bg-blue-500/15 text-blue-400 border border-blue-500/30' : 'text-zinc-500 hover:text-zinc-300'}`}>
-                  {r.toUpperCase()}
-                </Link>
-              ))}
-            </div>
-            <div className="flex items-center gap-1 bg-zinc-900 rounded-lg p-0.5 border border-zinc-800/80">
               <Link href={url({ difficulty: 4 })}
                 className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${activeDifficulty === 4 ? 'bg-amber-500/15 text-amber-400 border border-amber-500/30' : 'text-zinc-500 hover:text-zinc-300'}`}>
                 Heroic
