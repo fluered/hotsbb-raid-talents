@@ -72,15 +72,19 @@ async function computeOverall(
   specs: Array<{ class: string; spec: string }>,
   bossIds: number[],
   difficulty: number,
-  region: string,
   metric?: string
 ) {
-  // Fetch all spec × boss combinations
+  // Fetch US + EU in parallel for each spec × boss, then pool into a single top-50
   const tasks = specs.flatMap(({ class: cls, spec }) =>
     bossIds.map(bossId => async () => {
       try {
-        const rankings = await getWclRankings(wclToken, bossId, cls, spec, difficulty, region, metric);
-        const top = (rankings as any[]).slice(0, 50);
+        const [usRankings, euRankings] = await Promise.all([
+          getWclRankings(wclToken, bossId, cls, spec, difficulty, 'us', metric),
+          getWclRankings(wclToken, bossId, cls, spec, difficulty, 'eu', metric),
+        ]);
+        const combined = [...(usRankings as any[]), ...(euRankings as any[])]
+          .sort((a, b) => (b.amount ?? 0) - (a.amount ?? 0));
+        const top = combined.slice(0, 50);
         if (top.length >= 5) {
           const avg = top.reduce((s: number, r: any) => s + (r.amount ?? 0), 0) / top.length;
           if (avg > 0) return { cls, spec, bossId, avgDps: avg };
@@ -152,8 +156,8 @@ export default async function OverallTierListContent({
 
   const [{ specs: rawResults, cachedAt }, specIcons] = await Promise.all([
     unstable_cache(
-      async () => ({ specs: await computeOverall(wclToken, specs, bossIds, difficulty, region, metric), cachedAt: new Date().toISOString() }),
-      [`wcl-overall-v3-${role}-${difficulty}-${region}${metric ? `-${metric}` : ''}`],
+      async () => ({ specs: await computeOverall(wclToken, specs, bossIds, difficulty, metric), cachedAt: new Date().toISOString() }),
+      [`wcl-overall-v4-${role}-${difficulty}-combined${metric ? `-${metric}` : ''}`],
       { revalidate: 604800 }
     )().then(r => r),
     (async () => {
