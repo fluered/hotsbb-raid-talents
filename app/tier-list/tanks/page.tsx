@@ -16,10 +16,10 @@ export async function generateMetadata({ searchParams }: PageProps): Promise<Met
   const diffLabel = diff === 4 ? 'Heroic' : 'Mythic';
   const title = bossName
     ? `${diffLabel} ${bossName} Tank Tier List | HotsBB`
-    : 'WoW Raid Tank Tier List | HotsBB';
+    : 'Midnight Season 1 Tank Tier List — All Bosses | HotsBB';
   const description = bossName
     ? `Tank spec tier list for ${diffLabel} ${bossName} — ranked by avg DPS of top 50 parses.`
-    : 'Tank spec tier lists for every WoW Mythic raid boss, ranked by top parse performance.';
+    : 'Overall tank spec tier list for WoW Midnight Season 1 — avg DPS across all raid bosses, ranked from top parses.';
   return { title, description };
 }
 
@@ -50,8 +50,19 @@ export default async function TankTierListPage({ searchParams }: PageProps) {
     return `/tier-list/tanks?${p.join('&')}`;
   };
 
+  const breadcrumbSchema = {
+    '@context': 'https://schema.org',
+    '@type': 'BreadcrumbList',
+    itemListElement: [
+      { '@type': 'ListItem', position: 1, name: 'HotsBB Raid Talents', item: 'https://hotsbbtalents.io' },
+      { '@type': 'ListItem', position: 2, name: 'Tank Tier List', item: 'https://hotsbbtalents.io/tier-list/tanks' },
+      ...(selectedBoss ? [{ '@type': 'ListItem', position: 3, name: selectedBoss.name, item: `https://hotsbbtalents.io/tier-list/tanks?boss=${selectedBoss.id}` }] : []),
+    ],
+  };
+
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-zinc-100 font-sans antialiased">
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbSchema) }} />
       {/* Header */}
       <header className="border-b border-zinc-800/70 bg-black/70 backdrop-blur-md sticky top-0 z-50">
         <div className="px-4 md:px-5 h-12 flex items-center justify-between gap-3">
@@ -103,21 +114,24 @@ export default async function TankTierListPage({ searchParams }: PageProps) {
 
       <div className="max-w-screen-md mx-auto px-4 md:px-6 py-6 space-y-6">
         {/* Boss selector */}
-        <div className="flex flex-wrap gap-1.5">
-          {encounters.map(enc => (
-            <Link
-              key={enc.id}
-              href={url({ boss: enc.id, bossName: enc.name })}
-              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all border ${
-                selectedBoss?.id === enc.id
-                  ? 'bg-zinc-800 border-zinc-600 text-zinc-100'
-                  : 'border-zinc-800/60 text-zinc-500 hover:text-zinc-300 hover:border-zinc-700'
-              }`}
-            >
-              <img src={`https://assets.rpglogs.com/img/warcraft/bosses/${enc.id}-icon.jpg`} alt="" className="w-4 h-4 rounded object-cover flex-shrink-0" />
-              {enc.name}
-            </Link>
-          ))}
+        <div className="space-y-2">
+          <p className="text-[10px] font-black text-zinc-600 uppercase tracking-widest">Per-boss breakdown</p>
+          <div className="flex overflow-x-auto scrollbar-none gap-1.5 pb-1 -mx-4 px-4 md:mx-0 md:px-0 md:flex-wrap md:pb-0">
+            {encounters.map(enc => (
+              <Link
+                key={enc.id}
+                href={url({ boss: enc.id, bossName: enc.name })}
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all border flex-shrink-0 ${
+                  selectedBoss?.id === enc.id
+                    ? 'bg-zinc-800 border-zinc-600 text-zinc-100'
+                    : 'border-zinc-800/60 text-zinc-500 hover:text-zinc-300 hover:border-zinc-700'
+                }`}
+              >
+                <img src={`https://assets.rpglogs.com/img/warcraft/bosses/${enc.id}-icon.jpg`} alt="" className="w-4 h-4 rounded object-cover flex-shrink-0" />
+                {enc.name}
+              </Link>
+            ))}
+          </div>
         </div>
 
         {selectedBoss ? (
@@ -155,14 +169,14 @@ function TierListSkeleton() {
   return (
     <div className="space-y-6 animate-pulse">
       <div className="space-y-1">
-        <div className="h-6 w-40 bg-zinc-800 rounded" />
+        <div className="h-6 w-40 bg-sky-500/10 rounded" />
         <div className="h-3 w-64 bg-zinc-800/60 rounded" />
       </div>
       {(['S', 'A', 'B', 'C'] as const).map((tier, ti) => (
         <div key={tier} className="space-y-1.5">
-          <div className="h-9 w-9 bg-zinc-800 rounded-xl" />
+          <div className={`h-9 rounded-xl ${ti === 0 ? 'w-11 bg-sky-500/20' : 'w-9 bg-zinc-800'}`} />
           {Array.from({ length: ti === 0 ? 1 : 2 }).map((_, i) => (
-            <div key={i} className="h-14 bg-zinc-900/40 border border-zinc-800/50 rounded-xl" />
+            <div key={i} className="h-14 bg-zinc-900/40 border border-sky-500/10 rounded-xl" />
           ))}
         </div>
       ))}

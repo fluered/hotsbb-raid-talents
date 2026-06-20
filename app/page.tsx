@@ -455,6 +455,10 @@ export default async function Home(props: PageProps) {
                   </div>
                 )}
 
+                {activeSpec && !activeBossId && (
+                  <p className="text-xs text-zinc-600 text-center py-3">Select a boss above to view the consensus talent build</p>
+                )}
+
                 {/* Boss-specific content — streams in via Suspense */}
                 {activeBossId && activeSpec && (
                   <Suspense fallback={<BossLoadingSkeleton />}>

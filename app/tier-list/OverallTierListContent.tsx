@@ -130,12 +130,12 @@ export default async function OverallTierListContent({
 }) {
   const blizzardToken = await getBlizzardToken();
 
-  const [rawResults, specIcons] = await Promise.all([
+  const [{ specs: rawResults, cachedAt }, specIcons] = await Promise.all([
     unstable_cache(
-      () => computeOverall(wclToken, specs, bossIds, difficulty, region, metric),
+      async () => ({ specs: await computeOverall(wclToken, specs, bossIds, difficulty, region, metric), cachedAt: new Date().toISOString() }),
       [`wcl-overall-${role}-${difficulty}-${region}${metric ? `-${metric}` : ''}`],
       { revalidate: 604800 }
-    )(),
+    )().then(r => r),
     (async () => {
       const iconMap: Record<string, string> = {};
       await Promise.all(
@@ -155,9 +155,10 @@ export default async function OverallTierListContent({
     })(),
   ]);
 
+  const minBossCount = Math.ceil(bossIds.length / 2);
   const specData = rawResults
     .map(({ cls, spec, avgDps, bossCount }) => {
-      if (avgDps === 0 || bossCount === 0) return null;
+      if (avgDps === 0 || bossCount < minBossCount) return null;
       const classObj = POPULAR_SPECS.find(c => c.class === cls)!;
       return { cls, spec, avgDps, bossCount, color: classObj.color, hex: classHex(classObj.color) };
     })
@@ -188,12 +189,25 @@ export default async function OverallTierListContent({
 
   const diffLabel = difficulty === 5 ? 'Mythic' : 'Heroic';
 
+  const schemaData = {
+    '@context': 'https://schema.org',
+    '@type': 'ItemList',
+    name: title ?? `${diffLabel} Overall Tier List`,
+    description: `${diffLabel} spec rankings averaged across all Midnight bosses · ${region.toUpperCase()}`,
+    itemListElement: tiered.map(s => ({
+      '@type': 'ListItem',
+      position: s.globalRank,
+      name: `${s.spec} ${s.cls} — ${s.tier} tier · ${fmtDps(s.avgDps)} avg DPS`,
+    })),
+  };
+
   return (
     <div className="space-y-8">
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaData) }} />
       {title && <h1 className="text-xl font-black text-zinc-100 tracking-tight">{title}</h1>}
       <div>
         <p className="text-xs text-zinc-500">
-          {diffLabel} · avg DPS across all bosses · {region.toUpperCase()} · updated weekly
+          {diffLabel} · avg DPS across all bosses · {region.toUpperCase()} · as of {new Date(cachedAt).toLocaleDateString('en-US', { month: 'long', day: 'numeric' })} · refreshed weekly on Mondays
         </p>
       </div>
 
@@ -206,7 +220,7 @@ export default async function OverallTierListContent({
           return (
             <div key={tier}>
               <div className="flex items-center gap-3 mb-3">
-                <div className={`w-9 h-9 rounded-xl flex items-center justify-center text-base font-black border flex-shrink-0 ${cfg.color} ${cfg.bg} ${cfg.border}`}>
+                <div className={`${tier === 'S' ? 'w-11 h-11 text-lg ring-1 ring-amber-500/25 shadow-lg shadow-amber-500/10' : 'w-9 h-9 text-base'} rounded-xl flex items-center justify-center font-black border flex-shrink-0 ${cfg.color} ${cfg.bg} ${cfg.border}`}>
                   {tier}
                 </div>
                 <div
@@ -249,11 +263,12 @@ export default async function OverallTierListContent({
                         </div>
                       </div>
 
-                      <div className="text-right shrink-0 w-20">
+                      <div className="text-right shrink-0 w-24">
                         <p className={`text-sm font-black tabular-nums ${cfg.color}`}>{fmtDps(s.avgDps)}</p>
                         <p className={`text-[10px] font-bold tabular-nums ${s.delta === null ? 'text-amber-500/70' : 'text-zinc-600'}`}>
-                          {s.delta === null ? 'peak' : `${s.delta.toFixed(1)}%`}
+                          {s.delta === null ? 'peak' : `${Math.abs(s.delta).toFixed(1)}% behind`}
                         </p>
+                        <p className="text-[9px] text-zinc-700 tabular-nums">{s.bossCount}/{bossIds.length} bosses</p>
                       </div>
 
                       <span className="text-zinc-700 group-hover:text-zinc-400 transition-colors text-sm flex-shrink-0">→</span>

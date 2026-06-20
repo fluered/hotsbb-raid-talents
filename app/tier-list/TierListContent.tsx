@@ -144,8 +144,21 @@ export default async function TierListContent({
 
   const diffLabel = difficulty === 5 ? 'Mythic' : 'Heroic';
 
+  const schemaData = {
+    '@context': 'https://schema.org',
+    '@type': 'ItemList',
+    name: `${diffLabel} ${bossName} Tier List`,
+    description: `${diffLabel} spec rankings for ${bossName} · avg DPS of top 50 parses · ${region.toUpperCase()}`,
+    itemListElement: tiered.map(s => ({
+      '@type': 'ListItem',
+      position: s.globalRank,
+      name: `${s.spec} ${s.cls} — ${s.tier} tier · ${fmtDps(s.avgDps)} avg DPS`,
+    })),
+  };
+
   return (
     <div className="space-y-8">
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaData) }} />
       <div>
         <h1 className="text-xl font-black text-white">{bossName}</h1>
         <p className="text-xs text-zinc-500 mt-1">
@@ -163,7 +176,7 @@ export default async function TierListContent({
             <div key={tier}>
               {/* Tier header */}
               <div className="flex items-center gap-3 mb-3">
-                <div className={`w-9 h-9 rounded-xl flex items-center justify-center text-base font-black border flex-shrink-0 ${cfg.color} ${cfg.bg} ${cfg.border}`}>
+                <div className={`${tier === 'S' ? 'w-11 h-11 text-lg ring-1 ring-amber-500/25 shadow-lg shadow-amber-500/10' : 'w-9 h-9 text-base'} rounded-xl flex items-center justify-center font-black border flex-shrink-0 ${cfg.color} ${cfg.bg} ${cfg.border}`}>
                   {tier}
                 </div>
                 <div
@@ -214,7 +227,7 @@ export default async function TierListContent({
                       <div className="text-right shrink-0 w-20">
                         <p className={`text-sm font-black tabular-nums ${cfg.color}`}>{fmtDps(s.avgDps)}</p>
                         <p className={`text-[10px] font-bold tabular-nums ${s.delta === null ? 'text-amber-500/70' : 'text-zinc-600'}`}>
-                          {s.delta === null ? 'peak' : `${s.delta.toFixed(1)}%`}
+                          {s.delta === null ? 'peak' : `${Math.abs(s.delta).toFixed(1)}% behind`}
                         </p>
                       </div>
 
