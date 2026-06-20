@@ -346,11 +346,6 @@ export default function BossView({
           <section id="meta-trinkets" style={{ scrollMarginTop: '3rem' }}>
             <div className="mb-3 flex items-baseline gap-3">
               <h2 className="text-base font-black text-white tracking-tight">Meta Trinkets</h2>
-              {gear.avgItemLevel != null && (
-                <span className="text-sm font-bold tabular-nums" style={{ color: accentHex }}>
-                  {gear.avgItemLevel} avg ilvl
-                </span>
-              )}
               <p className="text-sm text-zinc-500">
                 · {active.totalPlayers} top {active.id !== null ? `${active.name} ` : ''}parses
                 {gear.playerCount < active.totalPlayers && (
