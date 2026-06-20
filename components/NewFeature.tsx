@@ -157,12 +157,18 @@ export default function NewFeature({
   // 1 label row only — portrait is absolutely positioned so it doesn't affect class/spec layout
   const HERO_ROW_OFFSET = (!heroOnly && hasSections) ? 1 : 0;
 
-  // Shift hero nodes up so they start near the portrait bottom (not at the very top of the tree).
-  // Portrait is ~4.5rem tall starting at ~1.875rem, so it covers ~2 class rows.
-  // We shift hero nodes so their first row is ~2 rows below the first class row.
+  // Shift hero nodes so they start below the portrait (row 4+) when a portrait is shown.
+  // Portrait is 4.5rem tall starting at 1.875rem, clearing at ~row 4 (7.625rem from top).
+  // When no portrait, fall back to the old "bring nodes close to class nodes" heuristic.
   const classMinRow  = classSectionNodes.length > 0 ? Math.min(...classSectionNodes.map((n: any) => n.row)) : 1;
   const heroMinRow   = heroSectionNodes.length  > 0 ? Math.min(...heroSectionNodes.map((n: any) => n.row))  : 1;
-  const heroRowShift = Math.max(0, heroMinRow - classMinRow - 2);
+  const hasPortrait  = HERO_ROW_OFFSET > 0 && (!!heroTreeImageUrl || (heroTrees != null && heroTrees.length > 0));
+  // With portrait: heroRowShift may be negative to push nodes DOWN so they clear the image.
+  // Target: first hero mapped row = max(4, classMinRow + 3), i.e. heroRowShift = heroMinRow - max(3, classMinRow + 2).
+  // Without portrait: keep old behaviour (clamp to 0, only shift up).
+  const heroRowShift = hasPortrait
+    ? heroMinRow - Math.max(3, classMinRow + 2)
+    : Math.max(0, heroMinRow - classMinRow - 2);
 
   function getMappedRow(node: any): number {
     if (hasSections && !heroOnly && node.section === 'hero' && heroMaxCol > 0) {
