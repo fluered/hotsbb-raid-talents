@@ -117,9 +117,11 @@ export async function getTalentTreeLayout(treeId: number, specId: number, access
     for (const n of (ht.hero_talent_nodes || [])) heroNodeTreeMap.set(n.id, ht.id);
   }
   const heroNodeIds = new Set(heroNodeTreeMap.keys());
-  const heroTreeNames: Array<{ id: number; name: string }> = (data.hero_talent_trees || []).map((ht: any) => ({
-    id: ht.id, name: ht.name,
-  }));
+  const heroTreeNames: Array<{ id: number; name: string; imageUrl: string }> = (data.hero_talent_trees || []).map((ht: any) => {
+    const slug = (ht.name as string).toLowerCase().replace(/\s+/g, '_');
+    const imageUrl = `https://warcraft.wiki.gg/images/Hero_talent_${slug}.png`;
+    return { id: ht.id, name: ht.name, imageUrl };
+  });
 
   const allRaw = [
     ...(data.class_talent_nodes || []).map((n: any) => ({ ...n, _section: 'class', _heroTreeId: null })),

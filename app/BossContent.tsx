@@ -477,7 +477,7 @@ export default async function BossContent({
         }
       }
 
-      for (const { id, name } of heroTreeNames) {
+      for (const { id, name, imageUrl } of heroTreeNames) {
         const group = heroGroups.get(id) ?? [];
         const hasData = group.length >= 2;
         const htMap = hasData ? computeConsensus(group, 0.5) : new Map<number, number>();
@@ -665,7 +665,7 @@ export default async function BossContent({
         }
 
         heroTreeConsensus.push({
-          id, name, count: group.length, totalPlayers: totalConsensusPlayers,
+          id, name, imageUrl, count: group.length, totalPlayers: totalConsensusPlayers,
           talentString: htStr, telemetry: htTelemetry, hasData,
           gear: {
             trinkets: treeTrinkets,
@@ -915,6 +915,7 @@ export default async function BossContent({
         heroVariants.push({
           id: htc.id,
           name: htc.name,
+          imageUrl: htc.imageUrl,
           count: htc.count,
           totalPlayers: htc.totalPlayers,
           consensus: (htc.hasData && htc.telemetry.event.talentTree.length > 0) ? {

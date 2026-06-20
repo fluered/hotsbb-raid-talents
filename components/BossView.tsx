@@ -13,6 +13,7 @@ function hexFromTwColor(twColor: string): string {
 export interface HeroVariant {
   id: number | null;
   name: string;
+  imageUrl?: string;
   count: number;
   totalPlayers: number;
   consensus: {
@@ -133,13 +134,6 @@ export default function BossView({
   const hasHeroFilter = variants.length > 1;
   const gearHasContent = active.gear && (active.gear.trinkets.length > 0 || active.gear.stats != null);
 
-  // Derive one representative icon per hero tree from the talent layout
-  const heroTreeIcons = new Map<number, string>();
-  for (const node of layout) {
-    if (node.section === 'hero' && node.heroTreeId != null && node.iconUrl && !heroTreeIcons.has(node.heroTreeId)) {
-      heroTreeIcons.set(node.heroTreeId, node.iconUrl);
-    }
-  }
 
   return (
     <div className="space-y-8">
@@ -175,7 +169,6 @@ export default function BossView({
         {hasHeroFilter && !pillsVisible && (
           <div className="flex items-center gap-2 py-1.5 border-t border-zinc-800/40">
             {variants.map((v, i) => {
-              const icon = v.id !== null ? heroTreeIcons.get(v.id) : null;
               const isActive = i === safeIdx;
               return (
                 <button
@@ -187,8 +180,8 @@ export default function BossView({
                       : 'border-zinc-800 hover:border-zinc-600'
                   }`}
                 >
-                  {icon
-                    ? <img src={icon} alt={v.name} className={`w-5 h-5 rounded-full ${isActive ? 'opacity-100' : 'opacity-50'}`} />
+                  {v.imageUrl
+                    ? <img src={v.imageUrl} alt={v.name} className={`w-5 h-5 rounded-full object-cover ${isActive ? 'opacity-100' : 'opacity-50'}`} />
                     : <span className={`text-xs font-bold ${isActive ? colors.color : 'text-zinc-500'}`}>{v.name}</span>
                   }
                 </button>
@@ -216,8 +209,8 @@ export default function BossView({
                     : 'border-zinc-800 text-zinc-500 hover:text-zinc-300 hover:border-zinc-700'
                 }`}
               >
-                {v.id !== null && heroTreeIcons.get(v.id) && (
-                  <img src={heroTreeIcons.get(v.id)} alt="" className={`w-5 h-5 rounded-full flex-shrink-0 ${isActive ? 'opacity-100' : 'opacity-50'}`} />
+                {v.imageUrl && (
+                  <img src={v.imageUrl} alt="" className={`w-5 h-5 rounded-full object-cover flex-shrink-0 ${isActive ? 'opacity-100' : 'opacity-50'}`} />
                 )}
                 {v.name}
                 {pct !== null && (
