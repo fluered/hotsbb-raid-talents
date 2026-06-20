@@ -31,6 +31,8 @@ export interface HeroVariant {
     avgItemLevel?: number | null;
     playerCount: number;
     gearBySlot?: Record<string, Array<{ name: string; count: number; pct: number; itemId: number; quality: string; iconUrl: string; description: string; avgIlvl: number }>>;
+    trinketSynergy?: { names: [string, string]; count: number; pct: number } | null;
+    ringSynergy?: { names: [string, string]; count: number; pct: number } | null;
   } | null;
   players: any[];
   hasData?: boolean;
@@ -88,6 +90,7 @@ export default function BossView({
   difficulty,
   spec,
   totalParses,
+  dataFetchedAt,
   wclUrl,
   wowClass,
 }: {
@@ -97,6 +100,7 @@ export default function BossView({
   difficulty: number;
   spec: string;
   totalParses?: number;
+  dataFetchedAt?: number;
   wclUrl?: string;
   wowClass?: string;
 }) {
@@ -141,12 +145,12 @@ export default function BossView({
 
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6 md:space-y-8">
 
       {/* Sticky bar: jump nav + hero tree switcher */}
-      <nav className="sticky top-0 z-30 -mx-6 px-6 bg-[#0a0a0a]/95 backdrop-blur-sm border-b border-zinc-800/60">
+      <nav className="sticky top-0 z-30 -mx-4 px-4 md:-mx-6 md:px-6 bg-[#0a0a0a]/95 backdrop-blur-sm border-b border-zinc-800/60">
         {/* Row 1: Jump links */}
-        <div className="flex gap-5">
+        <div className="flex gap-4 md:gap-5 overflow-x-auto scrollbar-none">
           {([
             { href: '#meta-build',    id: 'meta-build',    label: 'Meta Build',    show: true },
             { href: '#meta-trinkets', id: 'meta-trinkets', label: 'Meta Trinkets', show: !!gearHasContent },
@@ -285,6 +289,13 @@ export default function BossView({
                 Consensus from top {active.totalPlayers} {difficulty === 5 ? 'Mythic' : 'Heroic'} {spec} parses
                 {active.id !== null ? ` using ${active.name}` : ''}
                 {totalParses != null && totalParses > active.totalPlayers ? ` · ${totalParses} available` : ''}
+                {dataFetchedAt != null && (() => {
+                  const mins = Math.round((Date.now() - dataFetchedAt) / 60000);
+                  if (mins < 2) return ' · just updated';
+                  if (mins < 60) return ` · updated ${mins}m ago`;
+                  const hrs = Math.floor(mins / 60);
+                  return ` · updated ${hrs}h ago`;
+                })()}
               </p>
             ) : (
               <p className="text-sm text-zinc-500">
@@ -297,7 +308,8 @@ export default function BossView({
           {active.consensus && <CopyBuildButton talentString={active.consensus.talentString} />}
         </div>
         {active.consensus ? (
-          <div className="bg-zinc-900/40 border border-zinc-800/50 rounded-2xl p-5 overflow-x-auto min-w-0">
+          <div className="bg-zinc-900/40 border border-zinc-800/50 rounded-2xl p-3 md:p-5 overflow-x-auto min-w-0">
+            <p className="md:hidden text-[10px] text-zinc-600 text-center mb-2">← scroll to see full tree →</p>
             <NewFeature
               telemetry={active.consensus.telemetry}
               layout={layout}
@@ -318,6 +330,7 @@ export default function BossView({
               } : undefined}
               wowClass={wowClass}
               specName={spec}
+              topPlayerTelemetry={active.players[0]?.telemetry}
             />
           </div>
         ) : (
@@ -356,6 +369,15 @@ export default function BossView({
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 {/* Left: Trinkets + Embellishments */}
                 <div className="space-y-6">
+                  {gear.trinketSynergy && (
+                    <div className="flex items-start gap-2.5 bg-amber-500/5 border border-amber-500/20 rounded-xl px-3.5 py-3">
+                      <span className="text-amber-400 text-sm mt-0.5">⚡</span>
+                      <div>
+                        <p className="text-xs font-black text-amber-400 uppercase tracking-widest mb-0.5">Synergy Pair · {gear.trinketSynergy.pct}% of players</p>
+                        <p className="text-sm text-zinc-300">{gear.trinketSynergy.names[0]} <span className="text-zinc-600">+</span> {gear.trinketSynergy.names[1]}</p>
+                      </div>
+                    </div>
+                  )}
                   {gear.trinkets.length > 0 && (
                     <div>
                       <p className="text-xs text-zinc-500 uppercase tracking-widest font-bold mb-3">Top Trinkets</p>
@@ -461,9 +483,19 @@ export default function BossView({
               {slots.map(slotKey => {
                 const items = gearBySlot[slotKey];
                 const maxCount = items[0]?.count ?? 1;
+                const isRings = slotKey === 'FINGER';
                 return (
                   <div key={slotKey} className="bg-zinc-900/40 border border-zinc-800/50 rounded-xl p-4">
                     <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest mb-3">{SLOT_LABELS[slotKey] ?? slotKey}</p>
+                    {isRings && gear?.ringSynergy && (
+                      <div className="flex items-start gap-2 bg-amber-500/5 border border-amber-500/20 rounded-lg px-2.5 py-2 mb-3">
+                        <span className="text-amber-400 text-xs mt-px">⚡</span>
+                        <div>
+                          <p className="text-[10px] font-black text-amber-400 uppercase tracking-widest mb-0.5">Pair · {gear.ringSynergy.pct}% of players</p>
+                          <p className="text-xs text-zinc-300">{gear.ringSynergy.names[0]} <span className="text-zinc-600">+</span> {gear.ringSynergy.names[1]}</p>
+                        </div>
+                      </div>
+                    )}
                     <div className="space-y-2.5">
                       {items.map((item, i) => {
                         const qualityColor = QUALITY_COLOR[item.quality] ?? '#9d9d9d';

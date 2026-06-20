@@ -1,4 +1,4 @@
-import React from 'react';
+﻿import React from 'react';
 import { unstable_cache } from 'next/cache';
 import BossView, { type HeroVariant } from '../components/BossView';
 import {
@@ -39,10 +39,10 @@ export default async function BossContent({
     const [wclToken, blizzardToken] = await Promise.all([getWclToken(), getBlizzardToken(region)]);
 
 
-    const [treeInfo, rawRankings] = await Promise.all([
+    const [treeInfo, rankingsResult] = await Promise.all([
       getTalentTreeId(spec, className, blizzardToken),
       unstable_cache(
-        async () => getWclRankings(wclToken, bossId, className, spec, difficulty, region),
+        async () => ({ rankings: await getWclRankings(wclToken, bossId, className, spec, difficulty, region), fetchedAt: Date.now() }),
         [`wcl-rankings-${bossId}-${className}-${spec}-${difficulty}-${region}`],
         { revalidate: 7200 }
       )(),
@@ -52,6 +52,8 @@ export default async function BossContent({
     }
 
     const { layout: skeletonMap, heroTreeNames: allHeroTreeNames } = await getTalentTreeLayout(treeInfo.treeId, treeInfo.specId, blizzardToken);
+    const rawRankings = rankingsResult.rankings;
+    const dataFetchedAt = rankingsResult.fetchedAt;
     const totalAvailableParses = rawRankings.length;
     if (rawRankings.length === 0) {
       const diffLabel = difficulty === 5 ? 'Mythic' : 'Heroic';
@@ -59,7 +61,7 @@ export default async function BossContent({
       return (
         <div className="flex flex-col items-center justify-center py-20 text-center space-y-4">
           <div className="w-16 h-16 rounded-full bg-zinc-900 border border-zinc-800 flex items-center justify-center text-2xl opacity-40">
-            —
+            â€”
           </div>
           <div>
             <p className="text-zinc-300 font-bold">No {diffLabel} data</p>
@@ -157,7 +159,7 @@ export default async function BossContent({
       }
     }
 
-    // Build player records — all CONSENSUS_N for stats/DPS, only first DISPLAY_N have profile/media
+    // Build player records â€” all CONSENSUS_N for stats/DPS, only first DISPLAY_N have profile/media
     const detailedRankings = rawRankings.slice(0, CONSENSUS_N).map((player: any, idx: number) => {
       const telemetryData = allTelemetryData[idx];
       const profileData = blizzardProfiles[idx];
@@ -186,13 +188,16 @@ export default async function BossContent({
       return { ...player, telemetry: telemetryData, talentString, renderUrl };
     });
 
-    // Aggregate trinkets — keyed by "name|ilvl" so each ilvl tier is a separate entry
+    // Aggregate trinkets â€” keyed by "name|ilvl" so each ilvl tier is a separate entry
     const trinketPlayerSets = new Map<string, { players: Set<number>; itemId: number; ilvl: number; name: string }>();
+    // Track trinket names per player for pair synergy detection
+    const playerTrinketNames = new Map<number, string[]>();
+    const playerRingNames = new Map<number, string[]>();
     // Aggregate gems
     const gemPlayerSets = new Map<string, { players: Set<number>; itemId: number }>();
-    // Aggregate embellishments (crafted items — detected by crafted_quality field)
+    // Aggregate embellishments (crafted items â€” detected by crafted_quality field)
     const embellishmentMap = new Map<string, { players: Set<number>; itemId: number }>();
-    // Aggregate gear slots — keyed by "name|ilvl" so each ilvl tier is a separate entry
+    // Aggregate gear slots â€” keyed by "name|ilvl" so each ilvl tier is a separate entry
     const TRACKED_GEAR_SLOTS = ['HEAD', 'NECK', 'SHOULDER', 'BACK', 'CHEST', 'WRIST', 'HANDS', 'WAIST', 'LEGS', 'FEET', 'FINGER', 'MAIN_HAND', 'OFF_HAND'];
     const slotItemMaps: Record<string, Map<string, { players: Set<number>; itemId: number; quality: string; ilvl: number; name: string }>> = {};
     for (const s of TRACKED_GEAR_SLOTS) slotItemMaps[s] = new Map();
@@ -217,6 +222,15 @@ export default async function BossContent({
             const key = `${itemName}|${eqIlvl}`;
             if (!trinketPlayerSets.has(key)) trinketPlayerSets.set(key, { players: new Set(), itemId: eqItemId, ilvl: eqIlvl, name: itemName });
             trinketPlayerSets.get(key)!.players.add(i);
+            if (!playerTrinketNames.has(i)) playerTrinketNames.set(i, []);
+            playerTrinketNames.get(i)!.push(itemName);
+          }
+        }
+        if (slot === 'FINGER_1' || slot === 'FINGER_2') {
+          const itemName: string = item.name;
+          if (itemName) {
+            if (!playerRingNames.has(i)) playerRingNames.set(i, []);
+            playerRingNames.get(i)!.push(itemName);
           }
         }
         for (const socket of item.sockets ?? []) {
@@ -251,13 +265,13 @@ export default async function BossContent({
           if (!existing || existing.ilvl < eqIlvl) {
             const spellDescs = (item.spells ?? []).map((s: any) => stripWowCodes(s.description ?? '')).filter(Boolean);
             // item.stats in the profile API has actual scaled values; display_string may or may not be populated
-            // Only use display_string — raw `value` is an unscaled base float (e.g. 13.23 for Mastery)
+            // Only use display_string â€” raw `value` is an unscaled base float (e.g. 13.23 for Mastery)
             // that gives wrong numbers when rounded. display_string has the correct scaled value.
             const statsStr = (item.stats ?? [])
               .filter((s: any) => s.is_negated !== true)
               .map((s: any) => s.display?.display_string ?? '')
               .filter(Boolean)
-              .join(' · ')
+              .join(' Â· ')
               // Normalise primary stat name so Holy Pally, Balance Druid, etc. all show correctly
               .replace(/\+(\d[\d,]*) (?:\[[^\]]+\]|Strength|Intellect|Agility)/g, '+$1 Primary Stat');
             // Include both: stats line first, then equip/proc descriptions
@@ -329,6 +343,39 @@ export default async function BossContent({
       .filter(e => e.pct >= 5)
       .sort((a, b) => b.count - a.count)
       .slice(0, 8);
+    // Trinket pair synergy â€” find pairs used together by â‰¥30% of players with gear data
+    const trinketPairCounts = new Map<string, { names: [string, string]; count: number }>();
+    for (const [, names] of playerTrinketNames) {
+      const unique = [...new Set(names)].sort();
+      if (unique.length >= 2) {
+        const key = `${unique[0]}||${unique[1]}`;
+        if (!trinketPairCounts.has(key)) trinketPairCounts.set(key, { names: [unique[0], unique[1]], count: 0 });
+        trinketPairCounts.get(key)!.count++;
+      }
+    }
+    const totalGearPlayersForPairs = playerTrinketNames.size;
+    const topTrinketPair = Array.from(trinketPairCounts.values())
+      .map(p => ({ ...p, pct: Math.round(p.count / Math.max(totalGearPlayersForPairs, 1) * 100) }))
+      .sort((a, b) => b.count - a.count)
+      .find(p => p.pct >= 30) ?? null;
+
+    // Ring pair synergy
+    const ringPairCounts = new Map<string, { names: [string, string]; count: number }>();
+    for (const [, names] of playerRingNames) {
+      const unique = [...new Set(names)].sort();
+      if (unique.length >= 2) {
+        const key = `${unique[0]}||${unique[1]}`;
+        if (!ringPairCounts.has(key)) ringPairCounts.set(key, { names: [unique[0], unique[1]], count: 0 });
+        ringPairCounts.get(key)!.count++;
+      }
+    }
+    const totalRingPlayers = playerRingNames.size;
+    const topRingPair = Array.from(ringPairCounts.values())
+      .map(p => ({ ...p, pct: Math.round(p.count / Math.max(totalRingPlayers, 1) * 100) }))
+      .sort((a, b) => b.count - a.count)
+      .find(p => p.pct >= 20) ?? null;
+
+
     const topTrinketsRaw = Array.from(trinketPlayerSets.values())
       .map(({ players, itemId, ilvl, name }) => ({
         name, count: players.size, itemId,
@@ -391,7 +438,7 @@ export default async function BossContent({
     const enchantsBySlot = new Map<string, Array<{ name: string; count: number; pct: number; sourceItemId?: number; enchantId?: number }>>();
     for (const [key, { players, slot, sourceItemId, enchantId, sourceName }] of enchantCounts) {
       const displayStr = key.slice(slot.length + 2);
-      // Prefer source_item.name (e.g. "Enchant Legs - Writ of Speed") over the raw display_string (e.g. "+41 Agility…")
+      // Prefer source_item.name (e.g. "Enchant Legs - Writ of Speed") over the raw display_string (e.g. "+41 Agilityâ€¦")
       const name = sourceName ?? displayStr;
       if (!enchantsBySlot.has(slot)) enchantsBySlot.set(slot, []);
       enchantsBySlot.get(slot)!.push({ name, count: players.size, pct: Math.round(players.size / Math.max(equipPlayerCount, 1) * 100), sourceItemId, enchantId });
@@ -741,7 +788,7 @@ export default async function BossContent({
         } catch {}
       }));
 
-      // Description-only fetch for enchants (no icons — tooltip shows stats instead)
+      // Description-only fetch for enchants (no icons â€” tooltip shows stats instead)
       const enchantDescIds = new Set<number>();
       for (const e of topEnchants) if (e.sourceItemId) enchantDescIds.add(e.sourceItemId);
       for (const build of heroTreeConsensus) {
@@ -759,7 +806,7 @@ export default async function BossContent({
       const nameById = new Map<number, string>();
       const qualityById = new Map<number, string>();
       const consumableIconById = new Map<number, string>();
-      // WCL gear data includes icon filenames (already with extension) — use zamimg CDN directly
+      // WCL gear data includes icon filenames (already with extension) â€” use zamimg CDN directly
       for (const [id, { icon }] of wclItemData) {
         if (icon) iconById.set(id, `https://wow.zamimg.com/images/wow/icons/large/${icon}`);
       }
@@ -818,15 +865,15 @@ export default async function BossContent({
               qualityById.set(itemId, itemData.quality?.type ?? 'EPIC');
               const preview = itemData.preview_item ?? itemData;
               const gemBonus = stripWowCodes(preview.gem_properties?.bonus?.name ?? preview.gem_properties?.bonus?.properties ?? '');
-              // Only use display_string from Blizzard item API — the raw `value` field is unscaled
+              // Only use display_string from Blizzard item API â€” the raw `value` field is unscaled
               // and gives wrong numbers (e.g. "+13 Mastery" instead of "+123 Mastery")
               const blizzardStatsStr = (preview.stats ?? [])
                 .filter((s: any) => s.is_negated !== true)
                 .map((s: any) => s.display?.display_string ?? '')
-                .filter(Boolean).join(' · ')
+                .filter(Boolean).join(' Â· ')
                 .replace(/\+(\d[\d,]*) (?:\[[^\]]+\]|Strength|Intellect|Agility)/g, '+$1 Primary Stat');
-              // Priority: Wowhead proc text → profile API stats (correctly scaled to actual ilvl)
-              //           → Blizzard display_string stats → gem bonus → description
+              // Priority: Wowhead proc text â†’ profile API stats (correctly scaled to actual ilvl)
+              //           â†’ Blizzard display_string stats â†’ gem bonus â†’ description
               descById.set(itemId, wowheadDesc || itemDescFromEquip.get(itemId)?.text || blizzardStatsStr || gemBonus || stripWowCodes(preview.description ?? ''));
             } else {
               const fallback = wowheadDesc || itemDescFromEquip.get(itemId)?.text;
@@ -929,7 +976,7 @@ export default async function BossContent({
         count: totalConsensusPlayers,
         totalPlayers: totalConsensusPlayers,
         consensus: { telemetry: consensusTelemetry, talentString: metaTalentString, frequencyPct: metaFrequencyPct },
-        gear: { trinkets: topTrinkets, stats: avgStats, enchants: topEnchants, avgItemLevel, gems: topGems, consumables: topConsumables, embellishments: topEmbellishments, playerCount: totalGearPlayerCount, gearBySlot },
+        gear: { trinkets: topTrinkets, stats: avgStats, enchants: topEnchants, avgItemLevel, gems: topGems, consumables: topConsumables, embellishments: topEmbellishments, playerCount: totalGearPlayerCount, gearBySlot, trinketSynergy: topTrinketPair, ringSynergy: topRingPair },
         players: detailedRankings.slice(0, DISPLAY_N),
       });
       for (const htc of heroTreeConsensus) {
@@ -961,6 +1008,7 @@ export default async function BossContent({
           difficulty={difficulty}
           spec={spec}
           totalParses={totalAvailableParses}
+          dataFetchedAt={dataFetchedAt}
           wclUrl={wclUrl ?? undefined}
           wowClass={className}
         />
@@ -986,6 +1034,7 @@ export default async function BossContent({
           difficulty={difficulty}
           spec={spec}
           totalParses={totalAvailableParses}
+          dataFetchedAt={dataFetchedAt}
           wclUrl={wclUrl ?? undefined}
           wowClass={className}
         />
@@ -996,7 +1045,7 @@ export default async function BossContent({
     return (
       <div className="flex flex-col items-center justify-center py-20 text-center space-y-4">
         <div className="w-16 h-16 rounded-full bg-zinc-900 border border-zinc-800 flex items-center justify-center text-2xl opacity-40">
-          —
+          â€”
         </div>
         <div>
           <p className="text-zinc-300 font-bold">No {diffLabel2} data</p>

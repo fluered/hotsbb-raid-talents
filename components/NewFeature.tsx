@@ -81,6 +81,7 @@ export default function NewFeature({
   specName,
   heroTrees,
   onHeroTreeClick,
+  topPlayerTelemetry,
 }: {
   telemetry: any;
   layout: any[];
@@ -93,10 +94,19 @@ export default function NewFeature({
   specName?: string;
   heroTrees?: Array<{ name: string; imageUrl?: string; pct: number }>;
   onHeroTreeClick?: (name: string) => void;
+  topPlayerTelemetry?: any;
 }) {
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
   const activeNodes = telemetry?.event?.talentTree || [];
   const activeNodeIds = new Set<number>(activeNodes.map((t: any) => t.nodeID));
+
+  // Nodes where the #1 parser diverges from consensus: they take it but consensus doesn't (or vice versa)
+  const topPlayerNodeIds = topPlayerTelemetry
+    ? new Set<number>((topPlayerTelemetry?.event?.talentTree || []).map((t: any) => t.nodeID))
+    : null;
+  const divergentNodeIds = topPlayerNodeIds
+    ? new Set<number>([...activeNodeIds, ...topPlayerNodeIds].filter(id => activeNodeIds.has(id) !== topPlayerNodeIds!.has(id)))
+    : null;
 
   // Determine which hero tree the player is using
   const activeHeroTreeIds = new Set<number>();
@@ -310,6 +320,9 @@ export default function NewFeature({
           const mappedColumn = getMappedCol(node);
           const colSpan = getColSpan(node);
           const freq = frequencyMap?.[node.nodeID];
+          const isDivergent = divergentNodeIds?.has(node.nodeID) ?? false;
+          // true = top player takes this but consensus doesn't; false = consensus takes it but top player skips
+          const topPlayerTakes = isDivergent && (topPlayerNodeIds?.has(node.nodeID) ?? false);
 
           return (
             <div
@@ -342,6 +355,9 @@ export default function NewFeature({
                   <div className="absolute bottom-0 inset-x-0 bg-black/75 flex items-center justify-center py-0.5">
                     <span className={`text-[8px] font-bold tabular-nums leading-none ${isActive ? 'text-white' : 'text-zinc-400'}`}>{freq}%</span>
                   </div>
+                )}
+                {isDivergent && (
+                  <div className={`absolute top-0 right-0 w-2.5 h-2.5 rounded-full border border-zinc-900 ${topPlayerTakes ? 'bg-amber-400' : 'bg-zinc-600'}`} />
                 )}
               </div>
             </div>

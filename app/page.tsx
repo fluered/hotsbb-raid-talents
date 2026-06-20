@@ -230,6 +230,9 @@ export default async function Home(props: PageProps) {
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0">
+          <Link href="/tier-list" className="hidden sm:block text-[11px] font-bold text-zinc-500 hover:text-zinc-300 transition-colors uppercase tracking-widest px-2">
+            Tier List
+          </Link>
           {/* Region toggle */}
           <div className="flex items-center gap-1 bg-zinc-900 rounded-lg p-0.5 border border-zinc-800/80">
             <Link
@@ -307,7 +310,7 @@ export default async function Home(props: PageProps) {
 
         {/* Main */}
         <main className="flex-1 overflow-y-auto min-h-0">
-          <div className="max-w-screen-xl mx-auto px-6 py-6 space-y-6">
+          <div className="max-w-screen-xl mx-auto px-4 md:px-6 py-4 md:py-6 space-y-4 md:space-y-6">
 
             {error && (
               <div className="bg-red-950/40 border border-red-800/50 text-red-300 px-4 py-3 rounded-xl text-sm">
@@ -342,6 +345,27 @@ export default async function Home(props: PageProps) {
                       </Link>
                     );
                   })}
+                </div>
+
+                {/* Tier list links */}
+                <div className="max-w-2xl mx-auto space-y-3">
+                  <div className="text-center space-y-1">
+                    <h2 className="text-base font-black text-zinc-100">Raid Tier Lists</h2>
+                    <p className="text-xs text-zinc-500">Boss-by-boss spec rankings from top parse data</p>
+                  </div>
+                  <div className="grid grid-cols-3 gap-3">
+                    {[
+                      { href: '/tier-list', label: 'DPS', sub: 'Damage specs', color: 'text-amber-400', border: 'border-amber-500/20', bg: 'hover:bg-amber-500/5' },
+                      { href: '/tier-list/tanks', label: 'Tanks', sub: 'Tank specs', color: 'text-sky-400', border: 'border-sky-500/20', bg: 'hover:bg-sky-500/5' },
+                      { href: '/tier-list/healers', label: 'Healers', sub: 'Healer specs', color: 'text-emerald-400', border: 'border-emerald-500/20', bg: 'hover:bg-emerald-500/5' },
+                    ].map(({ href, label, sub, color, border, bg }) => (
+                      <Link key={href} href={href}
+                        className={`flex flex-col items-center gap-1 p-4 rounded-xl border border-zinc-800/60 bg-zinc-900/30 ${bg} ${border} hover:border-opacity-60 transition-all group`}>
+                        <span className={`text-sm font-black ${color}`}>{label}</span>
+                        <span className="text-[10px] text-zinc-600 group-hover:text-zinc-500 transition-colors">{sub}</span>
+                      </Link>
+                    ))}
+                  </div>
                 </div>
               </div>
             ) : (

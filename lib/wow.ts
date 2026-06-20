@@ -41,14 +41,15 @@ export async function getRaidStructure(token: string) {
   return (await response.json()).data?.worldData?.zones || [];
 }
 
-export async function getWclRankings(token: string, bossId: number, className: string, specName: string, difficulty: number, region = 'us') {
+export async function getWclRankings(token: string, bossId: number, className: string, specName: string, difficulty: number, region = 'us', metric?: string) {
   const wclClassName = className.replace(/\s+/g, '');
   const wclSpecName = specName.replace(/\s+/g, '');
+  const metricArg = metric ? `, metric: ${metric}` : '';
   const query = `
     query {
       worldData {
         encounter(id: ${bossId}) {
-          characterRankings(className: "${wclClassName}", specName: "${wclSpecName}", difficulty: ${difficulty}, serverRegion: "${region.toUpperCase()}")
+          characterRankings(className: "${wclClassName}", specName: "${wclSpecName}", difficulty: ${difficulty}, serverRegion: "${region.toUpperCase()}"${metricArg})
         }
       }
     }
@@ -289,6 +290,55 @@ export const ENCHANT_SLOT_LABELS: Record<string, string> = {
 };
 
 export const ENCHANT_SLOT_ORDER = ['Weapon', 'Rings', 'Cloak', 'Chest', 'Bracers', 'Boots', 'Legs'];
+
+export const HEALER_SPECS: Array<{ class: string; spec: string }> = [
+  { class: 'Druid', spec: 'Restoration' },
+  { class: 'Evoker', spec: 'Preservation' },
+  { class: 'Monk', spec: 'Mistweaver' },
+  { class: 'Paladin', spec: 'Holy' },
+  { class: 'Priest', spec: 'Discipline' },
+  { class: 'Priest', spec: 'Holy' },
+  { class: 'Shaman', spec: 'Restoration' },
+];
+
+export const TANK_SPECS: Array<{ class: string; spec: string }> = [
+  { class: 'Death Knight', spec: 'Blood' },
+  { class: 'Demon Hunter', spec: 'Vengeance' },
+  { class: 'Druid', spec: 'Guardian' },
+  { class: 'Monk', spec: 'Brewmaster' },
+  { class: 'Paladin', spec: 'Protection' },
+  { class: 'Warrior', spec: 'Protection' },
+];
+
+export const DPS_SPECS: Array<{ class: string; spec: string }> = [
+  { class: 'Death Knight', spec: 'Frost' },
+  { class: 'Death Knight', spec: 'Unholy' },
+  { class: 'Demon Hunter', spec: 'Havoc' },
+  { class: 'Demon Hunter', spec: 'Devourer' },
+  { class: 'Druid', spec: 'Balance' },
+  { class: 'Druid', spec: 'Feral' },
+  { class: 'Evoker', spec: 'Augmentation' },
+  { class: 'Evoker', spec: 'Devastation' },
+  { class: 'Hunter', spec: 'Beast Mastery' },
+  { class: 'Hunter', spec: 'Marksmanship' },
+  { class: 'Hunter', spec: 'Survival' },
+  { class: 'Mage', spec: 'Arcane' },
+  { class: 'Mage', spec: 'Fire' },
+  { class: 'Mage', spec: 'Frost' },
+  { class: 'Monk', spec: 'Windwalker' },
+  { class: 'Paladin', spec: 'Retribution' },
+  { class: 'Priest', spec: 'Shadow' },
+  { class: 'Rogue', spec: 'Assassination' },
+  { class: 'Rogue', spec: 'Outlaw' },
+  { class: 'Rogue', spec: 'Subtlety' },
+  { class: 'Shaman', spec: 'Elemental' },
+  { class: 'Shaman', spec: 'Enhancement' },
+  { class: 'Warlock', spec: 'Affliction' },
+  { class: 'Warlock', spec: 'Demonology' },
+  { class: 'Warlock', spec: 'Destruction' },
+  { class: 'Warrior', spec: 'Arms' },
+  { class: 'Warrior', spec: 'Fury' },
+];
 
 export const CLASS_IDS: Record<string, number> = {
   'Death Knight': 6, 'Demon Hunter': 12, 'Druid': 11, 'Evoker': 13,
