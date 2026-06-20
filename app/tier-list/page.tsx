@@ -3,6 +3,7 @@ import Link from 'next/link';
 import type { Metadata } from 'next';
 import { getWclToken, getRaidStructure, MIDNIGHT_RAIDS, DPS_SPECS } from '../../lib/wow';
 import TierListContent from './TierListContent';
+import OverallTierListContent from './OverallTierListContent';
 
 interface PageProps {
   searchParams: Promise<{ boss?: string; bossName?: string; difficulty?: string; region?: string }>;
@@ -31,11 +32,11 @@ export default async function TierListPage({ searchParams }: PageProps) {
   const wclToken = await getWclToken();
   const zones = await getRaidStructure(wclToken);
 
-  const encounters: Array<{ id: number; name: string }> = zones
+  const encounters: Array<{ id: number; name: string; zoneName: string }> = zones
     .filter((z: any) => z.name in MIDNIGHT_RAIDS)
-    .flatMap((z: any) => (z.encounters ?? []).map((enc: any) => ({ id: enc.id, name: enc.name })));
+    .flatMap((z: any) => (z.encounters ?? []).map((enc: any) => ({ id: enc.id, name: enc.name, zoneName: z.name })));
 
-  const selectedBoss = encounters.find(e => e.id === activeBossId) ?? encounters[0] ?? null;
+  const selectedBoss = activeBossId ? (encounters.find(e => e.id === activeBossId) ?? null) : null;
 
   const url = (overrides: { boss?: number; bossName?: string; difficulty?: number; region?: string }) => {
     const b = overrides.boss ?? selectedBoss?.id;
@@ -64,6 +65,7 @@ export default async function TierListPage({ searchParams }: PageProps) {
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0">
+            <Link href="/" className="hidden sm:block text-[11px] font-bold text-zinc-500 hover:text-zinc-300 transition-colors uppercase tracking-widest px-2">Raid Talents</Link>
             {/* Role switcher */}
             {(() => {
               const qs = `difficulty=${activeDifficulty}${activeRegion !== 'us' ? `&region=${activeRegion}` : ''}${selectedBoss ? `&boss=${selectedBoss.id}&bossName=${encodeURIComponent(selectedBoss.name ?? '')}` : ''}`;
@@ -132,7 +134,19 @@ export default async function TierListPage({ searchParams }: PageProps) {
             />
           </Suspense>
         ) : (
-          <p className="text-sm text-zinc-600 py-12 text-center">No bosses found.</p>
+          <Suspense fallback={<TierListSkeleton />}>
+            <OverallTierListContent
+              wclToken={wclToken}
+              bossIds={encounters.map(e => e.id)}
+              specs={DPS_SPECS}
+              difficulty={activeDifficulty}
+              region={activeRegion}
+              role="dps"
+              thresholds={{ S: 95, A: 88, B: 78 }}
+              title="Midnight Season 1 Raid DPS Tier List"
+              footerNote="Avg DPS per spec across all Midnight bosses · excludes tanks and healers · Augmentation Evoker personal DPS appears lower than actual raid contribution · click any row to view talent builds"
+            />
+          </Suspense>
         )}
       </div>
     </div>

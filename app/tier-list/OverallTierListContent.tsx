@@ -13,8 +13,6 @@ function fixedTierAssignments(sortedAvgDps: number[], thresholds: { S: number; A
   });
 }
 
-// Find the 3 largest gaps in a sorted DPS list and use them as S/A/B/C boundaries.
-// Minimum gap of 2% of peak to count as a tier break.
 function computeTierAssignments(sortedAvgDps: number[]): Array<'S' | 'A' | 'B' | 'C'> {
   const n = sortedAvgDps.length;
   if (n === 0) return [];
@@ -56,39 +54,69 @@ const TIER_CONFIG = {
   C: { color: 'text-zinc-500', bg: 'bg-zinc-800/40', border: 'border-zinc-700/40', hex: '#52525b' },
 } as const;
 
-export default async function TierListContent({
-  bossId,
-  bossName,
+async function computeOverall(
+  wclToken: string,
+  specs: Array<{ class: string; spec: string }>,
+  bossIds: number[],
+  difficulty: number,
+  region: string,
+  metric?: string
+) {
+  const results = await Promise.all(
+    specs.map(async ({ class: cls, spec }) => {
+      const bossAvgs: number[] = [];
+      await Promise.all(
+        bossIds.map(async bossId => {
+          try {
+            const rankings = await getWclRankings(wclToken, bossId, cls, spec, difficulty, region, metric);
+            const top = (rankings as any[]).slice(0, 50);
+            if (top.length >= 5) {
+              const avg = top.reduce((s: number, r: any) => s + (r.amount ?? 0), 0) / top.length;
+              if (avg > 0) bossAvgs.push(avg);
+            }
+          } catch {}
+        })
+      );
+      const avgDps = bossAvgs.length > 0
+        ? Math.round(bossAvgs.reduce((s, v) => s + v, 0) / bossAvgs.length)
+        : 0;
+      return { cls, spec, avgDps, bossCount: bossAvgs.length };
+    })
+  );
+  return results;
+}
+
+export default async function OverallTierListContent({
+  wclToken,
+  bossIds,
+  specs,
   difficulty,
   region,
-  wclToken,
-  specs,
   footerNote,
   metric,
   thresholds,
+  role,
+  title,
 }: {
-  bossId: number;
-  bossName: string;
+  wclToken: string;
+  bossIds: number[];
+  specs: Array<{ class: string; spec: string }>;
   difficulty: number;
   region: string;
-  wclToken: string;
-  specs: Array<{ class: string; spec: string }>;
   footerNote: string;
   metric?: string;
   thresholds?: { S: number; A: number; B: number };
+  role: string;
+  title?: string;
 }) {
   const blizzardToken = await getBlizzardToken();
 
-  const [rankingResults, specIcons] = await Promise.all([
-    Promise.all(
-      specs.map(({ class: cls, spec }) =>
-        unstable_cache(
-          () => getWclRankings(wclToken, bossId, cls, spec, difficulty, region, metric),
-          [`wcl-rankings-${bossId}-${cls}-${spec}-${difficulty}-${region}${metric ? `-${metric}` : ''}`],
-          { revalidate: 604800 }
-        )().then(rankings => ({ cls, spec, rankings })).catch(() => ({ cls, spec, rankings: [] }))
-      )
-    ),
+  const [rawResults, specIcons] = await Promise.all([
+    unstable_cache(
+      () => computeOverall(wclToken, specs, bossIds, difficulty, region, metric),
+      [`wcl-overall-${role}-${difficulty}-${region}${metric ? `-${metric}` : ''}`],
+      { revalidate: 604800 }
+    )(),
     (async () => {
       const iconMap: Record<string, string> = {};
       await Promise.all(
@@ -108,14 +136,11 @@ export default async function TierListContent({
     })(),
   ]);
 
-  const specData = rankingResults
-    .map(({ cls, spec, rankings }) => {
-      const top = (rankings as any[]).slice(0, 50);
-      if (top.length < 5) return null;
-      const avgDps = Math.round(top.reduce((s, r) => s + (r.amount ?? 0), 0) / top.length);
-      if (avgDps === 0) return null;
+  const specData = rawResults
+    .map(({ cls, spec, avgDps, bossCount }) => {
+      if (avgDps === 0 || bossCount === 0) return null;
       const classObj = POPULAR_SPECS.find(c => c.class === cls)!;
-      return { cls, spec, avgDps, sampleSize: top.length, color: classObj.color, hex: classHex(classObj.color) };
+      return { cls, spec, avgDps, bossCount, color: classObj.color, hex: classHex(classObj.color) };
     })
     .filter((r): r is NonNullable<typeof r> => r !== null)
     .sort((a, b) => b.avgDps - a.avgDps);
@@ -123,7 +148,7 @@ export default async function TierListContent({
   if (specData.length === 0) {
     return (
       <p className="text-sm text-zinc-600 py-12 text-center">
-        No data for this boss on {difficulty === 5 ? 'Mythic' : 'Heroic'} yet.
+        No data available for {difficulty === 5 ? 'Mythic' : 'Heroic'} yet.
       </p>
     );
   }
@@ -146,22 +171,21 @@ export default async function TierListContent({
 
   return (
     <div className="space-y-8">
+      {title && <h1 className="text-xl font-black text-zinc-100 tracking-tight">{title}</h1>}
       <div>
-        <h1 className="text-xl font-black text-white">{bossName}</h1>
-        <p className="text-xs text-zinc-500 mt-1">
-          {diffLabel} · avg DPS of top 50 parses per spec · {region.toUpperCase()}
+        <p className="text-xs text-zinc-500">
+          {diffLabel} · avg DPS across all bosses · {region.toUpperCase()} · updated weekly
         </p>
       </div>
 
       <div className="space-y-6">
         {(['S', 'A', 'B', 'C'] as const).map(tier => {
-          const specs = tiered.filter(s => s.tier === tier);
-          if (specs.length === 0) return null;
+          const tierSpecs = tiered.filter(s => s.tier === tier);
+          if (tierSpecs.length === 0) return null;
           const cfg = TIER_CONFIG[tier];
 
           return (
             <div key={tier}>
-              {/* Tier header */}
               <div className="flex items-center gap-3 mb-3">
                 <div className={`w-9 h-9 rounded-xl flex items-center justify-center text-base font-black border flex-shrink-0 ${cfg.color} ${cfg.bg} ${cfg.border}`}>
                   {tier}
@@ -171,32 +195,28 @@ export default async function TierListContent({
                   style={{ background: `linear-gradient(to right, ${cfg.hex}50, transparent)` }}
                 />
                 <span className="text-[10px] font-semibold text-zinc-700 flex-shrink-0">
-                  {specs.length} spec{specs.length !== 1 ? 's' : ''}
+                  {tierSpecs.length} spec{tierSpecs.length !== 1 ? 's' : ''}
                 </span>
               </div>
 
-              {/* Spec rows */}
               <div className="space-y-1.5">
-                {specs.map(s => {
-                  const mainPageUrl = `/?boss=${bossId}&bossName=${encodeURIComponent(bossName)}&class=${encodeURIComponent(s.cls)}&spec=${encodeURIComponent(s.spec)}&difficulty=${difficulty}${region !== 'us' ? `&region=${region}` : ''}`;
+                {tierSpecs.map(s => {
+                  const talentUrl = `/?class=${encodeURIComponent(s.cls)}&spec=${encodeURIComponent(s.spec)}&difficulty=${difficulty}${region !== 'us' ? `&region=${region}` : ''}`;
                   return (
                     <Link
                       key={`${s.cls}:${s.spec}`}
-                      href={mainPageUrl}
+                      href={talentUrl}
                       className="flex items-center gap-3 bg-zinc-900/40 border border-zinc-800/50 rounded-xl px-3 py-3 hover:bg-zinc-900/80 hover:border-zinc-700/70 transition-all group"
                     >
-                      {/* Global rank */}
                       <span className="text-xs font-mono text-zinc-700 w-5 text-right flex-shrink-0">
                         {s.globalRank}
                       </span>
 
-                      {/* Spec icon */}
                       {s.iconUrl
                         ? <img src={s.iconUrl} alt="" className="w-8 h-8 rounded-lg flex-shrink-0 border border-zinc-700/60" />
                         : <div className="w-8 h-8 rounded-lg bg-zinc-800 flex-shrink-0 border border-zinc-700/60" />
                       }
 
-                      {/* Name + bar */}
                       <div className="flex-1 min-w-0">
                         <div className="flex items-baseline gap-1.5 mb-1.5">
                           <span className={`text-sm font-black ${s.color}`}>{s.spec}</span>
@@ -210,7 +230,6 @@ export default async function TierListContent({
                         </div>
                       </div>
 
-                      {/* DPS + delta */}
                       <div className="text-right shrink-0 w-20">
                         <p className={`text-sm font-black tabular-nums ${cfg.color}`}>{fmtDps(s.avgDps)}</p>
                         <p className={`text-[10px] font-bold tabular-nums ${s.delta === null ? 'text-amber-500/70' : 'text-zinc-600'}`}>
@@ -218,7 +237,6 @@ export default async function TierListContent({
                         </p>
                       </div>
 
-                      {/* Hover arrow */}
                       <span className="text-zinc-700 group-hover:text-zinc-400 transition-colors text-sm flex-shrink-0">→</span>
                     </Link>
                   );

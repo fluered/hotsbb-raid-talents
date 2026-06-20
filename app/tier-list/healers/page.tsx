@@ -3,6 +3,7 @@ import Link from 'next/link';
 import type { Metadata } from 'next';
 import { getWclToken, getRaidStructure, MIDNIGHT_RAIDS, HEALER_SPECS } from '../../../lib/wow';
 import TierListContent from '../TierListContent';
+import OverallTierListContent from '../OverallTierListContent';
 
 interface PageProps {
   searchParams: Promise<{ boss?: string; bossName?: string; difficulty?: string; region?: string }>;
@@ -31,11 +32,11 @@ export default async function HealerTierListPage({ searchParams }: PageProps) {
   const wclToken = await getWclToken();
   const zones = await getRaidStructure(wclToken);
 
-  const encounters: Array<{ id: number; name: string }> = zones
+  const encounters: Array<{ id: number; name: string; zoneName: string }> = zones
     .filter((z: any) => z.name in MIDNIGHT_RAIDS)
-    .flatMap((z: any) => (z.encounters ?? []).map((enc: any) => ({ id: enc.id, name: enc.name })));
+    .flatMap((z: any) => (z.encounters ?? []).map((enc: any) => ({ id: enc.id, name: enc.name, zoneName: z.name })));
 
-  const selectedBoss = encounters.find(e => e.id === activeBossId) ?? encounters[0] ?? null;
+  const selectedBoss = activeBossId ? (encounters.find(e => e.id === activeBossId) ?? null) : null;
 
   const url = (overrides: { boss?: number; bossName?: string; difficulty?: number; region?: string }) => {
     const b = overrides.boss ?? selectedBoss?.id;
@@ -70,6 +71,7 @@ export default async function HealerTierListPage({ searchParams }: PageProps) {
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0">
+            <Link href="/" className="hidden sm:block text-[11px] font-bold text-zinc-500 hover:text-zinc-300 transition-colors uppercase tracking-widest px-2">Raid Talents</Link>
             <div className="flex items-center gap-1 bg-zinc-900 rounded-lg p-0.5 border border-zinc-800/80">
               <Link href={switchUrl('/tier-list')} className="px-3 py-1 rounded-md text-xs font-bold text-zinc-500 hover:text-zinc-300 transition-colors">DPS</Link>
               <Link href={switchUrl('/tier-list/tanks')} className="px-3 py-1 rounded-md text-xs font-bold text-zinc-500 hover:text-zinc-300 transition-colors">Tanks</Link>
@@ -126,7 +128,19 @@ export default async function HealerTierListPage({ searchParams }: PageProps) {
             />
           </Suspense>
         ) : (
-          <p className="text-sm text-zinc-600 py-12 text-center">No bosses found.</p>
+          <Suspense fallback={<TierListSkeleton />}>
+            <OverallTierListContent
+              wclToken={wclToken}
+              bossIds={encounters.map(e => e.id)}
+              specs={HEALER_SPECS}
+              difficulty={activeDifficulty}
+              region={activeRegion}
+              role="healer"
+              metric="dps"
+              title="Midnight Season 1 Raid Healer Tier List"
+              footerNote="Avg DPS per spec across all Midnight bosses · excludes DPS and tanks · click any row to view talent builds"
+            />
+          </Suspense>
         )}
       </div>
     </div>

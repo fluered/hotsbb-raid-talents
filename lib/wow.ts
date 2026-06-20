@@ -58,7 +58,7 @@ export async function getWclRankings(token: string, bossId: number, className: s
     method: 'POST',
     headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ query }),
-    next: { revalidate: 1800 },
+    next: { revalidate: 604800 },
   });
   return (await response.json()).data?.worldData?.encounter?.characterRankings?.rankings || [];
 }
