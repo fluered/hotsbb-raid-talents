@@ -280,12 +280,9 @@ export default function BossView({
             </div>
             {active.consensus ? (
               <p className="text-sm text-zinc-500">
-                Talents taken by ≥50% of{' '}
-                {totalParses != null && totalParses > active.totalPlayers
-                  ? `top ${active.totalPlayers} of ${totalParses}`
-                  : active.totalPlayers}{' '}
-                {difficulty === 5 ? 'Mythic' : 'Heroic'} {spec} parses
+                Consensus from top {active.totalPlayers} {difficulty === 5 ? 'Mythic' : 'Heroic'} {spec} parses
                 {active.id !== null ? ` using ${active.name}` : ''}
+                {totalParses != null && totalParses > active.totalPlayers ? ` · ${totalParses} available` : ''}
               </p>
             ) : (
               <p className="text-sm text-zinc-500">

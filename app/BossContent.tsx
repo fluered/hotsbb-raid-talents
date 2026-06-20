@@ -74,8 +74,8 @@ export default async function BossContent({
       );
     }
 
-    const CONSENSUS_N = Math.min(rawRankings.length, 50);
-    const DISPLAY_N = CONSENSUS_N;
+    const CONSENSUS_N = Math.min(rawRankings.length, 100);
+    const DISPLAY_N = Math.min(rawRankings.length, 50);
 
     const [allTelemetryData, blizzardProfiles, blizzardEquipment, blizzardStats, blizzardMedia] = await Promise.all([
       Promise.all(
@@ -157,8 +157,8 @@ export default async function BossContent({
       }
     }
 
-    // Build display player records
-    const detailedRankings = rawRankings.slice(0, DISPLAY_N).map((player: any, idx: number) => {
+    // Build player records — all CONSENSUS_N for stats/DPS, only first DISPLAY_N have profile/media
+    const detailedRankings = rawRankings.slice(0, CONSENSUS_N).map((player: any, idx: number) => {
       const telemetryData = allTelemetryData[idx];
       const profileData = blizzardProfiles[idx];
       const fightTalents: Array<{ nodeID: number; rank: number }> = telemetryData?.event?.talentTree || [];
@@ -926,7 +926,7 @@ export default async function BossContent({
         totalPlayers: totalConsensusPlayers,
         consensus: { telemetry: consensusTelemetry, talentString: metaTalentString, frequencyPct: metaFrequencyPct },
         gear: { trinkets: topTrinkets, stats: avgStats, enchants: topEnchants, avgItemLevel, gems: topGems, consumables: topConsumables, embellishments: topEmbellishments, playerCount: totalGearPlayerCount, gearBySlot },
-        players: detailedRankings,
+        players: detailedRankings.slice(0, DISPLAY_N),
       });
       for (const htc of heroTreeConsensus) {
         heroVariants.push({
@@ -941,7 +941,7 @@ export default async function BossContent({
             frequencyPct: htc.frequencyPct ?? {},
           } : null,
           gear: htc.gear ?? null,
-          players: htc.topPlayers ?? [],
+          players: (htc.topPlayers ?? []).slice(0, DISPLAY_N),
           hasData: htc.hasData,
           avgDps: htc.avgDps ?? null,
           avgPct: htc.avgPct ?? null,
