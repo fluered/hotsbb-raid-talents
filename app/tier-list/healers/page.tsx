@@ -78,7 +78,7 @@ export default async function HealerTierListPage({ searchParams }: PageProps) {
               <span className="sm:hidden">Raid Talents</span>
             </Link>
             <span className="hidden sm:inline text-zinc-700">/</span>
-            <span className="hidden sm:inline text-xs font-black text-zinc-300 uppercase tracking-widest">Healer Tier List</span>
+            <Link href={`/tier-list/healers?difficulty=${activeDifficulty}${activeRegion !== 'us' ? `&region=${activeRegion}` : ''}`} className="hidden sm:inline text-xs font-black text-zinc-300 hover:text-zinc-100 uppercase tracking-widest transition-colors">Healer Tier List</Link>
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0">
