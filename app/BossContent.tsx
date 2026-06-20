@@ -512,6 +512,12 @@ export default async function BossContent({
         const treeTopPlayers = detailedRankings.filter((player: any) =>
           getActiveHeroTreeId(player.telemetry?.event?.talentTree || [], skeletonMap) === id
         );
+        const treeDps = treeTopPlayers.length > 0
+          ? Math.round(treeTopPlayers.reduce((s: number, p: any) => s + (p.amount ?? 0), 0) / treeTopPlayers.length)
+          : null;
+        const treeAvgPct = treeTopPlayers.length > 0
+          ? Math.round(treeTopPlayers.reduce((s: number, p: any) => s + (p.rankPercent ?? 0), 0) / treeTopPlayers.length)
+          : null;
 
         const treeTrinketSets = new Map<string, { players: Set<number>; itemId: number }>();
         for (const i of treeEquipIndices) {
@@ -693,6 +699,8 @@ export default async function BossContent({
           },
           frequencyPct: htFrequencyPct,
           topPlayers: treeTopPlayers,
+          avgDps: treeDps,
+          avgPct: treeAvgPct,
         });
       }
 
@@ -935,6 +943,8 @@ export default async function BossContent({
           gear: htc.gear ?? null,
           players: htc.topPlayers ?? [],
           hasData: htc.hasData,
+          avgDps: htc.avgDps ?? null,
+          avgPct: htc.avgPct ?? null,
         });
       }
 
