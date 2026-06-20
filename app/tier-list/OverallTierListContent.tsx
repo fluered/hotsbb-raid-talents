@@ -79,8 +79,8 @@ async function computeOverall(
     bossIds.map(bossId => async () => {
       try {
         const [usRankings, euRankings] = await Promise.all([
-          getWclRankings(wclToken, bossId, cls, spec, difficulty, 'us', metric),
-          getWclRankings(wclToken, bossId, cls, spec, difficulty, 'eu', metric),
+          getWclRankings(wclToken, bossId, cls, spec, difficulty, 'us', metric, true),
+          getWclRankings(wclToken, bossId, cls, spec, difficulty, 'eu', metric, true),
         ]);
         const combined = [...(usRankings as any[]), ...(euRankings as any[])]
           .sort((a, b) => (b.amount ?? 0) - (a.amount ?? 0));
@@ -157,7 +157,7 @@ export default async function OverallTierListContent({
   const [{ specs: rawResults, cachedAt }, specIcons] = await Promise.all([
     unstable_cache(
       async () => ({ specs: await computeOverall(wclToken, specs, bossIds, difficulty, metric), cachedAt: new Date().toISOString() }),
-      [`wcl-overall-v4-${role}-${difficulty}-combined${metric ? `-${metric}` : ''}`],
+      [`wcl-overall-v5-${role}-${difficulty}-combined${metric ? `-${metric}` : ''}`],
       { revalidate: 604800 }
     )().then(r => r),
     (async () => {

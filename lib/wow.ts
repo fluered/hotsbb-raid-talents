@@ -41,7 +41,7 @@ export async function getRaidStructure(token: string) {
   return (await response.json()).data?.worldData?.zones || [];
 }
 
-export async function getWclRankings(token: string, bossId: number, className: string, specName: string, difficulty: number, region = 'us', metric?: string) {
+export async function getWclRankings(token: string, bossId: number, className: string, specName: string, difficulty: number, region = 'us', metric?: string, noCache = false) {
   const wclClassName = className.replace(/\s+/g, '');
   const wclSpecName = specName.replace(/\s+/g, '');
   const metricArg = metric ? `, metric: ${metric}` : '';
@@ -58,7 +58,7 @@ export async function getWclRankings(token: string, bossId: number, className: s
     method: 'POST',
     headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ query }),
-    next: { revalidate: 604800 },
+    ...(noCache ? { cache: 'no-store' } : { next: { revalidate: 604800 } }),
   });
   return (await response.json()).data?.worldData?.encounter?.characterRankings?.rankings || [];
 }
