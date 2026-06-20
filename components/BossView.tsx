@@ -35,6 +35,7 @@ export interface HeroVariant {
   players: any[];
   hasData?: boolean;
   avgDps?: number | null;
+  topDps?: number | null;
   avgPct?: number | null;
 }
 
@@ -232,14 +233,14 @@ export default function BossView({
 
       {/* ── Hero path performance comparison ── */}
       {(() => {
-        const trees = variants.filter(v => v.id !== null && v.avgPct != null);
+        const trees = variants.filter(v => v.id !== null && v.topDps != null);
         if (trees.length < 2) return null;
-        const maxPct = Math.max(...trees.map(v => v.avgPct!));
+        const maxTop = Math.max(...trees.map(v => v.topDps!));
         return (
           <div className="bg-zinc-900/40 border border-zinc-800/50 rounded-2xl px-5 py-4 space-y-3">
-            <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Avg Parse % by Hero Path</p>
-            {[...trees].sort((a, b) => b.avgPct! - a.avgPct!).map(v => {
-              const barPct = Math.round(v.avgPct! / maxPct * 100);
+            <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">DPS by Hero Path</p>
+            {[...trees].sort((a, b) => b.topDps! - a.topDps!).map(v => {
+              const barPct = Math.round(v.topDps! / maxTop * 100);
               const isActive = variants.indexOf(v) === safeIdx;
               return (
                 <button
@@ -250,9 +251,10 @@ export default function BossView({
                   <div className="flex items-center gap-3 mb-1.5">
                     {v.imageUrl && <img src={v.imageUrl} alt="" className="w-5 h-5 rounded-full object-cover flex-shrink-0" />}
                     <span className={`text-sm font-bold ${isActive ? colors.color : 'text-zinc-300 group-hover:text-white transition-colors'}`}>{v.name}</span>
-                    <span className="ml-auto text-sm font-black tabular-nums" style={{ color: accentHex }}>{v.avgPct}th</span>
+                    <span className="ml-auto text-sm font-black tabular-nums text-emerald-400">{Math.round(v.topDps!).toLocaleString()}</span>
+                    <span className="text-[10px] text-zinc-600 w-4">top</span>
                     {v.avgDps != null && (
-                      <span className="text-xs text-zinc-500 tabular-nums w-20 text-right">{Math.round(v.avgDps!).toLocaleString()} dps</span>
+                      <span className="text-xs text-zinc-500 tabular-nums w-20 text-right">{Math.round(v.avgDps!).toLocaleString()} avg</span>
                     )}
                   </div>
                   <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden">
