@@ -67,6 +67,8 @@ async function pLimit<T>(tasks: Array<() => Promise<T>>, concurrency: number): P
   return results;
 }
 
+const FLOOR_SCORE = 0.75;
+
 async function computeOverall(
   wclToken: string,
   specs: Array<{ class: string; spec: string }>,
@@ -75,6 +77,7 @@ async function computeOverall(
   region: string,
   metric?: string
 ) {
+  // Fetch all spec × boss combinations
   const tasks = specs.flatMap(({ class: cls, spec }) =>
     bossIds.map(bossId => async () => {
       try {
@@ -82,26 +85,50 @@ async function computeOverall(
         const top = (rankings as any[]).slice(0, 50);
         if (top.length >= 5) {
           const avg = top.reduce((s: number, r: any) => s + (r.amount ?? 0), 0) / top.length;
-          if (avg > 0) return { cls, spec, avg };
+          if (avg > 0) return { cls, spec, bossId, avgDps: avg };
         }
       } catch {}
-      return { cls, spec, avg: 0 };
+      return { cls, spec, bossId, avgDps: 0 };
     })
   );
 
   const taskResults = await pLimit(tasks, 20);
 
-  const specMap = new Map<string, number[]>();
-  for (const { cls, spec, avg } of taskResults) {
-    const key = `${cls}:${spec}`;
-    if (!specMap.has(key)) specMap.set(key, []);
-    if (avg > 0) specMap.get(key)!.push(avg);
+  // Group by boss: bossId → specKey → avgDps
+  const bossDps = new Map<number, Map<string, number>>();
+  for (const bossId of bossIds) bossDps.set(bossId, new Map());
+  for (const { cls, spec, bossId, avgDps } of taskResults) {
+    if (avgDps > 0) bossDps.get(bossId)!.set(`${cls}:${spec}`, avgDps);
   }
 
+  // For each spec: score = avg of (dps/peak) per boss, using FLOOR_SCORE where no data
   return specs.map(({ class: cls, spec }) => {
-    const avgs = specMap.get(`${cls}:${spec}`) ?? [];
-    const avgDps = avgs.length > 0 ? Math.round(avgs.reduce((s, v) => s + v, 0) / avgs.length) : 0;
-    return { cls, spec, avgDps, bossCount: avgs.length };
+    const specKey = `${cls}:${spec}`;
+    let scoreSum = 0;
+    let bossesWithAnyData = 0;
+    let bossCount = 0;
+    const dpsValues: number[] = [];
+
+    for (const [, specMap] of bossDps) {
+      const peakDps = Math.max(...Array.from(specMap.values()), 0);
+      if (peakDps === 0) continue; // no data for any spec on this boss yet
+      bossesWithAnyData++;
+      const dps = specMap.get(specKey);
+      if (dps) {
+        scoreSum += dps / peakDps;
+        dpsValues.push(dps);
+        bossCount++;
+      } else {
+        scoreSum += FLOOR_SCORE;
+      }
+    }
+
+    const avgScore = bossesWithAnyData > 0 ? scoreSum / bossesWithAnyData : 0;
+    const avgDps = dpsValues.length > 0
+      ? Math.round(dpsValues.reduce((s, v) => s + v, 0) / dpsValues.length)
+      : 0;
+
+    return { cls, spec, avgScore, avgDps, bossCount };
   });
 }
 
@@ -155,15 +182,14 @@ export default async function OverallTierListContent({
     })(),
   ]);
 
-  const minBossCount = Math.ceil(bossIds.length / 2);
   const specData = rawResults
-    .map(({ cls, spec, avgDps, bossCount }) => {
-      if (avgDps === 0 || bossCount < minBossCount) return null;
+    .map(({ cls, spec, avgScore, avgDps, bossCount }) => {
+      if (avgScore === 0) return null;
       const classObj = POPULAR_SPECS.find(c => c.class === cls)!;
-      return { cls, spec, avgDps, bossCount, color: classObj.color, hex: classHex(classObj.color) };
+      return { cls, spec, avgScore, avgDps, bossCount, color: classObj.color, hex: classHex(classObj.color) };
     })
     .filter((r): r is NonNullable<typeof r> => r !== null)
-    .sort((a, b) => b.avgDps - a.avgDps);
+    .sort((a, b) => b.avgScore - a.avgScore);
 
   if (specData.length === 0) {
     return (
@@ -173,18 +199,18 @@ export default async function OverallTierListContent({
     );
   }
 
-  const maxDps = specData[0].avgDps;
-  const dpsValues = specData.map(s => s.avgDps);
+  const maxScore = specData[0].avgScore;
+  const scoreValues = specData.map(s => s.avgScore * 100);
   const tierAssignments = thresholds
-    ? fixedTierAssignments(dpsValues, thresholds)
-    : computeTierAssignments(dpsValues);
+    ? fixedTierAssignments(scoreValues, thresholds)
+    : computeTierAssignments(scoreValues);
   const tiered = specData.map((s, globalRank) => ({
     ...s,
     globalRank: globalRank + 1,
     iconUrl: specIcons[`${s.cls}:${s.spec}`] ?? '',
-    barPct: Math.round((s.avgDps / maxDps) * 100),
+    barPct: Math.round((s.avgScore / maxScore) * 100),
     tier: tierAssignments[globalRank],
-    delta: globalRank === 0 ? null : -((1 - s.avgDps / maxDps) * 100),
+    delta: globalRank === 0 ? null : -((1 - s.avgScore / maxScore) * 100),
   }));
 
   const diffLabel = difficulty === 5 ? 'Mythic' : 'Heroic';
