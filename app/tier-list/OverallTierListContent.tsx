@@ -54,6 +54,19 @@ const TIER_CONFIG = {
   C: { color: 'text-zinc-500', bg: 'bg-zinc-800/40', border: 'border-zinc-700/40', hex: '#52525b' },
 } as const;
 
+async function pLimit<T>(tasks: Array<() => Promise<T>>, concurrency: number): Promise<T[]> {
+  const results = new Array<T>(tasks.length);
+  let i = 0;
+  async function worker() {
+    while (i < tasks.length) {
+      const idx = i++;
+      results[idx] = await tasks[idx]();
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, tasks.length) }, worker));
+  return results;
+}
+
 async function computeOverall(
   wclToken: string,
   specs: Array<{ class: string; spec: string }>,
@@ -62,28 +75,34 @@ async function computeOverall(
   region: string,
   metric?: string
 ) {
-  const results = await Promise.all(
-    specs.map(async ({ class: cls, spec }) => {
-      const bossAvgs: number[] = [];
-      await Promise.all(
-        bossIds.map(async bossId => {
-          try {
-            const rankings = await getWclRankings(wclToken, bossId, cls, spec, difficulty, region, metric);
-            const top = (rankings as any[]).slice(0, 50);
-            if (top.length >= 5) {
-              const avg = top.reduce((s: number, r: any) => s + (r.amount ?? 0), 0) / top.length;
-              if (avg > 0) bossAvgs.push(avg);
-            }
-          } catch {}
-        })
-      );
-      const avgDps = bossAvgs.length > 0
-        ? Math.round(bossAvgs.reduce((s, v) => s + v, 0) / bossAvgs.length)
-        : 0;
-      return { cls, spec, avgDps, bossCount: bossAvgs.length };
+  const tasks = specs.flatMap(({ class: cls, spec }) =>
+    bossIds.map(bossId => async () => {
+      try {
+        const rankings = await getWclRankings(wclToken, bossId, cls, spec, difficulty, region, metric);
+        const top = (rankings as any[]).slice(0, 50);
+        if (top.length >= 5) {
+          const avg = top.reduce((s: number, r: any) => s + (r.amount ?? 0), 0) / top.length;
+          if (avg > 0) return { cls, spec, avg };
+        }
+      } catch {}
+      return { cls, spec, avg: 0 };
     })
   );
-  return results;
+
+  const taskResults = await pLimit(tasks, 20);
+
+  const specMap = new Map<string, number[]>();
+  for (const { cls, spec, avg } of taskResults) {
+    const key = `${cls}:${spec}`;
+    if (!specMap.has(key)) specMap.set(key, []);
+    if (avg > 0) specMap.get(key)!.push(avg);
+  }
+
+  return specs.map(({ class: cls, spec }) => {
+    const avgs = specMap.get(`${cls}:${spec}`) ?? [];
+    const avgDps = avgs.length > 0 ? Math.round(avgs.reduce((s, v) => s + v, 0) / avgs.length) : 0;
+    return { cls, spec, avgDps, bossCount: avgs.length };
+  });
 }
 
 export default async function OverallTierListContent({
