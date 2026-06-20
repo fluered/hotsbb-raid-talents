@@ -230,16 +230,16 @@ export default function BossView({
         </div>
       )}
 
-      {/* ── Hero tree DPS comparison ── */}
+      {/* ── Hero path performance comparison ── */}
       {(() => {
-        const trees = variants.filter(v => v.id !== null && v.avgDps != null);
+        const trees = variants.filter(v => v.id !== null && v.avgPct != null);
         if (trees.length < 2) return null;
-        const maxDps = Math.max(...trees.map(v => v.avgDps!));
+        const maxPct = Math.max(...trees.map(v => v.avgPct!));
         return (
           <div className="bg-zinc-900/40 border border-zinc-800/50 rounded-2xl px-5 py-4 space-y-3">
-            <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Avg DPS by Hero Path</p>
-            {[...trees].sort((a, b) => b.avgDps! - a.avgDps!).map(v => {
-              const pct = Math.round(v.avgDps! / maxDps * 100);
+            <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Avg Parse % by Hero Path</p>
+            {[...trees].sort((a, b) => b.avgPct! - a.avgPct!).map(v => {
+              const barPct = Math.round(v.avgPct! / maxPct * 100);
               const isActive = variants.indexOf(v) === safeIdx;
               return (
                 <button
@@ -250,15 +250,15 @@ export default function BossView({
                   <div className="flex items-center gap-3 mb-1.5">
                     {v.imageUrl && <img src={v.imageUrl} alt="" className="w-5 h-5 rounded-full object-cover flex-shrink-0" />}
                     <span className={`text-sm font-bold ${isActive ? colors.color : 'text-zinc-300 group-hover:text-white transition-colors'}`}>{v.name}</span>
-                    <span className="ml-auto text-sm font-black tabular-nums text-emerald-400">{Math.round(v.avgDps!).toLocaleString()}</span>
-                    {v.avgPct != null && (
-                      <span className="text-xs text-zinc-500 tabular-nums w-14 text-right">{v.avgPct}th avg</span>
+                    <span className="ml-auto text-sm font-black tabular-nums" style={{ color: accentHex }}>{v.avgPct}th</span>
+                    {v.avgDps != null && (
+                      <span className="text-xs text-zinc-500 tabular-nums w-20 text-right">{Math.round(v.avgDps!).toLocaleString()} dps</span>
                     )}
                   </div>
                   <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden">
                     <div
                       className="h-full rounded-full transition-all"
-                      style={{ width: `${pct}%`, backgroundColor: pct === 100 ? accentHex : '#3f3f46' }}
+                      style={{ width: `${barPct}%`, backgroundColor: barPct === 100 ? accentHex : '#3f3f46' }}
                     />
                   </div>
                 </button>
