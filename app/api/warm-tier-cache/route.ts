@@ -1,4 +1,5 @@
 import { NextRequest } from 'next/server';
+import { revalidatePath } from 'next/cache';
 
 const PAGES = [
   '/tier-list',
@@ -21,12 +22,17 @@ export async function GET(request: NextRequest) {
     return new Response('Unauthorized', { status: 401 });
   }
 
+  // Bust the page cache so next render refetches fresh overall tier list data
+  revalidatePath('/tier-list');
+  revalidatePath('/tier-list/tanks');
+  revalidatePath('/tier-list/healers');
+
   const base = process.env.VERCEL_PROJECT_PRODUCTION_URL
     ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
     : 'http://localhost:3000';
 
   const results = await Promise.allSettled(
-    PAGES.map(path => fetch(`${base}${path}`, { next: { revalidate: 0 } }))
+    PAGES.map(path => fetch(`${base}${path}`, { cache: 'no-store' }))
   );
 
   const counts = results.reduce(
