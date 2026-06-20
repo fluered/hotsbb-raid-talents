@@ -124,8 +124,9 @@ async function computeOverall(
     const avgDps = dpsValues.length > 0
       ? Math.round(dpsValues.reduce((s, v) => s + v, 0) / dpsValues.length)
       : 0;
+    const peakDps = dpsValues.length > 0 ? Math.round(Math.max(...dpsValues)) : 0;
 
-    return { cls, spec, score, avgDps, bossCount: dpsValues.length };
+    return { cls, spec, score, avgDps, peakDps, bossCount: dpsValues.length };
   });
 }
 
@@ -157,7 +158,7 @@ export default async function OverallTierListContent({
   const [{ specs: rawResults, cachedAt }, specIcons] = await Promise.all([
     unstable_cache(
       async () => ({ specs: await computeOverall(wclToken, specs, bossIds, difficulty, metric), cachedAt: new Date().toISOString() }),
-      [`wcl-overall-v5-${role}-${difficulty}-combined${metric ? `-${metric}` : ''}`],
+      [`wcl-overall-v6-${role}-${difficulty}-combined${metric ? `-${metric}` : ''}`],
       { revalidate: 604800 }
     )().then(r => r),
     (async () => {
@@ -180,10 +181,10 @@ export default async function OverallTierListContent({
   ]);
 
   const specData = rawResults
-    .map(({ cls, spec, score, avgDps, bossCount }) => {
+    .map(({ cls, spec, score, avgDps, peakDps, bossCount }) => {
       if (score === 0) return null;
       const classObj = POPULAR_SPECS.find(c => c.class === cls)!;
-      return { cls, spec, score, avgDps, bossCount, color: classObj.color, hex: classHex(classObj.color) };
+      return { cls, spec, score, avgDps, peakDps, bossCount, color: classObj.color, hex: classHex(classObj.color) };
     })
     .filter((r): r is NonNullable<typeof r> => r !== null)
     .sort((a, b) => b.score - a.score);
@@ -286,12 +287,9 @@ export default async function OverallTierListContent({
                         </div>
                       </div>
 
-                      <div className="text-right shrink-0 w-24">
-                        <p className={`text-sm font-black tabular-nums ${cfg.color}`}>{fmtDps(s.avgDps)}</p>
-                        <p className={`text-[10px] font-bold tabular-nums ${s.delta === null ? 'text-amber-500/70' : 'text-zinc-600'}`}>
-                          {s.delta === null ? 'peak' : `${Math.abs(s.delta).toFixed(1)}% behind`}
-                        </p>
-                        <p className="text-[9px] text-zinc-700 tabular-nums">{s.bossCount}/{bossIds.length} bosses</p>
+                      <div className="text-right shrink-0 w-28">
+                        <p className={`text-sm font-black tabular-nums ${cfg.color}`}>{fmtDps(s.peakDps)} <span className="text-[10px] font-semibold text-zinc-600">peak</span></p>
+                        <p className="text-[11px] font-bold tabular-nums text-zinc-500">{fmtDps(s.avgDps)} <span className="text-[10px] font-semibold text-zinc-600">avg</span></p>
                       </div>
 
                       <span className="text-zinc-700 group-hover:text-zinc-400 transition-colors text-sm flex-shrink-0">→</span>
