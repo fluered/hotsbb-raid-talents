@@ -126,7 +126,7 @@ export default function Image() {
           display: 'flex',
         }}
       >
-        hotsbb.gg
+        hotsbbtalents.io
       </div>
     </div>,
     { ...size }
