@@ -555,6 +555,11 @@ export default function BossView({
                 layout={layout}
                 colors={colors}
                 idx={idx}
+                wowClass={wowClass}
+                specName={spec}
+                heroTrees={variants
+                  .filter(v => v.id !== null)
+                  .map(v => ({ id: v.id!, name: v.name, imageUrl: v.imageUrl }))}
               />
             ))}
           </div>

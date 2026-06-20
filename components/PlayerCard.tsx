@@ -8,12 +8,22 @@ export default function PlayerCard({
   layout,
   colors,
   idx,
+  wowClass,
+  specName,
+  heroTrees,
 }: {
   player: any;
   layout: any[];
   colors: { color: string; border: string; activeBg: string };
   idx: number;
+  wowClass?: string;
+  specName?: string;
+  heroTrees?: Array<{ id: number; name: string; imageUrl?: string }>;
 }) {
+  const activeNodeIds = new Set<number>((player.telemetry?.event?.talentTree ?? []).map((t: any) => t.nodeID));
+  const activeHeroTreeId = layout.find((n: any) => n.section === 'hero' && n.heroTreeId != null && activeNodeIds.has(n.nodeID))?.heroTreeId ?? null;
+  const heroTree = activeHeroTreeId != null ? heroTrees?.find(ht => ht.id === activeHeroTreeId) : undefined;
+
   return (
     <div className="bg-zinc-900/40 border border-zinc-800/50 rounded-2xl overflow-hidden">
       <div className="px-5 py-3 border-b border-zinc-800/50 flex items-center justify-between gap-4">
@@ -76,6 +86,10 @@ export default function PlayerCard({
           telemetry={player.telemetry}
           layout={layout}
           colors={colors}
+          wowClass={wowClass}
+          specName={specName}
+          heroTreeImageUrl={heroTree?.imageUrl}
+          heroTreeName={heroTree?.name}
         />
       </div>
     </div>

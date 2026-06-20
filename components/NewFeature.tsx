@@ -227,7 +227,7 @@ export default function NewFeature({
                 style={{ gridRow: 1, gridColumn: `1 / span ${classMaxCol}` }}
                 className="flex items-center justify-center"
               >
-                <span className="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">{wowClass}</span>
+                <span className={`text-[11px] font-bold tracking-widest uppercase ${colors.color}`}>{wowClass}</span>
               </div>
             )}
             {heroMaxCol > 0 && (
@@ -235,8 +235,8 @@ export default function NewFeature({
                 style={{ gridRow: 1, gridColumn: `${heroOffset + 1} / span ${heroMaxCol}` }}
                 className="flex items-center justify-center"
               >
-                <span className="text-[11px] font-bold tracking-widest text-zinc-400 uppercase">
-                  {heroTreeName ?? (heroTrees && heroTrees.length > 0 ? 'Hero Talents' : undefined)}
+                <span className={`text-[11px] font-bold tracking-widest uppercase ${colors.color}`}>
+                  {heroTreeName ?? (heroTrees && heroTrees.length === 1 ? heroTrees[0].name : heroTrees && heroTrees.length > 1 ? 'Hero Talents' : undefined)}
                 </span>
               </div>
             )}
@@ -245,7 +245,7 @@ export default function NewFeature({
                 style={{ gridRow: 1, gridColumn: `${specOffset + 1} / span ${specMaxCol}` }}
                 className="flex items-center justify-center"
               >
-                <span className="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">{specName}</span>
+                <span className={`text-[11px] font-bold tracking-widest uppercase ${colors.color}`}>{specName}</span>
               </div>
             )}
           </>
