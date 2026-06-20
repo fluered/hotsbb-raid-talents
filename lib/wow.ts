@@ -178,29 +178,6 @@ export async function getTalentTreeId(specName: string, className: string, acces
   return { treeId: parseInt(hrefMatch[1]), specId: parseInt(hrefMatch[2]) };
 }
 
-export async function getIcyVeinsTalentStrings(specName: string, className: string, role: string): Promise<Array<{ title: string; code: string }>> {
-  const specSlug = specName.toLowerCase().replace(/\s+/g, '-');
-  const classSlug = className.toLowerCase().replace(/\s+/g, '-');
-  try {
-    const response = await fetch(
-      `https://www.icy-veins.com/wow/${specSlug}-${classSlug}-pve-${role}-spec-builds-talents`,
-      { next: { revalidate: 86400 } }
-    );
-    if (!response.ok) return [];
-    const html = await response.text();
-    const titles: string[] = [];
-    const codes: string[] = [];
-    let m;
-    const titleRe = /<span class="export-string__title">([^<]+)<\/span>/g;
-    const codeRe = /<span class="export-string__code">([^<]+)<\/span>/g;
-    while ((m = titleRe.exec(html)) !== null) titles.push(m[1].trim());
-    while ((m = codeRe.exec(html)) !== null) codes.push(m[1].trim());
-    return codes.map((code, i) => ({ title: titles[i] || `Build ${i + 1}`, code }));
-  } catch {
-    return [];
-  }
-}
-
 // ─── Consensus Helpers ────────────────────────────────────────────────────────
 
 export function computeConsensus(
@@ -283,22 +260,6 @@ export const SPEC_IDS: Record<string, Record<string, number>> = {
   'Shaman':        { 'Elemental': 262, 'Enhancement': 263, 'Restoration': 264 },
   'Warlock':       { 'Affliction': 265, 'Demonology': 266, 'Destruction': 267 },
   'Warrior':       { 'Arms': 71, 'Fury': 72, 'Protection': 73 },
-};
-
-export const SPEC_ROLES: Record<string, Record<string, string>> = {
-  'Death Knight': { 'Blood': 'tank', 'Frost': 'dps', 'Unholy': 'dps' },
-  'Demon Hunter': { 'Havoc': 'dps', 'Vengeance': 'tank', 'Devourer': 'dps' },
-  'Druid': { 'Balance': 'dps', 'Feral': 'dps', 'Guardian': 'tank', 'Restoration': 'healer' },
-  'Evoker': { 'Augmentation': 'dps', 'Devastation': 'dps', 'Preservation': 'healer' },
-  'Hunter': { 'Beast Mastery': 'dps', 'Marksmanship': 'dps', 'Survival': 'dps' },
-  'Mage': { 'Arcane': 'dps', 'Fire': 'dps', 'Frost': 'dps' },
-  'Monk': { 'Brewmaster': 'tank', 'Mistweaver': 'healer', 'Windwalker': 'dps' },
-  'Paladin': { 'Holy': 'healer', 'Protection': 'tank', 'Retribution': 'dps' },
-  'Priest': { 'Discipline': 'healer', 'Holy': 'healer', 'Shadow': 'dps' },
-  'Rogue': { 'Assassination': 'dps', 'Outlaw': 'dps', 'Subtlety': 'dps' },
-  'Shaman': { 'Elemental': 'dps', 'Enhancement': 'dps', 'Restoration': 'healer' },
-  'Warlock': { 'Affliction': 'dps', 'Demonology': 'dps', 'Destruction': 'dps' },
-  'Warrior': { 'Arms': 'dps', 'Fury': 'dps', 'Protection': 'tank' },
 };
 
 export const POPULAR_SPECS = [

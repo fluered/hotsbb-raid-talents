@@ -1,4 +1,5 @@
 import React from 'react';
+import { unstable_cache } from 'next/cache';
 import BossView, { type HeroVariant } from '../components/BossView';
 import {
   getWclToken, getBlizzardToken, getWclRankings, getHistoricalFightTelemetry,
@@ -40,7 +41,11 @@ export default async function BossContent({
 
     const [treeInfo, rawRankings] = await Promise.all([
       getTalentTreeId(spec, className, blizzardToken),
-      getWclRankings(wclToken, bossId, className, spec, difficulty, region),
+      unstable_cache(
+        async () => getWclRankings(wclToken, bossId, className, spec, difficulty, region),
+        [`wcl-rankings-${bossId}-${className}-${spec}-${difficulty}-${region}`],
+        { revalidate: 7200 }
+      )(),
     ]);
     if (!treeInfo) {
       return <div className="text-center py-12 text-zinc-600 text-sm">Talent tree not found for this spec.</div>;
@@ -75,7 +80,11 @@ export default async function BossContent({
     const [allTelemetryData, blizzardProfiles, blizzardEquipment, blizzardStats, blizzardMedia] = await Promise.all([
       Promise.all(
         rawRankings.slice(0, CONSENSUS_N).map((player: any) =>
-          getHistoricalFightTelemetry(wclToken, player.report?.code, player.report?.fightID, player.name)
+          unstable_cache(
+            async () => getHistoricalFightTelemetry(wclToken, player.report?.code, player.report?.fightID, player.name),
+            [`wcl-telemetry-${player.report?.code}-${player.report?.fightID}`],
+            { revalidate: 7200 }
+          )()
         )
       ),
       Promise.all(

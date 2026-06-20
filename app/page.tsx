@@ -1,13 +1,10 @@
 import React, { Suspense } from 'react';
 import Link from 'next/link';
-import { redirect } from 'next/navigation';
 import type { Metadata } from 'next';
-import CopyBuildButton from '../components/CopyBuildButton';
 import BossContent from './BossContent';
 import {
-  getWclToken, getBlizzardToken, getRaidStructure, getTalentTreeId,
-  getIcyVeinsTalentStrings,
-  POPULAR_SPECS, SPEC_IDS, SPEC_ROLES, MIDNIGHT_RAIDS, CLASS_IDS,
+  getWclToken, getBlizzardToken, getRaidStructure,
+  POPULAR_SPECS, SPEC_IDS, MIDNIGHT_RAIDS, CLASS_IDS,
 } from '../lib/wow';
 
 // ─── Metadata ─────────────────────────────────────────────────────────────────
@@ -94,25 +91,10 @@ export default async function Home(props: PageProps) {
     error = err.message;
   }
 
-  // Auto-navigate to first boss when spec is chosen but no boss selected yet
-  if (!error && activeClass && activeSpec && !activeBossId) {
-    const firstRaid = zones.find((z: any) => z.encounters?.length > 0 && z.name in MIDNIGHT_RAIDS);
-    if (firstRaid?.encounters?.[0]) {
-      const params = new URLSearchParams({
-        difficulty: String(activeDifficulty),
-        boss: String(firstRaid.encounters[0].id),
-        class: activeClass,
-        spec: activeSpec,
-      });
-      redirect(`?${params.toString()}`);
-    }
-  }
-
-  // Phase 2: spec icons, boss images, class icons, Icy Veins builds (all fast/cached)
+  // Phase 2: spec icons, boss images, class icons (all fast/cached)
   let specIconMap: Record<string, string> = {};
   let bossImageMap: Record<number, string> = {};
   let classIconMap: Record<string, string> = {};
-  let metaBuilds: Array<{ title: string; code: string }> = [];
   let bossTagMap: Record<number, string[]> = {};
 
   try {
@@ -193,12 +175,6 @@ export default async function Home(props: PageProps) {
         })).then(() => {})
       );
 
-      if (activeSpec && !activeBossId) {
-        const role = SPEC_ROLES[activeClass]?.[activeSpec] ?? 'dps';
-        fetches.push(
-          getIcyVeinsTalentStrings(activeSpec, activeClass, role).then(builds => { metaBuilds = builds; })
-        );
-      }
     }
 
     await Promise.all(fetches);
@@ -452,23 +428,6 @@ export default async function Home(props: PageProps) {
                         </div>
                       </div>
                     ))}
-                  </div>
-                )}
-
-                {/* Icy Veins builds — only shown when spec selected but no boss chosen */}
-                {activeSpec && !activeBossId && metaBuilds.length > 0 && (
-                  <div className="bg-zinc-900/30 border border-zinc-800/50 rounded-2xl p-5">
-                    <p className="text-[10px] text-zinc-500 uppercase tracking-widest font-bold mb-3">
-                      Recommended Builds · Icy Veins
-                    </p>
-                    <div className="divide-y divide-zinc-800/50">
-                      {metaBuilds.map((build, i) => (
-                        <div key={i} className="flex items-center justify-between py-2.5 first:pt-0 last:pb-0">
-                          <span className="text-sm text-zinc-300">{build.title}</span>
-                          <CopyBuildButton talentString={build.code} />
-                        </div>
-                      ))}
-                    </div>
                   </div>
                 )}
 
