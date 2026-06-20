@@ -287,9 +287,11 @@ export default async function OverallTierListContent({
                         </div>
                       </div>
 
-                      <div className="text-right shrink-0 w-28">
-                        <p className={`text-sm font-black tabular-nums ${cfg.color}`}>{fmtDps(s.peakDps)} <span className="text-[10px] font-semibold text-zinc-600">peak</span></p>
-                        <p className="text-[11px] font-bold tabular-nums text-zinc-500">{fmtDps(s.avgDps)} <span className="text-[10px] font-semibold text-zinc-600">avg</span></p>
+                      <div className="text-right shrink-0 w-24">
+                        <p className={`text-sm font-black tabular-nums ${cfg.color}`}>{fmtDps(s.avgDps)}</p>
+                        <p className={`text-[10px] font-bold tabular-nums ${s.delta === null ? 'text-amber-500/70' : 'text-zinc-600'}`}>
+                          {s.delta === null ? 'peak' : `${Math.abs(s.delta).toFixed(1)}% behind`}
+                        </p>
                       </div>
 
                       <span className="text-zinc-700 group-hover:text-zinc-400 transition-colors text-sm flex-shrink-0">→</span>
