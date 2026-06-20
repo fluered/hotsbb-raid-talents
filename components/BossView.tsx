@@ -273,6 +273,10 @@ export default function BossView({
                     .filter(v => v.pct > 0)
                     .sort((a, b) => b.pct - a.pct)
                 : undefined}
+              onHeroTreeClick={active.id === null ? (name) => {
+                const idx = variants.findIndex(v => v.name === name);
+                if (idx !== -1) setActiveIdx(idx);
+              } : undefined}
               wowClass={wowClass}
               specName={spec}
             />

@@ -80,6 +80,7 @@ export default function NewFeature({
   wowClass,
   specName,
   heroTrees,
+  onHeroTreeClick,
 }: {
   telemetry: any;
   layout: any[];
@@ -91,6 +92,7 @@ export default function NewFeature({
   wowClass?: string;
   specName?: string;
   heroTrees?: Array<{ name: string; imageUrl?: string; pct: number }>;
+  onHeroTreeClick?: (name: string) => void;
 }) {
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
   const activeNodes = telemetry?.event?.talentTree || [];
@@ -276,9 +278,14 @@ export default function NewFeature({
             ) : heroTrees && heroTrees.length > 0 ? (
               <div className="flex items-start gap-3">
                 {heroTrees.map(ht => (
-                  <div key={ht.name} className="flex flex-col items-center gap-0.5">
+                  <div
+                    key={ht.name}
+                    className={`flex flex-col items-center gap-0.5 ${onHeroTreeClick ? 'cursor-pointer group' : ''}`}
+                    style={onHeroTreeClick ? { pointerEvents: 'auto' } : undefined}
+                    onClick={onHeroTreeClick ? () => onHeroTreeClick(ht.name) : undefined}
+                  >
                     {ht.imageUrl
-                      ? <img src={ht.imageUrl} alt={ht.name} className="w-16 h-16 rounded-full object-cover ring-1 ring-zinc-600" />
+                      ? <img src={ht.imageUrl} alt={ht.name} className={`w-16 h-16 rounded-full object-cover ring-1 ring-zinc-600 ${onHeroTreeClick ? 'group-hover:ring-2 group-hover:ring-zinc-400 transition-all' : ''}`} />
                       : <div className="w-16 h-16 rounded-full bg-zinc-800 ring-1 ring-zinc-600" />
                     }
                     <span className="text-[10px] font-bold text-zinc-400">{ht.pct}%</span>
