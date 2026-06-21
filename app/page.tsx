@@ -35,7 +35,7 @@ export async function generateMetadata({ searchParams }: PageProps): Promise<Met
     title = `${cls} ${diffLabel} Raid Talent Builds | HotsBB`;
     description = `Best ${cls} talent builds for every ${diffLabel} raid boss in World of Warcraft. Consensus builds from top-parsing players.`;
   } else {
-    title = `World of Warcraft Raid Talents Finder: Meta Boss Builds For Every Class | HotsBB`;
+    title = `World of Warcraft Raid Talents Finder: Meta Midnight Boss Builds For Every Class | HotsBB`;
     description = `Find the best meta talent builds for every ${diffLabel} raid boss in World of Warcraft. Meta builds and gear from top-parsing players, per boss.`;
   }
 
