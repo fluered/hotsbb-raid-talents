@@ -35,8 +35,8 @@ export async function generateMetadata({ searchParams }: PageProps): Promise<Met
     title = `${cls} ${diffLabel} Raid Talent Builds | HotsBB`;
     description = `Best ${cls} talent builds for every ${diffLabel} raid boss in World of Warcraft. Consensus builds from top-parsing players.`;
   } else {
-    title = `Best Raid Talents Finder - Meta ${diffLabel} Boss Builds For Every Class | HotsBB`;
-    description = `Find the best talent builds for every ${diffLabel} raid boss in World of Warcraft. Consensus builds and meta gear from top-parsing players, per boss.`;
+    title = `World of Warcraft Raid Talents Finder: Meta Boss Builds For Every Class | HotsBB`;
+    description = `Find the best meta talent builds for every ${diffLabel} raid boss in World of Warcraft. Meta builds and gear from top-parsing players, per boss.`;
   }
 
   return {
@@ -413,7 +413,7 @@ export default async function Home(props: PageProps) {
                 )}
 
                 {activeSpec && !activeBossId && (
-                  <p className="text-xs text-zinc-600 text-center py-3">Select a boss above to view the consensus talent build</p>
+                  <p className="text-xs text-zinc-600 text-center py-3">Select a boss above to view the meta talent build</p>
                 )}
 
                 {/* Boss-specific content — streams in via Suspense */}

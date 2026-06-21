@@ -134,7 +134,7 @@ export default async function TierListPage({ searchParams }: PageProps) {
               wclToken={wclToken}
               specs={DPS_SPECS}
               thresholds={{ S: 95, A: 88, B: 78 }}
-              footerNote="Tiers by avg DPS relative to peak spec · excludes tanks and healers · Augmentation Evoker personal DPS will appear lower than actual raid contribution · click any row to view the consensus talent build"
+              footerNote="Tiers by avg DPS relative to peak spec · excludes tanks and healers · Augmentation Evoker personal DPS will appear lower than actual raid contribution · click any row to view the meta talent build"
             />
           </Suspense>
         ) : (
