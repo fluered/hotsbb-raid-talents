@@ -2,6 +2,7 @@ import React, { Suspense } from 'react';
 import Link from 'next/link';
 import type { Metadata } from 'next';
 import BossContent from './BossContent';
+import BossPicker from './BossPicker';
 import {
   getWclToken, getBlizzardToken, getRaidStructure,
   POPULAR_SPECS, SPEC_IDS, MIDNIGHT_RAIDS, CLASS_IDS,
@@ -393,66 +394,22 @@ export default async function Home(props: PageProps) {
 
                 {/* Boss grid */}
                 {activeSpec && (
-                  <div className="space-y-5">
-                    {activeRaids.map((raid: any, raidIdx: number) => (
-                      <div key={raid.id}>
-                        {/* Raid section header */}
-                        <div className="flex items-center gap-3 mb-3">
-                          <span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest whitespace-nowrap">
-                            {MIDNIGHT_RAIDS[raid.name] ?? raid.name}
-                          </span>
-
-                          <div className="flex-1 h-px bg-zinc-800/60" />
-                        </div>
-                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2">
-                          {raid.encounters.map((boss: any) => {
-                            const isSelected = activeBossId === boss.id;
-                            const thumbUrl = bossImageMap[boss.id];
-                            return (
-                              <Link
-                                key={boss.id}
-                                href={getFilterUrl({ boss: boss.id, bossName: boss.name })}
-                                className={`relative h-16 rounded-xl overflow-hidden flex items-end transition-all border ${
-                                  isSelected
-                                    ? 'border-amber-500/60 ring-1 ring-amber-500/20'
-                                    : 'border-zinc-800/60 hover:border-zinc-600'
-                                }`}
-                              >
-                                {/* Boss image — CSS background so 404s fail silently */}
-                                <div
-                                  className="absolute inset-0 bg-zinc-900"
-                                  style={thumbUrl ? { backgroundImage: `url(${thumbUrl})`, backgroundSize: 'contain', backgroundRepeat: 'no-repeat', backgroundPosition: 'right center' } : undefined}
-                                />
-                                {/* Gradient overlay */}
-                                <span className={`absolute inset-0 ${
-                                  isSelected
-                                    ? 'bg-gradient-to-t from-amber-950/90 via-black/40 to-transparent'
-                                    : 'bg-gradient-to-t from-black/85 via-black/30 to-transparent'
-                                }`} />
-                                {/* Boss name + fight tags */}
-                                <div className="relative px-2.5 py-2 flex flex-col gap-1 min-w-0">
-                                  <span className={`text-[11px] font-bold leading-tight truncate ${
-                                    isSelected ? 'text-amber-300' : 'text-zinc-200'
-                                  }`}>
-                                    {boss.name}
-                                  </span>
-                                  {(bossTagMap[boss.id]?.length ?? 0) > 0 && (
-                                    <div className="flex gap-1">
-                                      {bossTagMap[boss.id].map((tag: string) => (
-                                        <span key={tag} className="text-[8px] font-bold px-1.5 py-0.5 rounded bg-black/70 text-zinc-500 border border-zinc-800/50 leading-none whitespace-nowrap">
-                                          {tag}
-                                        </span>
-                                      ))}
-                                    </div>
-                                  )}
-                                </div>
-                              </Link>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
+                  <BossPicker
+                    raids={activeRaids.map((raid: any) => ({
+                      id: raid.id,
+                      displayName: MIDNIGHT_RAIDS[raid.name] ?? raid.name,
+                      bosses: raid.encounters.map((boss: any) => ({
+                        id: boss.id,
+                        name: boss.name,
+                        href: getFilterUrl({ boss: boss.id, bossName: boss.name }),
+                        imageUrl: bossImageMap[boss.id] ?? '',
+                        tags: bossTagMap[boss.id] ?? [],
+                      })),
+                    }))}
+                    activeBossId={activeBossId}
+                    activeBossName={activeBossName}
+                    activeBossImageUrl={activeBossId ? (bossImageMap[activeBossId] ?? null) : null}
+                  />
                 )}
 
                 {activeSpec && !activeBossId && (
