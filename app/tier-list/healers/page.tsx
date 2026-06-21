@@ -82,12 +82,6 @@ export default async function HealerTierListPage({ searchParams }: PageProps) {
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0">
-            <Link href="/" className="hidden sm:block text-[11px] font-bold text-zinc-500 hover:text-zinc-300 transition-colors uppercase tracking-widest px-2">Raid Talents</Link>
-            <div className="flex items-center gap-1 bg-zinc-900 rounded-lg p-0.5 border border-zinc-800/80">
-              <Link href={switchUrl('/tier-list')} className="px-3 py-1 rounded-md text-xs font-bold text-zinc-500 hover:text-zinc-300 transition-colors">DPS</Link>
-              <Link href={switchUrl('/tier-list/tanks')} className="px-3 py-1 rounded-md text-xs font-bold text-zinc-500 hover:text-zinc-300 transition-colors">Tanks</Link>
-              <span className="px-3 py-1 rounded-md text-xs font-bold bg-zinc-700/50 text-zinc-200">Healers</span>
-            </div>
             <div className="flex items-center gap-1 bg-zinc-900 rounded-lg p-0.5 border border-zinc-800/80">
               <Link href={url({ difficulty: 4 })}
                 className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${activeDifficulty === 4 ? 'bg-amber-500/15 text-amber-400 border border-amber-500/30' : 'text-zinc-500 hover:text-zinc-300'}`}>
@@ -103,6 +97,13 @@ export default async function HealerTierListPage({ searchParams }: PageProps) {
       </header>
 
       <div className="max-w-screen-md mx-auto px-4 md:px-6 py-6 space-y-6">
+        {/* Role tabs */}
+        <div className="flex items-center gap-1 bg-zinc-900/60 rounded-xl p-1 border border-zinc-800/60 self-start w-fit">
+          <Link href={switchUrl('/tier-list')} className="px-5 py-1.5 rounded-lg text-sm font-bold text-zinc-500 hover:text-zinc-300 transition-colors">DPS</Link>
+          <Link href={switchUrl('/tier-list/tanks')} className="px-5 py-1.5 rounded-lg text-sm font-bold text-zinc-500 hover:text-zinc-300 transition-colors">Tanks</Link>
+          <span className="px-5 py-1.5 rounded-lg text-sm font-bold bg-zinc-700/60 text-zinc-100">Healers</span>
+        </div>
+
         <div className="space-y-2">
           <p className="text-[10px] font-black text-zinc-600 uppercase tracking-widest">Per-boss breakdown</p>
           <div className="flex overflow-x-auto scrollbar-none gap-1.5 pb-1 -mx-4 px-4 md:mx-0 md:px-0 md:flex-wrap md:pb-0">
