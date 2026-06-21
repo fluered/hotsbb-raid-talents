@@ -67,9 +67,8 @@ export default async function TierListPage({ searchParams }: PageProps) {
       <header className="border-b border-zinc-800/70 bg-black/70 backdrop-blur-md sticky top-0 z-50">
         <div className="px-4 md:px-5 h-12 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2 min-w-0">
-            <Link href="/" className="font-black text-amber-400 tracking-widest uppercase text-xs hover:text-amber-300 transition-colors whitespace-nowrap">
-              <span className="hidden sm:inline">HotsBB Raid Talents</span>
-              <span className="sm:hidden">Raid Talents</span>
+            <Link href="/" className="hidden sm:block font-black text-amber-400 tracking-widest uppercase text-xs hover:text-amber-300 transition-colors whitespace-nowrap">
+              HotsBB Raid Talents
             </Link>
             <span className="hidden sm:inline text-zinc-700">/</span>
             <Link href={`/tier-list?difficulty=${activeDifficulty}${activeRegion !== 'us' ? `&region=${activeRegion}` : ''}`} className="hidden sm:inline text-xs font-black text-zinc-300 hover:text-zinc-100 uppercase tracking-widest transition-colors">DPS Tier List</Link>
