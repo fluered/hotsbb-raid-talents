@@ -338,7 +338,7 @@ export default function NewFeature({
               <div
                 className={`w-10 h-10 rounded-full border-2 overflow-hidden transition-all relative ${
                   node.spellId ? 'cursor-pointer' : 'cursor-default'
-                } ${isActive ? colors.border : 'border-zinc-700/20'}`}
+                } ${topPlayerTakes ? 'border-amber-400 shadow-[0_0_6px_1px_rgba(251,191,36,0.5)]' : isActive ? colors.border : 'border-zinc-700/20'}`}
                 onClick={() => node.spellId && window.open(`https://www.wowhead.com/spell=${node.spellId}`, '_blank', 'noopener,noreferrer')}
               >
                 {node.iconUrl ? (
@@ -356,14 +356,18 @@ export default function NewFeature({
                     <span className={`text-[8px] font-bold tabular-nums leading-none ${isActive ? 'text-white' : 'text-zinc-400'}`}>{freq}%</span>
                   </div>
                 )}
-                {isDivergent && (
-                  <div className={`absolute top-0 right-0 w-2.5 h-2.5 rounded-full border border-zinc-900 ${topPlayerTakes ? 'bg-amber-400' : 'bg-zinc-600'}`} />
-                )}
               </div>
             </div>
           );
         })}
       </div>
+
+      {divergentNodeIds && renderNodes.some(n => divergentNodeIds.has(n.nodeID) && topPlayerNodeIds?.has(n.nodeID)) && (
+        <div className="flex items-center gap-1.5 mt-3 text-[9px] text-zinc-500">
+          <span className="w-3.5 h-3.5 rounded-full border-2 border-amber-400 flex-shrink-0" />
+          <span>Picked by top players but not part of the meta consensus build</span>
+        </div>
+      )}
 
       {tooltip && <Tooltip tip={tooltip} colors={colors} />}
     </>

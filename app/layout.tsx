@@ -15,8 +15,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "HotsBB Raid Talents · WoW Raid Talent Finder",
-  description: "Consensus talent builds and meta gear from top Mythic raid parses.",
+  title: "HotsBB Talents · WoW Raid & Dungeon Talent Finder",
+  description: "Meta talent builds from top Mythic raid and M+ parses — per boss, per dungeon, per spec.",
   verification: {
     google: "URWP0OVWdT9loSazBdy4OHmsJ1OULhoznEyHDqNo8CQ",
   },

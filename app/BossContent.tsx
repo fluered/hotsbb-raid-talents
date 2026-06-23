@@ -565,6 +565,13 @@ export default async function BossContent({
         const treeTopDps = treeTopPlayers.length > 0
           ? Math.round(Math.max(...treeTopPlayers.map((p: any) => p.amount ?? 0)))
           : null;
+        const hasScore = treeTopPlayers.some((p: any) => p.score != null);
+        const treeAvgScore = hasScore && treeTopPlayers.length > 0
+          ? treeTopPlayers.reduce((s: number, p: any) => s + (p.score ?? 0), 0) / treeTopPlayers.length
+          : null;
+        const treeTopScore = hasScore && treeTopPlayers.length > 0
+          ? Math.max(...treeTopPlayers.map((p: any) => p.score ?? 0))
+          : null;
         const treeAvgPct = treeTopPlayers.length > 0
           ? Math.round(treeTopPlayers.reduce((s: number, p: any) => s + (p.rankPercent ?? 0), 0) / treeTopPlayers.length)
           : null;
@@ -749,8 +756,10 @@ export default async function BossContent({
           },
           frequencyPct: htFrequencyPct,
           topPlayers: treeTopPlayers,
-          avgDps: treeDps,
-          topDps: treeTopDps,
+          avgDps: treeDps !== null && treeDps > 0 ? treeDps : null,
+          topDps: treeTopDps !== null && treeTopDps > 0 ? treeTopDps : null,
+          avgScore: treeAvgScore,
+          topScore: treeTopScore,
           avgPct: treeAvgPct,
         });
       }
@@ -996,6 +1005,8 @@ export default async function BossContent({
           hasData: htc.hasData,
           avgDps: htc.avgDps ?? null,
           topDps: htc.topDps ?? null,
+          avgScore: htc.avgScore ?? null,
+          topScore: htc.topScore ?? null,
           avgPct: htc.avgPct ?? null,
         });
       }

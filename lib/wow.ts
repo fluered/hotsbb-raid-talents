@@ -41,6 +41,17 @@ export async function getRaidStructure(token: string) {
   return (await response.json()).data?.worldData?.zones || [];
 }
 
+export async function getMplusEncounters(token: string, zoneId: number) {
+  const query = `query { worldData { zone(id: ${zoneId}) { encounters { id name journalID } } } }`;
+  const response = await fetch('https://www.warcraftlogs.com/api/v2/client', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query }),
+    next: { revalidate: 86400 },
+  });
+  return (await response.json()).data?.worldData?.zone?.encounters || [];
+}
+
 export async function getWclRankings(token: string, bossId: number, className: string, specName: string, difficulty: number, region = 'us', metric?: string, noCache = false) {
   const wclClassName = className.replace(/\s+/g, '');
   const wclSpecName = specName.replace(/\s+/g, '');
@@ -246,6 +257,20 @@ export const MIDNIGHT_RAIDS: Record<string, string> = {
   'Sporefall': 'Sporefall',
   'VS / DR / MQD': 'Midnight',
 };
+
+export const MPLUS_ZONE_ID = 47; // Midnight Season 1
+export const MPLUS_DIFFICULTY = 10; // bracket that returns high-key parses
+
+export const MIDNIGHT_DUNGEONS: Array<{ id: number; name: string; wclCdnId?: number; blizzardInstanceId?: number }> = [
+  { id: 12805,  name: 'Windrunner Spire',          blizzardInstanceId: 1299 },
+  { id: 12874,  name: 'Maisara Caverns',            wclCdnId: 12874 },
+  { id: 12915,  name: 'Nexus-Point Xenas',          wclCdnId: 12915 },
+  { id: 112526, name: "Algeth'ar Academy",           blizzardInstanceId: 1201 },
+  { id: 12811,  name: "Magisters' Terrace",          wclCdnId: 12811,  blizzardInstanceId: 1300 },
+  { id: 10658,  name: 'Pit of Saron',               wclCdnId: 10658,  blizzardInstanceId: 278 },
+  { id: 361753, name: 'Seat of the Triumvirate',    blizzardInstanceId: 945 },
+  { id: 61209,  name: 'Skyreach',                   blizzardInstanceId: 476 },
+];
 
 export const SPEC_IDS: Record<string, Record<string, number>> = {
   'Death Knight':  { 'Blood': 250, 'Frost': 251, 'Unholy': 252 },

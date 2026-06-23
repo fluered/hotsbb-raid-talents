@@ -39,6 +39,8 @@ export interface HeroVariant {
   avgDps?: number | null;
   topDps?: number | null;
   avgPct?: number | null;
+  avgScore?: number | null;
+  topScore?: number | null;
 }
 
 interface ItemTip {
@@ -237,15 +239,26 @@ export default function BossView({
 
       {/* ── Hero path performance comparison ── */}
       {(() => {
-        const trees = variants.filter(v => v.id !== null && v.topDps != null);
+        const useScore = variants.some(v => v.id !== null && v.topScore != null);
+        const trees = useScore
+          ? variants.filter(v => v.id !== null && v.topScore != null)
+          : variants.filter(v => v.id !== null && v.topDps != null);
         if (trees.length < 2) return null;
-        const maxTop = Math.max(...trees.map(v => v.topDps!));
+        const maxTop = useScore
+          ? Math.max(...trees.map(v => v.topScore!))
+          : Math.max(...trees.map(v => v.topDps!));
+        const getTop = (v: typeof trees[0]) => useScore ? v.topScore! : v.topDps!;
+        const getAvg = (v: typeof trees[0]) => useScore ? v.avgScore : v.avgDps;
+        const label = useScore ? 'M+ Score by Hero Path' : 'DPS by Hero Path';
+        const fmtTop = (v: number) => useScore ? v.toFixed(1) : Math.round(v).toLocaleString();
+        const fmtAvg = (v: number) => useScore ? v.toFixed(1) : Math.round(v).toLocaleString();
         return (
           <div className="bg-zinc-900/40 border border-zinc-800/50 rounded-2xl px-5 py-4 space-y-3">
-            <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">DPS by Hero Path</p>
-            {[...trees].sort((a, b) => b.topDps! - a.topDps!).map(v => {
-              const barPct = Math.round(v.topDps! / maxTop * 100);
+            <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">{label}</p>
+            {[...trees].sort((a, b) => getTop(b) - getTop(a)).map(v => {
+              const barPct = Math.round(getTop(v) / maxTop * 100);
               const isActive = variants.indexOf(v) === safeIdx;
+              const avg = getAvg(v);
               return (
                 <button
                   key={v.id}
@@ -255,10 +268,10 @@ export default function BossView({
                   <div className="flex items-center gap-3 mb-1.5">
                     {v.imageUrl && <img src={v.imageUrl} alt="" className="w-5 h-5 rounded-full object-cover flex-shrink-0" />}
                     <span className={`text-sm font-bold ${isActive ? colors.color : 'text-zinc-300 group-hover:text-white transition-colors'}`}>{v.name}</span>
-                    <span className="ml-auto text-sm font-black tabular-nums text-emerald-400">{Math.round(v.topDps!).toLocaleString()}</span>
+                    <span className="ml-auto text-sm font-black tabular-nums text-emerald-400">{fmtTop(getTop(v))}</span>
                     <span className="text-[10px] text-zinc-600 w-4">top</span>
-                    {v.avgDps != null && (
-                      <span className="text-xs text-zinc-500 tabular-nums w-20 text-right">{Math.round(v.avgDps!).toLocaleString()} avg</span>
+                    {avg != null && (
+                      <span className="text-xs text-zinc-500 tabular-nums w-20 text-right">{fmtAvg(avg)} avg</span>
                     )}
                   </div>
                   <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden">
