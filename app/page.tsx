@@ -249,10 +249,14 @@ export default async function Home(props: PageProps) {
             <Link href="/" className="font-black text-amber-400 tracking-widest uppercase text-xs hover:text-amber-300 transition-colors whitespace-nowrap">
               HotsBB Talents
             </Link>
-            <span className="text-zinc-700">/</span>
-            <span className="text-[11px] font-bold text-zinc-400 uppercase tracking-widest whitespace-nowrap">
-              {activeMode === 'dungeons' ? 'Dungeons' : 'Raids'}
-            </span>
+            {activeClass && (
+              <>
+                <span className="text-zinc-700">/</span>
+                <span className="text-[11px] font-bold text-zinc-400 uppercase tracking-widest whitespace-nowrap">
+                  {activeMode === 'dungeons' ? 'Dungeons' : 'Raids'}
+                </span>
+              </>
+            )}
             {activeClass && (
               <span className="hidden sm:flex items-center gap-2 min-w-0">
                 <span className="text-zinc-700">/</span>
