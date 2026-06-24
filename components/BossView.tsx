@@ -299,7 +299,7 @@ export default function BossView({
             </div>
             {active.consensus ? (
               <p className="text-sm text-zinc-500">
-                Consensus from top {active.totalPlayers} {difficulty === 5 ? 'Mythic' : 'Heroic'} {spec} parses
+                Consensus from top {active.totalPlayers} {difficulty === 10 ? 'Mythic+' : difficulty === 5 ? 'Mythic' : 'Heroic'} {spec} parses
                 {active.id !== null ? ` using ${active.name}` : ''}
                 {totalParses != null && totalParses > active.totalPlayers ? ` · ${totalParses} available` : ''}
                 {dataFetchedAt != null && (() => {
@@ -337,6 +337,11 @@ export default function BossView({
                     .filter(v => v.pct > 0)
                     .sort((a, b) => b.pct - a.pct)
                 : undefined}
+              activeHeroTreeId={
+                active.id !== null
+                  ? active.id
+                  : (variants.filter(v => v.id !== null).sort((a, b) => b.count - a.count)[0]?.id ?? undefined)
+              }
               onHeroTreeClick={active.id === null ? (name) => {
                 const idx = variants.findIndex(v => v.name === name);
                 if (idx !== -1) setActiveIdx(idx);

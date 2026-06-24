@@ -124,9 +124,13 @@ export async function getTalentTreeLayout(treeId: number, specId: number, access
   if (!response.ok) throw new Error(`Talent tree fetch failed: ${response.status}`);
   const data = await response.json();
 
-  const heroNodeTreeMap = new Map<number, number>();
+  // Nodes that appear in multiple hero trees are shared (gateway nodes) — assign null so they
+  // don't contaminate hero-tree detection when building the consensus build.
+  const heroNodeTreeMap = new Map<number, number | null>();
   for (const ht of (data.hero_talent_trees || [])) {
-    for (const n of (ht.hero_talent_nodes || [])) heroNodeTreeMap.set(n.id, ht.id);
+    for (const n of (ht.hero_talent_nodes || [])) {
+      heroNodeTreeMap.set(n.id, heroNodeTreeMap.has(n.id) ? null : ht.id);
+    }
   }
   const heroNodeIds = new Set(heroNodeTreeMap.keys());
   const heroTreeNames: Array<{ id: number; name: string; imageUrl: string }> = (data.hero_talent_trees || []).map((ht: any) => {

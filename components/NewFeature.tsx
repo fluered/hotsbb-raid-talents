@@ -82,6 +82,7 @@ export default function NewFeature({
   heroTrees,
   onHeroTreeClick,
   topPlayerTelemetry,
+  activeHeroTreeId,
 }: {
   telemetry: any;
   layout: any[];
@@ -95,6 +96,7 @@ export default function NewFeature({
   heroTrees?: Array<{ name: string; imageUrl?: string; pct: number }>;
   onHeroTreeClick?: (name: string) => void;
   topPlayerTelemetry?: any;
+  activeHeroTreeId?: number;
 }) {
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
   const activeNodes = telemetry?.event?.talentTree || [];
@@ -116,12 +118,37 @@ export default function NewFeature({
     }
   }
 
-  // Keep only the active hero tree (or all if none active)
+  // Server-provided activeHeroTreeId takes priority over client-side node-ID matching.
+  // Node-ID matching is unreliable when nodes are shared or mis-labelled across trees.
+  const effectiveHeroTreeIds: Set<number> =
+    activeHeroTreeId != null
+      ? new Set([activeHeroTreeId])
+      : activeHeroTreeIds.size === 1
+        ? activeHeroTreeIds
+        : new Set();
+
+  // Keep only the active hero tree (or all if none active).
+  // Shared gateway nodes (heroTreeId === null) always show regardless of which tree is active.
   const visibleLayout = layout.filter((n: any) => {
     if (n.section !== 'hero') return true;
-    if (activeHeroTreeIds.size === 0) return true;
-    return activeHeroTreeIds.has(n.heroTreeId);
+    if (effectiveHeroTreeIds.size === 0) return true;
+    if (n.heroTreeId === null) return true;
+    return effectiveHeroTreeIds.has(n.heroTreeId);
   });
+
+  if (process.env.NODE_ENV === 'development') {
+    const allHeroNodes = layout.filter((n: any) => n.section === 'hero');
+    const visibleHeroNodes = visibleLayout.filter((n: any) => n.section === 'hero');
+    const heroTreeIdSet = new Set(allHeroNodes.map((n: any) => n.heroTreeId));
+    console.log('[HeroTree]', {
+      activeHeroTreeId,
+      activeHeroTreeIds: [...activeHeroTreeIds],
+      effectiveHeroTreeIds: [...effectiveHeroTreeIds],
+      heroTreeIdsInLayout: [...heroTreeIdSet],
+      totalHeroNodes: allHeroNodes.length,
+      visibleHeroNodes: visibleHeroNodes.length,
+    });
+  }
 
   // Per-section sequential column normalization
   const classSectionNodes = visibleLayout.filter((n: any) => n.section === 'class');
@@ -135,6 +162,22 @@ export default function NewFeature({
   const classMaxCol = classColMap.size || 0;
   const heroMaxCol  = heroColMap.size  || 0;
   const specMaxCol  = specColMap.size  || 0;
+
+  // Class nodes whose raw column matches any active hero node column are bridge nodes
+  // (e.g. Evoker "Mass Disintegrate" at col 23, same column as Scalecommander hero nodes).
+  // Stored by nodeID to avoid any column-type ambiguity in later lookups.
+  const heroColValues = heroSectionNodes.map((n: any) => n.column);
+  const bridgeClassNodeIds = new Set<number>(
+    classSectionNodes
+      .filter((n: any) => heroColValues.includes(n.column))
+      .map((n: any) => n.nodeID as number)
+  );
+
+  // Full set of columns used by ANY hero tree (including inactive ones).
+  // Used to suppress class nodes that are bridges for a different hero tree than the active one.
+  const allHeroColSet = new Set(
+    layout.filter((n: any) => n.section === 'hero').map((n: any) => n.column)
+  );
 
   const SEP = 2;
   const heroOffset = classMaxCol + SEP;
@@ -173,18 +216,36 @@ export default function NewFeature({
   const classMinRow  = classSectionNodes.length > 0 ? Math.min(...classSectionNodes.map((n: any) => n.row)) : 1;
   const heroMinRow   = heroSectionNodes.length  > 0 ? Math.min(...heroSectionNodes.map((n: any) => n.row))  : 1;
   const hasPortrait  = HERO_ROW_OFFSET > 0 && (!!heroTreeImageUrl || (heroTrees != null && heroTrees.length > 0));
-  // With portrait: heroRowShift may be negative to push nodes DOWN so they clear the image.
-  // Target: first hero mapped row = max(4, classMinRow + 3), i.e. heroRowShift = heroMinRow - max(3, classMinRow + 2).
-  // Without portrait: keep old behaviour (clamp to 0, only shift up).
+  // Portrait is 4.5rem tall starting at 1.875rem. Hero nodes must start after it clears.
+  // Use the 2nd distinct class row to determine when the portrait is clear — specs like Evoker
+  // have a gap at class row 3 (rows: 2, 4, 5…) which means classMinRow alone underestimates
+  // how far down the portrait extends relative to the first hero row.
+  const classSortedRows = classSectionNodes.length > 0
+    ? [...new Set(classSectionNodes.map((n: any) => n.row as number))].sort((a, b) => a - b)
+    : [1];
+  // Only normalize rows for specs with outlier class columns (those whose column appears in any
+  // hero tree). This handles Evoker's Mass Disintegrate (col 23, in Scalecommander hero cols)
+  // without affecting specs like BM Hunter that have no class-hero column overlap.
+  const hasOutlierClassCol = classSectionNodes.some((n: any) => allHeroColSet.has(n.column));
+  const classRowOffset = hasOutlierClassCol ? (classMinRow - 1) : 0;
+  // When a bridge class node is present (e.g. Scalecommander), it occupies one row above the
+  // first hero row, so the hero section naturally starts one row lower. When there's no bridge
+  // (e.g. Flameshaper) but the class tree has a row gap (classRowOffset > 0), shift the hero
+  // section up by 1 so both views align at the same starting row.
+  const heroBridgeAdjust = (hasPortrait && classRowOffset > 0 && bridgeClassNodeIds.size === 0) ? 1 : 0;
   const heroRowShift = hasPortrait
-    ? heroMinRow - Math.max(3, classMinRow + 2)
+    ? heroMinRow - Math.max(3, (classSortedRows[1] ?? classMinRow + 1) + 1) + heroBridgeAdjust
     : Math.max(0, heroMinRow - classMinRow - 2);
 
   function getMappedRow(node: any): number {
-    if (hasSections && !heroOnly && node.section === 'hero' && heroMaxCol > 0) {
-      return node.row - heroRowShift + HERO_ROW_OFFSET;
+    const r = node.row - classRowOffset;
+    if (hasSections && !heroOnly && heroMaxCol > 0) {
+      if (node.section === 'hero') return r - heroRowShift + HERO_ROW_OFFSET;
+      if (node.section === 'class' && bridgeClassNodeIds.has(node.nodeID)) {
+        return r - heroRowShift + HERO_ROW_OFFSET;
+      }
     }
-    return node.row + HERO_ROW_OFFSET;
+    return r + HERO_ROW_OFFSET;
   }
 
   // Center any hero node that is the only node in its row
@@ -200,7 +261,16 @@ export default function NewFeature({
   function getMappedCol(node: any): number {
     if (heroOnly) return heroOnlyColMap!.get(node.column) ?? 1;
     if (!hasSections) return legacyColMap!.get(node.column) ?? 1;
-    if (node.section === 'class') return classColMap.get(node.column) ?? 1;
+    if (node.section === 'class') {
+      const raw = node.column as number;
+      // Bridge nodes: class nodes whose raw column overlaps the active hero tree columns.
+      // Reposition them into the hero section area so they align with the hero nodes below.
+      if (heroMaxCol > 0 && heroColMap.has(raw)) {
+        // Bridge class nodes are visually centered like gateway hero nodes
+        return heroOffset + heroCenterCol;
+      }
+      return classColMap.get(raw) ?? 1;
+    }
     if (node.section === 'hero') {
       // For even heroMaxCol, gateway start col is the left-center column (span 2 finishes centering)
       // For odd heroMaxCol, gateway start col is the exact center column (span 1)
@@ -234,6 +304,7 @@ export default function NewFeature({
         style={{
           gridTemplateColumns: `repeat(${effectiveTotalCols}, 2.5rem)`,
           gridTemplateRows: HERO_ROW_OFFSET === 1 ? '1.25rem' : undefined,
+          gridAutoRows: '2.5rem',
           width: 'max-content',
         }}
       >
@@ -318,17 +389,31 @@ export default function NewFeature({
           const rank = activeNode?.rank ?? 0;
           const showRank = isActive && node.maxRanks > 1;
           const mappedColumn = getMappedCol(node);
-          const colSpan = getColSpan(node);
+
+          // Suppress class nodes that share a column with a different hero tree's nodes.
+          // e.g. Evoker "Mass Disintegrate" at col 23 is a Scalecommander bridge; hide it in Flameshaper view.
+          const isOrphanBridge = node.section === 'class' &&
+            allHeroColSet.has(node.column) &&
+            !bridgeClassNodeIds.has(node.nodeID);
+          if (isOrphanBridge) return null;
+
+          const isClassBridge = hasSections && !heroOnly && heroMaxCol > 0 &&
+            node.section === 'class' && mappedColumn > heroOffset;
+          // Bridge class nodes get span 2 (same as gateway nodes) so the icon centers visually
+          const colSpan = isClassBridge && heroMaxCol % 2 === 0 ? 2 : getColSpan(node);
           const freq = frequencyMap?.[node.nodeID];
           const isDivergent = divergentNodeIds?.has(node.nodeID) ?? false;
           // true = top player takes this but consensus doesn't; false = consensus takes it but top player skips
           const topPlayerTakes = isDivergent && (topPlayerNodeIds?.has(node.nodeID) ?? false);
+          const mappedRow = isClassBridge
+            ? (node.row - classRowOffset) - heroRowShift + HERO_ROW_OFFSET
+            : getMappedRow(node);
 
           return (
             <div
               key={node.nodeID}
               style={{
-                gridRow: getMappedRow(node),
+                gridRow: mappedRow,
                 gridColumn: colSpan > 1 ? `${mappedColumn} / span ${colSpan}` : mappedColumn,
               }}
               className={colSpan > 1 ? 'flex justify-center' : undefined}
@@ -351,7 +436,7 @@ export default function NewFeature({
                 ) : (
                   <div className={`w-full h-full ${isActive ? colors.activeBg : 'bg-zinc-900/50'}`} />
                 )}
-                {freq != null && freq > 0 && (
+                {freq != null && freq > 0 && node.section !== 'hero' && (
                   <div className="absolute bottom-0 inset-x-0 bg-black/75 flex items-center justify-center py-0.5">
                     <span className={`text-[8px] font-bold tabular-nums leading-none ${isActive ? 'text-white' : 'text-zinc-400'}`}>{freq}%</span>
                   </div>
