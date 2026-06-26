@@ -444,6 +444,7 @@ export default function NewFeature({
               onMouseEnter={(e) => handleMouseEnter(e, displayNode, rank, showRank, freq)}
               onMouseLeave={handleMouseLeave}
             >
+              <div className="relative">
               <div
                 className={`w-10 h-10 rounded-full border-2 overflow-hidden transition-all relative ${
                   displayNode.spellId ? 'cursor-pointer' : 'cursor-default'
@@ -470,6 +471,14 @@ export default function NewFeature({
                     <span className={`text-[8px] font-bold tabular-nums leading-none ${isActive ? 'text-white' : 'text-zinc-400'}`}>{freq}%</span>
                   </div>
                 )}
+              </div>
+              {showRank && (
+                <div className="absolute -bottom-2 inset-x-0 flex justify-center gap-0.5 pointer-events-none">
+                  {Array.from({ length: node.maxRanks }, (_, i) => (
+                    <span key={i} className={`w-1.5 h-1.5 rounded-full ${i < rank ? 'bg-emerald-400' : 'bg-zinc-700 border border-zinc-600'}`} />
+                  ))}
+                </div>
+              )}
               </div>
             </div>
           );
