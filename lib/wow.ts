@@ -139,17 +139,41 @@ export async function getTalentTreeLayout(treeId: number, specId: number, access
     return { id: ht.id, name: ht.name, imageUrl };
   });
 
+  // Primary source for hero nodes: spec_talent_nodes (Blizzard naturally filters these to the
+  // spec's available hero trees). Fall back to hero_talent_trees nodes directly for specs where
+  // spec_talent_nodes doesn't include hero nodes at all (e.g. Augmentation Evoker).
+  const heroNodesFromSpec = (data.spec_talent_nodes || []).filter((n: any) => heroNodeIds.has(n.id));
+  const heroNodeSource: any[] = heroNodesFromSpec.length > 0
+    ? heroNodesFromSpec.map((n: any) => ({
+        ...n,
+        _section: 'hero',
+        _heroTreeId: heroNodeTreeMap.get(n.id) ?? null,
+      }))
+    : (() => {
+        const seen = new Set<number>();
+        const nodes: any[] = [];
+        for (const ht of (data.hero_talent_trees || [])) {
+          for (const n of (ht.hero_talent_nodes || [])) {
+            if (!seen.has(n.id)) {
+              seen.add(n.id);
+              nodes.push({ ...n, _section: 'hero', _heroTreeId: heroNodeTreeMap.get(n.id) ?? null });
+            }
+          }
+        }
+        return nodes;
+      })();
+
   const allRawUnsorted = [
     ...(data.class_talent_nodes || []).map((n: any) => ({ ...n, _section: 'class', _heroTreeId: null })),
-    ...(data.spec_talent_nodes || []).map((n: any) => ({
+    ...heroNodeSource,
+    ...(data.spec_talent_nodes || []).filter((n: any) => !heroNodeIds.has(n.id)).map((n: any) => ({
       ...n,
-      _section: heroNodeIds.has(n.id) ? 'hero' : 'spec',
-      _heroTreeId: heroNodeTreeMap.get(n.id) ?? null,
+      _section: 'spec',
+      _heroTreeId: null,
     })),
   ];
-  // Blizzard occasionally lists the same node in both class_talent_nodes and spec_talent_nodes.
+  // Blizzard occasionally lists the same node in both class_talent_nodes and hero_talent_trees.
   // Deduplicate by ID, preferring the most specific section: hero > spec > class.
-  // "First wins" would drop hero nodes that also appear in class_talent_nodes.
   const sectionPriority = (s: string) => s === 'hero' ? 2 : s === 'spec' ? 1 : 0;
   const bestById = new Map<number, any>();
   for (const n of allRawUnsorted) {

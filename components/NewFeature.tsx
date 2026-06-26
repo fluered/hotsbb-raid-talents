@@ -284,15 +284,16 @@ export default function NewFeature({
       // Bridge nodes: true outlier class nodes whose column is beyond the main cluster AND
       // overlaps active hero tree columns. Reposition them into the hero section area.
       if (heroMaxCol > 0 && heroColMap.has(raw) && raw > classClusterMax) {
-        // Bridge class nodes are visually centered like gateway hero nodes
-        return heroOffset + heroCenterCol;
+        // Only center bridge nodes in single-tree view — multi-tree view puts each at its actual column
+        const col = effectiveHeroTreeIds.size === 1 ? heroCenterCol : (heroColMap.get(raw) ?? heroCenterCol);
+        return heroOffset + col;
       }
       return classColMap.get(raw) ?? 1;
     }
     if (node.section === 'hero') {
-      // For even heroMaxCol, gateway start col is the left-center column (span 2 finishes centering)
-      // For odd heroMaxCol, gateway start col is the exact center column (span 1)
-      const col = heroGatewayIds.has(node.nodeID) ? heroCenterCol : (heroColMap.get(node.column) ?? 1);
+      // Gateway centering only applies in single-tree view; multi-tree view uses natural columns
+      const isGateway = heroGatewayIds.has(node.nodeID) && effectiveHeroTreeIds.size === 1;
+      const col = isGateway ? heroCenterCol : (heroColMap.get(node.column) ?? 1);
       return heroOffset + col;
     }
     return specOffset + (specColMap.get(node.column) ?? 1);
@@ -301,7 +302,7 @@ export default function NewFeature({
   // Gateway nodes in even-column hero sections span 2 columns so the icon floats
   // in the gap between the two center nodes of each regular row.
   function getColSpan(node: any): number {
-    if (hasSections && !heroOnly && node.section === 'hero' && heroGatewayIds.has(node.nodeID) && heroMaxCol % 2 === 0) {
+    if (hasSections && !heroOnly && node.section === 'hero' && heroGatewayIds.has(node.nodeID) && heroMaxCol % 2 === 0 && effectiveHeroTreeIds.size === 1) {
       return 2;
     }
     return 1;
@@ -438,8 +439,8 @@ export default function NewFeature({
 
           const isClassBridge = hasSections && !heroOnly && heroMaxCol > 0 &&
             node.section === 'class' && mappedColumn > heroOffset;
-          // Bridge class nodes get span 2 (same as gateway nodes) so the icon centers visually
-          const colSpan = isClassBridge && heroMaxCol % 2 === 0 ? 2 : getColSpan(node);
+          // Bridge class nodes get span 2 (same as gateway nodes) only in single-tree view
+          const colSpan = isClassBridge && heroMaxCol % 2 === 0 && effectiveHeroTreeIds.size === 1 ? 2 : getColSpan(node);
           const freq = frequencyMap?.[node.nodeID];
           const isDivergent = divergentNodeIds?.has(node.nodeID) ?? false;
           // true = top player takes this but consensus doesn't; false = consensus takes it but top player skips
