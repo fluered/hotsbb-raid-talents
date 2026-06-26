@@ -225,10 +225,18 @@ export default function NewFeature({
   const classSortedRows = classSectionNodes.length > 0
     ? [...new Set(classSectionNodes.map((n: any) => n.row as number))].sort((a, b) => a - b)
     : [1];
-  // Only normalize rows for specs with outlier class columns (those whose column appears in any
-  // hero tree). This handles Evoker's Mass Disintegrate (col 23, in Scalecommander hero cols)
-  // without affecting specs like BM Hunter that have no class-hero column overlap.
-  const hasOutlierClassCol = classSectionNodes.some((n: any) => allHeroColSet.has(n.column));
+  // Only normalize rows for specs with outlier class columns — specifically nodes whose column
+  // is well beyond the main class column cluster AND inside the hero col range. This handles
+  // Evoker's Mass Disintegrate (col 23, gap of 16 from the class cluster max of 7) without
+  // misfiring on specs like Mistweaver Monk whose gateway sits at col 10 (gap of only 3).
+  const sortedClassCols = [...new Set(classSectionNodes.map((n: any) => n.column as number))].sort((a, b) => a - b);
+  // Walk the sorted class columns; stop at the first gap > 5 to find the main-cluster max.
+  let classClusterMax = sortedClassCols.at(-1) ?? 0;
+  for (let i = 1; i < sortedClassCols.length; i++) {
+    if (sortedClassCols[i] - sortedClassCols[i - 1] > 5) { classClusterMax = sortedClassCols[i - 1]; break; }
+  }
+  // A class node is an outlier only if it sits strictly beyond the main cluster.
+  const hasOutlierClassCol = classSectionNodes.some((n: any) => allHeroColSet.has(n.column) && n.column > classClusterMax);
   const classRowOffset = hasOutlierClassCol ? (classMinRow - 1) : 0;
   // When a bridge class node is present (e.g. Scalecommander), it occupies one row above the
   // first hero row, so the hero section naturally starts one row lower. When there's no bridge
