@@ -167,11 +167,22 @@ export default function NewFeature({
 
   // Class nodes whose raw column matches any active hero node column are bridge nodes
   // (e.g. Evoker "Mass Disintegrate" at col 23, same column as Scalecommander hero nodes).
+  // Identify where the class column "main cluster" ends (first gap > 5 in sorted columns).
+  // This separates genuine outlier bridge nodes (like Evoker's Mass Disintegrate at col 23,
+  // gap of 16) from gateway nodes that sit just outside the main class range (like Mistweaver's
+  // col-10 gateway, gap of only 3). Only nodes strictly beyond classClusterMax are treated as
+  // true bridge nodes that need to be repositioned into the hero section area.
+  const sortedClassCols = [...new Set(classSectionNodes.map((n: any) => n.column as number))].sort((a, b) => a - b);
+  let classClusterMax = sortedClassCols.at(-1) ?? 0;
+  for (let i = 1; i < sortedClassCols.length; i++) {
+    if (sortedClassCols[i] - sortedClassCols[i - 1] > 5) { classClusterMax = sortedClassCols[i - 1]; break; }
+  }
+
   // Stored by nodeID to avoid any column-type ambiguity in later lookups.
   const heroColValues = heroSectionNodes.map((n: any) => n.column);
   const bridgeClassNodeIds = new Set<number>(
     classSectionNodes
-      .filter((n: any) => heroColValues.includes(n.column))
+      .filter((n: any) => heroColValues.includes(n.column) && (n.column as number) > classClusterMax)
       .map((n: any) => n.nodeID as number)
   );
 
@@ -225,18 +236,9 @@ export default function NewFeature({
   const classSortedRows = classSectionNodes.length > 0
     ? [...new Set(classSectionNodes.map((n: any) => n.row as number))].sort((a, b) => a - b)
     : [1];
-  // Only normalize rows for specs with outlier class columns — specifically nodes whose column
-  // is well beyond the main class column cluster AND inside the hero col range. This handles
-  // Evoker's Mass Disintegrate (col 23, gap of 16 from the class cluster max of 7) without
-  // misfiring on specs like Mistweaver Monk whose gateway sits at col 10 (gap of only 3).
-  const sortedClassCols = [...new Set(classSectionNodes.map((n: any) => n.column as number))].sort((a, b) => a - b);
-  // Walk the sorted class columns; stop at the first gap > 5 to find the main-cluster max.
-  let classClusterMax = sortedClassCols.at(-1) ?? 0;
-  for (let i = 1; i < sortedClassCols.length; i++) {
-    if (sortedClassCols[i] - sortedClassCols[i - 1] > 5) { classClusterMax = sortedClassCols[i - 1]; break; }
-  }
-  // A class node is an outlier only if it sits strictly beyond the main cluster.
-  const hasOutlierClassCol = classSectionNodes.some((n: any) => allHeroColSet.has(n.column) && n.column > classClusterMax);
+  // A class node is a true outlier only if it sits strictly beyond the main cluster max.
+  // classClusterMax is already computed above alongside bridgeClassNodeIds.
+  const hasOutlierClassCol = classSectionNodes.some((n: any) => allHeroColSet.has(n.column) && (n.column as number) > classClusterMax);
   const classRowOffset = hasOutlierClassCol ? (classMinRow - 1) : 0;
   // When a bridge class node is present (e.g. Scalecommander), it occupies one row above the
   // first hero row, so the hero section naturally starts one row lower. When there's no bridge
@@ -273,9 +275,9 @@ export default function NewFeature({
     if (!hasSections) return legacyColMap!.get(node.column) ?? 1;
     if (node.section === 'class') {
       const raw = node.column as number;
-      // Bridge nodes: class nodes whose raw column overlaps the active hero tree columns.
-      // Reposition them into the hero section area so they align with the hero nodes below.
-      if (heroMaxCol > 0 && heroColMap.has(raw)) {
+      // Bridge nodes: true outlier class nodes whose column is beyond the main cluster AND
+      // overlaps active hero tree columns. Reposition them into the hero section area.
+      if (heroMaxCol > 0 && heroColMap.has(raw) && raw > classClusterMax) {
         // Bridge class nodes are visually centered like gateway hero nodes
         return heroOffset + heroCenterCol;
       }
@@ -400,9 +402,11 @@ export default function NewFeature({
           const showRank = isActive && node.maxRanks > 1;
           const mappedColumn = getMappedCol(node);
 
-          // Suppress class nodes that share a column with a different hero tree's nodes.
+          // Suppress true outlier class nodes that belong to a different hero tree than the active one.
           // e.g. Evoker "Mass Disintegrate" at col 23 is a Scalecommander bridge; hide it in Flameshaper view.
+          // Only applies to nodes beyond classClusterMax — boundary gateway nodes are never orphan bridges.
           const isOrphanBridge = node.section === 'class' &&
+            (node.column as number) > classClusterMax &&
             allHeroColSet.has(node.column) &&
             !bridgeClassNodeIds.has(node.nodeID);
           if (isOrphanBridge) return null;
