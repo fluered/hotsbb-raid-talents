@@ -4,7 +4,7 @@ import BossView, { type HeroVariant } from '../components/BossView';
 import {
   getWclToken, getBlizzardToken, getWclRankings, getHistoricalFightTelemetry,
   getTalentTreeId, getTalentTreeLayout,
-  computeConsensus, getActiveHeroTreeId, makeTelemetry, computeFrequencyPct, scoreAgainstMap,
+  computeConsensus, getActiveHeroTreeId, makeTelemetry, computeFrequencyPct,
   SPEC_IDS, ENCHANT_SLOT_LABELS, ENCHANT_SLOT_ORDER,
 } from '../lib/wow';
 
@@ -165,27 +165,57 @@ export default async function BossContent({
       const profileData = blizzardProfiles[idx];
       const fightTalents: Array<{ nodeID: number; rank: number }> = telemetryData?.event?.talentTree || [];
       const fightMap = new Map<number, number>();
-      for (const t of fightTalents) fightMap.set(t.nodeID, Math.max(fightMap.get(t.nodeID) ?? 0, t.rank));
+      for (const t of fightTalents as any[]) {
+        fightMap.set(t.nodeID, Math.max(fightMap.get(t.nodeID) ?? 0, t.rank));
+      }
+
+      // Find the spec block matching the fight spec directly (avoids cross-spec rank-scoring
+      // which can't distinguish choice nodes since both options always have rank=1).
+      const fightSpec = profileData?.specializations?.find(
+        (sp: any) => sp.specialization?.id === treeInfo.specId
+      );
 
       let talentString: string | null = null;
-      let bestScore = -1;
-      for (const sp of profileData?.specializations ?? []) {
-        for (const loadout of sp.loadouts ?? []) {
-          if (!loadout.talent_loadout_code) continue;
-          const nodes = [
-            ...(loadout.selected_class_talents ?? []),
-            ...(loadout.selected_spec_talents ?? []),
-            ...(loadout.selected_hero_talents ?? []),
-          ];
-          let score = 0;
-          for (const node of nodes) {
-            if (fightMap.get(node.id) === node.rank) score++;
+      if (fightSpec) {
+        // Prefer the active loadout; it reflects the player's current build for this spec.
+        const activeLoadout = (fightSpec.loadouts ?? []).find(
+          (l: any) => l.is_active && l.talent_loadout_code
+        );
+        if (activeLoadout) {
+          talentString = activeLoadout.talent_loadout_code;
+        } else {
+          // Fall back to rank scoring within the spec (distinguishes hero tree variants),
+          // then is_active as tie-break.
+          let bestScore = -1;
+          let bestIsActive = false;
+          for (const loadout of fightSpec.loadouts ?? []) {
+            if (!loadout.talent_loadout_code) continue;
+            const nodes = [
+              ...(loadout.selected_class_talents ?? []),
+              ...(loadout.selected_spec_talents ?? []),
+              ...(loadout.selected_hero_talents ?? []),
+            ];
+            let score = 0;
+            for (const node of nodes) {
+              if (fightMap.get(node.id) === node.rank) score++;
+            }
+            const isActive = !!loadout.is_active;
+            if (score > bestScore || (score === bestScore && isActive && !bestIsActive)) {
+              bestScore = score; talentString = loadout.talent_loadout_code; bestIsActive = isActive;
+            }
           }
-          if (score > bestScore) { bestScore = score; talentString = loadout.talent_loadout_code; }
         }
       }
+      // Store the selected loadout's profile nodes so we can tally choice preferences later.
+      const selectedLoadout = fightSpec?.loadouts?.find((l: any) => l.talent_loadout_code === talentString) ?? null;
+      const profileNodes: any[] = selectedLoadout ? [
+        ...(selectedLoadout.selected_class_talents ?? []),
+        ...(selectedLoadout.selected_spec_talents ?? []),
+        ...(selectedLoadout.selected_hero_talents ?? []),
+      ] : [];
+
       const renderUrl: string | null = blizzardMedia[idx]?.assets?.find((a: any) => a.key === 'avatar')?.value ?? null;
-      return { ...player, telemetry: telemetryData, talentString, renderUrl };
+      return { ...player, telemetry: telemetryData, talentString, renderUrl, profileNodes };
     });
 
     // Aggregate trinkets â€” keyed by "name|ilvl" so each ilvl tier is a separate entry
@@ -511,17 +541,56 @@ export default async function BossContent({
     let metaTalentString: string | null = null;
     let metaFrequencyPct: Record<number, number> = {};
     const heroTreeConsensus: Array<any> = [];
+    const wclUrl = wclZoneId
+      ? `https://www.warcraftlogs.com/zone/rankings/${wclZoneId}#class=${encodeURIComponent(className)}&spec=${encodeURIComponent(spec)}&difficulty=${difficulty}&boss=${bossId}`
+      : null;
 
     if (validTrees.length >= 3) {
       const consensusMap = computeConsensus(validTrees, 0.5);
       consensusTelemetry = makeTelemetry(consensusMap);
       metaFrequencyPct = computeFrequencyPct(validTrees);
 
+      function scorePlayerTree(tree: any[], cMap: Map<number, number>): number {
+        const rankMap = new Map<number, number>();
+        for (const t of tree) {
+          rankMap.set(t.nodeID, Math.max(rankMap.get(t.nodeID) ?? 0, t.rank));
+        }
+        let score = 0;
+        for (const [nodeID, rank] of cMap) {
+          if (rankMap.get(nodeID) === rank) score++;
+        }
+        return score;
+      }
+
+      // Compute metaTalentString first — it doesn't depend on consensusEntryIds.
       let bestScore = -1;
       for (const player of detailedRankings) {
         if (!player.talentString) continue;
-        const score = scoreAgainstMap(player.telemetry?.event?.talentTree || [], consensusMap);
-        if (score > bestScore) { bestScore = score; metaTalentString = player.talentString; }
+        const score = scorePlayerTree(player.telemetry?.event?.talentTree || [], consensusMap);
+        if (score > bestScore) bestScore = score;
+      }
+      const metaStrFreq = new Map<string, number>();
+      for (const player of detailedRankings) {
+        if (!player.talentString) continue;
+        if (scorePlayerTree(player.telemetry?.event?.talentTree || [], consensusMap) === bestScore) {
+          metaStrFreq.set(player.talentString, (metaStrFreq.get(player.talentString) ?? 0) + 1);
+        }
+      }
+      for (const [str, freq] of metaStrFreq) {
+        if (freq > (metaStrFreq.get(metaTalentString ?? '') ?? 0)) metaTalentString = str;
+      }
+
+      // Derive consensus choice node display from whichever player contributed metaTalentString.
+      // Their profile nodes use the same entry ID namespace as the layout's choiceAEntryId/
+      // choiceBEntryId, so consensusEntryId === node.choiceBEntryId correctly identifies the choice.
+      // This keeps display perfectly in sync with what the copy string actually encodes.
+      const metaPlayer = detailedRankings.find(
+        (p: any) => p.talentString === metaTalentString && (p as any).profileNodes?.length > 0
+      );
+      const consensusEntryIds: Record<number, number> = {};
+      for (const node of (metaPlayer as any)?.profileNodes ?? []) {
+        const entryId = node.tooltip?.talent?.id;
+        if (entryId != null) consensusEntryIds[node.id] = entryId;
       }
 
       const heroGroups = new Map<number, Array<Array<{ nodeID: number; rank: number }>>>();
@@ -540,15 +609,38 @@ export default async function BossContent({
         const htTelemetry = hasData ? makeTelemetry(htMap) : { event: { talentTree: [] as Array<{ nodeID: number; rank: number }> } };
         const htFrequencyPct = hasData ? computeFrequencyPct(group) : {};
 
+        // Compute htStr before htEntryIds so we can read choices from the contributing player.
         let htStr: string | null = null;
         if (hasData) {
           let htBest = -1;
           for (const player of detailedRankings) {
             if (!player.talentString) continue;
             if (getActiveHeroTreeId(player.telemetry?.event?.talentTree || [], skeletonMap) !== id) continue;
-            const score = scoreAgainstMap(player.telemetry?.event?.talentTree || [], htMap);
-            if (score > htBest) { htBest = score; htStr = player.talentString; }
+            const score = scorePlayerTree(player.telemetry?.event?.talentTree || [], htMap);
+            if (score > htBest) htBest = score;
           }
+          const htStrFreq = new Map<string, number>();
+          for (const player of detailedRankings) {
+            if (!player.talentString) continue;
+            if (getActiveHeroTreeId(player.telemetry?.event?.talentTree || [], skeletonMap) !== id) continue;
+            if (scorePlayerTree(player.telemetry?.event?.talentTree || [], htMap) === htBest) {
+              htStrFreq.set(player.talentString, (htStrFreq.get(player.talentString) ?? 0) + 1);
+            }
+          }
+          for (const [str, freq] of htStrFreq) {
+            if (freq > (htStrFreq.get(htStr ?? '') ?? 0)) htStr = str;
+          }
+        }
+
+        // Derive choice display from the player who contributed htStr.
+        const htMetaPlayer = detailedRankings.find(
+          (p: any) => p.talentString === htStr && (p as any).profileNodes?.length > 0
+            && getActiveHeroTreeId(p.telemetry?.event?.talentTree || [], skeletonMap) === id
+        );
+        const htEntryIds: Record<number, number> = {};
+        for (const node of (htMetaPlayer as any)?.profileNodes ?? []) {
+          const entryId = node.tooltip?.talent?.id;
+          if (entryId != null) htEntryIds[node.id] = entryId;
         }
 
         const treeEquipIndices: number[] = [];
@@ -738,7 +830,7 @@ export default async function BossContent({
 
         heroTreeConsensus.push({
           id, name, imageUrl, count: group.length, totalPlayers: totalConsensusPlayers,
-          talentString: htStr, telemetry: htTelemetry, hasData,
+          talentString: htStr, telemetry: htTelemetry, entryIds: htEntryIds, hasData,
           gear: {
             trinkets: treeTrinkets,
             gems: treeGems,
@@ -973,10 +1065,6 @@ export default async function BossContent({
         e.iconUrl = '';
         e.description = e.sourceItemId ? (descById.get(e.sourceItemId) ?? '') : '';
       }
-      const wclUrl = wclZoneId
-        ? `https://www.warcraftlogs.com/zone/rankings/${wclZoneId}#class=${encodeURIComponent(className)}&spec=${encodeURIComponent(spec)}&difficulty=${difficulty}&boss=${bossId}`
-        : null;
-
       // Build hero variants
       const heroVariants: HeroVariant[] = [];
       heroVariants.push({
@@ -984,7 +1072,7 @@ export default async function BossContent({
         name: 'All',
         count: totalConsensusPlayers,
         totalPlayers: totalConsensusPlayers,
-        consensus: { telemetry: consensusTelemetry, talentString: metaTalentString, frequencyPct: metaFrequencyPct },
+        consensus: { telemetry: consensusTelemetry, talentString: metaTalentString, frequencyPct: metaFrequencyPct, entryIds: consensusEntryIds },
         gear: { trinkets: topTrinkets, stats: avgStats, enchants: topEnchants, avgItemLevel, gems: topGems, consumables: topConsumables, embellishments: topEmbellishments, playerCount: totalGearPlayerCount, gearBySlot, trinketSynergy: topTrinketPair, ringSynergy: topRingPair },
         players: detailedRankings.slice(0, DISPLAY_N),
       });
@@ -999,6 +1087,7 @@ export default async function BossContent({
             telemetry: htc.telemetry,
             talentString: htc.talentString,
             frequencyPct: htc.frequencyPct ?? {},
+            entryIds: htc.entryIds,
           } : null,
           gear: htc.gear ?? null,
           players: (htc.topPlayers ?? []).slice(0, DISPLAY_N),

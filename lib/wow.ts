@@ -150,11 +150,32 @@ export async function getTalentTreeLayout(treeId: number, specId: number, access
 
   const mapped = await Promise.all(allRaw.map(async (node: any) => {
     const firstRank = node.ranks?.[0];
-    const tooltip = firstRank?.tooltip ?? firstRank?.choice_of_tooltips?.[0];
+    const choices: any[] = firstRank?.choice_of_tooltips ?? [];
+    const isChoice = choices.length >= 2;
+    const tooltip = firstRank?.tooltip ?? choices[0];
     const spellTooltip = tooltip?.spell_tooltip;
     const spellId = spellTooltip?.spell?.id;
     const name = tooltip?.talent?.name ?? '';
     const iconUrl = spellId ? await getSpellIconUrl(spellId, accessToken) : '';
+
+    let choiceB: { name: string; spellId: number | null; iconUrl: string; description: string; castTime: string; range: string; cost: string; cooldown: string } | null = null;
+    const choiceAEntryId: number | null = isChoice ? (choices[0]?.talent?.id ?? null) : null;
+    const choiceBEntryId: number | null = isChoice ? (choices[1]?.talent?.id ?? null) : null;
+    if (isChoice) {
+      const ttB = choices[1]?.spell_tooltip;
+      const spellIdB = ttB?.spell?.id ?? null;
+      choiceB = {
+        name: choices[1]?.talent?.name ?? '',
+        spellId: spellIdB,
+        iconUrl: spellIdB ? await getSpellIconUrl(spellIdB, accessToken) : '',
+        description: (ttB?.description ?? '').replace(/\|n/gi, '\n'),
+        castTime: ttB?.cast_time ?? '',
+        range: ttB?.range ?? '',
+        cost: ttB?.power_cost ?? '',
+        cooldown: ttB?.cooldown ?? '',
+      };
+    }
+
     return {
       nodeID: node.id,
       row: node.display_row,
@@ -170,6 +191,10 @@ export async function getTalentTreeLayout(treeId: number, specId: number, access
       range: spellTooltip?.range ?? '',
       cost: spellTooltip?.power_cost ?? '',
       cooldown: spellTooltip?.cooldown ?? '',
+      isChoice,
+      choiceAEntryId,
+      choiceBEntryId,
+      choiceB,
     };
   }));
 

@@ -83,6 +83,7 @@ export default function NewFeature({
   onHeroTreeClick,
   topPlayerTelemetry,
   activeHeroTreeId,
+  consensusEntryIds,
 }: {
   telemetry: any;
   layout: any[];
@@ -97,6 +98,7 @@ export default function NewFeature({
   onHeroTreeClick?: (name: string) => void;
   topPlayerTelemetry?: any;
   activeHeroTreeId?: number;
+  consensusEntryIds?: Record<number, number>;
 }) {
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
   const activeNodes = telemetry?.event?.talentTree || [];
@@ -409,6 +411,16 @@ export default function NewFeature({
             ? (node.row - classRowOffset) - heroRowShift + HERO_ROW_OFFSET
             : getMappedRow(node);
 
+          // For choice nodes: WCL always records rank=1 for both options; use the majority
+          // entry ID from WCL data to determine which option the consensus chose.
+          const consensusEntryId = node.nodeID != null ? consensusEntryIds?.[node.nodeID] : undefined;
+          const chosenIsB = node.isChoice && node.choiceB != null
+            && node.choiceBEntryId != null
+            && consensusEntryId === node.choiceBEntryId;
+          const displayNode = chosenIsB
+            ? { ...node, name: node.choiceB.name, spellId: node.choiceB.spellId, iconUrl: node.choiceB.iconUrl, description: node.choiceB.description, castTime: node.choiceB.castTime, range: node.choiceB.range, cost: node.choiceB.cost, cooldown: node.choiceB.cooldown }
+            : node;
+
           return (
             <div
               key={node.nodeID}
@@ -417,24 +429,29 @@ export default function NewFeature({
                 gridColumn: colSpan > 1 ? `${mappedColumn} / span ${colSpan}` : mappedColumn,
               }}
               className={colSpan > 1 ? 'flex justify-center' : undefined}
-              onMouseEnter={(e) => handleMouseEnter(e, node, rank, showRank, freq)}
+              onMouseEnter={(e) => handleMouseEnter(e, displayNode, rank, showRank, freq)}
               onMouseLeave={handleMouseLeave}
             >
               <div
                 className={`w-10 h-10 rounded-full border-2 overflow-hidden transition-all relative ${
-                  node.spellId ? 'cursor-pointer' : 'cursor-default'
+                  displayNode.spellId ? 'cursor-pointer' : 'cursor-default'
                 } ${topPlayerTakes ? 'border-amber-400 shadow-[0_0_6px_1px_rgba(251,191,36,0.5)]' : isActive ? colors.border : 'border-zinc-700/20'}`}
-                onClick={() => node.spellId && window.open(`https://www.wowhead.com/spell=${node.spellId}`, '_blank', 'noopener,noreferrer')}
+                onClick={() => displayNode.spellId && window.open(`https://www.wowhead.com/spell=${displayNode.spellId}`, '_blank', 'noopener,noreferrer')}
               >
-                {node.iconUrl ? (
+                {displayNode.iconUrl ? (
                   <img
-                    src={node.iconUrl}
-                    alt={node.name}
+                    src={displayNode.iconUrl}
+                    alt={displayNode.name}
                     className="w-full h-full object-cover"
                     style={{ opacity: isActive ? 1 : 0.15 }}
                   />
                 ) : (
                   <div className={`w-full h-full ${isActive ? colors.activeBg : 'bg-zinc-900/50'}`} />
+                )}
+                {node.isChoice && (
+                  <div className="absolute top-0 right-0 w-3 h-3 rounded-full bg-zinc-900 border border-zinc-600 flex items-center justify-center" style={{ transform: 'translate(25%, -25%)' }}>
+                    <span className="text-[6px] text-zinc-400 leading-none font-bold">2</span>
+                  </div>
                 )}
                 {freq != null && freq > 0 && node.section !== 'hero' && (
                   <div className="absolute bottom-0 inset-x-0 bg-black/75 flex items-center justify-center py-0.5">

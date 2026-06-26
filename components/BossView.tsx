@@ -20,6 +20,7 @@ export interface HeroVariant {
     telemetry: { event: { talentTree: Array<{ nodeID: number; rank: number }> } };
     talentString: string | null;
     frequencyPct: Record<number, number>;
+    entryIds?: Record<number, number>;
   } | null;
   gear: {
     trinkets: Array<{ name: string; count: number; pct: number; avgIlvl: number; itemId: number; iconUrl: string; description: string }>;
@@ -349,6 +350,7 @@ export default function BossView({
               wowClass={wowClass}
               specName={spec}
               topPlayerTelemetry={active.players[0]?.telemetry}
+              consensusEntryIds={active.consensus?.entryIds}
             />
           </div>
         ) : (
