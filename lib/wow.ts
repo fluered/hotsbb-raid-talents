@@ -150,14 +150,25 @@ export async function getTalentTreeLayout(treeId: number, specId: number, access
         _heroTreeId: heroNodeTreeMap.get(n.id) ?? null,
       }))
     : (() => {
-        const seen = new Set<number>();
-        const nodes: any[] = [];
+        const seenIds = new Set<number>();
+        const allNodes: any[] = [];
         for (const ht of (data.hero_talent_trees || [])) {
           for (const n of (ht.hero_talent_nodes || [])) {
-            if (!seen.has(n.id)) {
-              seen.add(n.id);
-              nodes.push({ ...n, _section: 'hero', _heroTreeId: heroNodeTreeMap.get(n.id) ?? null });
-            }
+            if (seenIds.has(n.id)) continue;
+            seenIds.add(n.id);
+            allNodes.push({ ...n, _section: 'hero', _heroTreeId: heroNodeTreeMap.get(n.id) ?? null });
+          }
+        }
+        // When two nodes share the same visual position (same display_row + display_col),
+        // keep tree-specific (non-null treeId) over shared gateway (null treeId).
+        // Among same-priority nodes at the same position, keep the first encountered.
+        const takenPos = new Set<string>();
+        const nodes: any[] = [];
+        for (const pass of [false, true]) { // false = tree-specific first, true = shared gateway
+          for (const node of allNodes) {
+            if ((node._heroTreeId === null) !== pass) continue;
+            const key = `${node.display_row},${node.display_col}`;
+            if (!takenPos.has(key)) { takenPos.add(key); nodes.push(node); }
           }
         }
         return nodes;

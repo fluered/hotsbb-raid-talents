@@ -163,11 +163,9 @@ export default function NewFeature({
   const heroSectionNodes  = visibleLayout.filter((n: any) => n.section === 'hero');
   const specSectionNodes  = visibleLayout.filter((n: any) => n.section === 'spec');
 
-  const classColMap = makeColMap(classSectionNodes);
   const heroColMap  = makeColMap(heroSectionNodes);
   const specColMap  = makeColMap(specSectionNodes);
 
-  const classMaxCol = classColMap.size || 0;
   const heroMaxCol  = heroColMap.size  || 0;
   const specMaxCol  = specColMap.size  || 0;
 
@@ -197,6 +195,14 @@ export default function NewFeature({
   const allHeroColSet = new Set(
     layout.filter((n: any) => n.section === 'hero').map((n: any) => n.column)
   );
+
+  // Outlier class nodes (any class node at a column beyond classClusterMax that overlaps any hero
+  // tree column) are repositioned into the hero section area when their tree is active, or
+  // suppressed when inactive. Either way their column must not inflate classMaxCol and heroOffset.
+  const classColMap = makeColMap(
+    classSectionNodes.filter((n: any) => !(allHeroColSet.has(n.column) && (n.column as number) > classClusterMax))
+  );
+  const classMaxCol = classColMap.size || 0;
 
   const SEP = 2;
   const heroOffset = classMaxCol + SEP;
@@ -246,14 +252,21 @@ export default function NewFeature({
   // classClusterMax is already computed above alongside bridgeClassNodeIds.
   const hasOutlierClassCol = classSectionNodes.some((n: any) => allHeroColSet.has(n.column) && (n.column as number) > classClusterMax);
   const classRowOffset = hasOutlierClassCol ? (classMinRow - 1) : 0;
-  // When a bridge class node is present (e.g. Scalecommander), it occupies one row above the
-  // first hero row, so the hero section naturally starts one row lower. When there's no bridge
-  // (e.g. Flameshaper) but the class tree has a row gap (classRowOffset > 0), shift the hero
-  // section up by 1 so both views align at the same starting row.
-  const heroBridgeAdjust = (hasPortrait && classRowOffset > 0 && bridgeClassNodeIds.size === 0) ? 1 : 0;
-  const heroRowShift = hasPortrait
+  // When the class tree has a row gap (classRowOffset > 0) but no bridge class node is visible
+  // (e.g. Flameshaper view), hero nodes would start one row higher than in bridge views — apply +1
+  // to compensate. Also apply +1 when a bridge exists at the *same raw row* as the first hero node
+  // (Augmentation Scalecommander: bridge and hero gateway share row 2), because in that case the
+  // bridge occupies the hero start row rather than the row above it.
+  const heroBridgeAdjust = (hasPortrait && classRowOffset > 0 &&
+    (bridgeClassNodeIds.size === 0 || classMinRow === heroMinRow)) ? 1 : 0;
+  const heroRowShiftRaw = hasPortrait
     ? heroMinRow - Math.max(3, (classSortedRows[1] ?? classMinRow + 1) + 1) + heroBridgeAdjust
     : Math.max(0, heroMinRow - classMinRow - 2);
+  // Clamp shift so first hero node never lands above grid row 4 (inside the portrait area).
+  // firstHeroGrid = (heroMinRow - classRowOffset) - heroRowShift + 1, must be >= 4.
+  const heroRowShift = hasPortrait
+    ? Math.min(heroRowShiftRaw, heroMinRow - classRowOffset - 3)
+    : heroRowShiftRaw;
 
   function getMappedRow(node: any): number {
     const r = node.row - classRowOffset;
