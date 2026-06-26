@@ -307,23 +307,24 @@ export default function NewFeature({
     return 1;
   }
 
-  // Apex nodes = spec-section nodes at the bottom row. Only show the allocation hint when at
-  // least one apex node has maxRanks > 1 (i.e. the total point budget exceeds the node count).
-  const specMaxRow = specSectionNodes.length > 0 ? Math.max(...specSectionNodes.map((n: any) => n.row as number)) : 0;
-  const apexNodes = specSectionNodes.filter((n: any) => n.row === specMaxRow);
+  // Apex nodes = the bottom spec-tree tier with > 1 node. Work upward from the last row so that
+  // single-node capstone rows (e.g. Spiritfont at row 12) are skipped in favor of the actual
+  // last multi-node tier (e.g. row 11 for Mistweaver with 5 nodes).
+  const specRowsSorted = [...new Set(specSectionNodes.map((n: any) => n.row as number))].sort((a, b) => b - a);
+  const apexRow = specRowsSorted.find(row => specSectionNodes.filter((n: any) => n.row === row).length > 1) ?? (specRowsSorted[0] ?? 0);
+  const apexNodes = specSectionNodes.filter((n: any) => n.row === apexRow);
   const apexNodeIds = new Set<number>(apexNodes.map((n: any) => n.nodeID as number));
   const apexMaxPts = apexNodes.reduce((s: number, n: any) => s + (n.maxRanks as number), 0);
   const apexUsedPts = activeNodes.filter((t: any) => apexNodeIds.has(t.nodeID)).reduce((s: number, t: any) => s + (t.rank as number), 0);
-  const apexHasMultiRank = apexMaxPts > apexNodes.length;
 
   const handleMouseEnter = useCallback((e: React.MouseEvent, node: any, rank: number, showRank: boolean, freq?: number) => {
     if (!node.name) return;
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const apexInfo = apexHasMultiRank && node.section === 'spec' && apexNodeIds.has(node.nodeID)
+    const apexInfo = apexNodes.length > 1 && node.section === 'spec' && apexNodeIds.has(node.nodeID)
       ? { used: apexUsedPts, max: apexMaxPts, count: apexNodes.length }
       : undefined;
     setTooltip({ node, rank, showRank, rect, freq, apexInfo });
-  }, [apexHasMultiRank, apexNodeIds, apexUsedPts, apexMaxPts, apexNodes.length]);
+  }, [apexNodes.length, apexNodeIds, apexUsedPts, apexMaxPts]);
 
   const handleMouseLeave = useCallback(() => setTooltip(null), []);
 
