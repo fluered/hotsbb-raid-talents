@@ -13,12 +13,13 @@ interface TooltipState {
   showRank: boolean;
   rect: DOMRect;
   freq?: number;
+  apexInfo?: { used: number; max: number; count: number };
 }
 
 function Tooltip({ tip, colors }: { tip: TooltipState; colors: { color: string } }) {
   const TOOLTIP_W = 256;
   const MARGIN = 10;
-  const { node, rank, showRank, rect, freq } = tip;
+  const { node, rank, showRank, rect, freq, apexInfo } = tip;
 
   // Horizontal: prefer left-aligned to node, clamp to viewport
   let left = rect.left;
@@ -48,6 +49,11 @@ function Tooltip({ tip, colors }: { tip: TooltipState; colors: { color: string }
                 freq >= 90 ? 'text-white' : freq >= 70 ? colors.color : 'text-zinc-500'
               }`}>
                 {freq}% of top players
+              </span>
+            )}
+            {apexInfo && (
+              <span className="text-[10px] text-zinc-400">
+                {apexInfo.used}/{apexInfo.max} pts used across {apexInfo.count} apex nodes
               </span>
             )}
           </div>
@@ -301,11 +307,23 @@ export default function NewFeature({
     return 1;
   }
 
+  // Apex nodes = spec-section nodes at the bottom row. Only show the allocation hint when at
+  // least one apex node has maxRanks > 1 (i.e. the total point budget exceeds the node count).
+  const specMaxRow = specSectionNodes.length > 0 ? Math.max(...specSectionNodes.map((n: any) => n.row as number)) : 0;
+  const apexNodes = specSectionNodes.filter((n: any) => n.row === specMaxRow);
+  const apexNodeIds = new Set<number>(apexNodes.map((n: any) => n.nodeID as number));
+  const apexMaxPts = apexNodes.reduce((s: number, n: any) => s + (n.maxRanks as number), 0);
+  const apexUsedPts = activeNodes.filter((t: any) => apexNodeIds.has(t.nodeID)).reduce((s: number, t: any) => s + (t.rank as number), 0);
+  const apexHasMultiRank = apexMaxPts > apexNodes.length;
+
   const handleMouseEnter = useCallback((e: React.MouseEvent, node: any, rank: number, showRank: boolean, freq?: number) => {
     if (!node.name) return;
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    setTooltip({ node, rank, showRank, rect, freq });
-  }, []);
+    const apexInfo = apexHasMultiRank && node.section === 'spec' && apexNodeIds.has(node.nodeID)
+      ? { used: apexUsedPts, max: apexMaxPts, count: apexNodes.length }
+      : undefined;
+    setTooltip({ node, rank, showRank, rect, freq, apexInfo });
+  }, [apexHasMultiRank, apexNodeIds, apexUsedPts, apexMaxPts, apexNodes.length]);
 
   const handleMouseLeave = useCallback(() => setTooltip(null), []);
 
@@ -444,7 +462,6 @@ export default function NewFeature({
               onMouseEnter={(e) => handleMouseEnter(e, displayNode, rank, showRank, freq)}
               onMouseLeave={handleMouseLeave}
             >
-              <div className="relative">
               <div
                 className={`w-10 h-10 rounded-full border-2 overflow-hidden transition-all relative ${
                   displayNode.spellId ? 'cursor-pointer' : 'cursor-default'
@@ -471,14 +488,6 @@ export default function NewFeature({
                     <span className={`text-[8px] font-bold tabular-nums leading-none ${isActive ? 'text-white' : 'text-zinc-400'}`}>{freq}%</span>
                   </div>
                 )}
-              </div>
-              {showRank && (
-                <div className="absolute -bottom-2 inset-x-0 flex justify-center gap-0.5 pointer-events-none">
-                  {Array.from({ length: node.maxRanks }, (_, i) => (
-                    <span key={i} className={`w-1.5 h-1.5 rounded-full ${i < rank ? 'bg-emerald-400' : 'bg-zinc-700 border border-zinc-600'}`} />
-                  ))}
-                </div>
-              )}
               </div>
             </div>
           );
