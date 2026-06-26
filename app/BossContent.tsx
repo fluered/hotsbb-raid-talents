@@ -26,6 +26,7 @@ export default async function BossContent({
   nodeColors,
   region = 'us',
   wclZoneId,
+  metric = 'dps',
 }: {
   bossId: number;
   className: string;
@@ -34,6 +35,7 @@ export default async function BossContent({
   nodeColors: { color: string; border: string; activeBg: string };
   region?: string;
   wclZoneId?: number | null;
+  metric?: string;
 }) {
   try {
     const [wclToken, blizzardToken] = await Promise.all([getWclToken(), getBlizzardToken(region)]);
@@ -42,8 +44,8 @@ export default async function BossContent({
     const [treeInfo, rankingsResult] = await Promise.all([
       getTalentTreeId(spec, className, blizzardToken),
       unstable_cache(
-        async () => ({ rankings: await getWclRankings(wclToken, bossId, className, spec, difficulty, region), fetchedAt: Date.now() }),
-        [`wcl-rankings-${bossId}-${className}-${spec}-${difficulty}-${region}`],
+        async () => ({ rankings: await getWclRankings(wclToken, bossId, className, spec, difficulty, region, metric), fetchedAt: Date.now() }),
+        [`wcl-rankings-${bossId}-${className}-${spec}-${difficulty}-${region}-${metric}`],
         { revalidate: 7200 }
       )(),
     ]);
@@ -1111,6 +1113,7 @@ export default async function BossContent({
           dataFetchedAt={dataFetchedAt}
           wclUrl={wclUrl ?? undefined}
           wowClass={className}
+          metric={metric}
         />
       );
     }
@@ -1137,6 +1140,7 @@ export default async function BossContent({
           dataFetchedAt={dataFetchedAt}
           wclUrl={wclUrl ?? undefined}
           wowClass={className}
+          metric={metric}
         />
       );
     }

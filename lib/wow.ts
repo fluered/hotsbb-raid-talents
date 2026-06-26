@@ -139,7 +139,7 @@ export async function getTalentTreeLayout(treeId: number, specId: number, access
     return { id: ht.id, name: ht.name, imageUrl };
   });
 
-  const allRaw = [
+  const allRawUnsorted = [
     ...(data.class_talent_nodes || []).map((n: any) => ({ ...n, _section: 'class', _heroTreeId: null })),
     ...(data.spec_talent_nodes || []).map((n: any) => ({
       ...n,
@@ -147,6 +147,18 @@ export async function getTalentTreeLayout(treeId: number, specId: number, access
       _heroTreeId: heroNodeTreeMap.get(n.id) ?? null,
     })),
   ];
+  // Blizzard occasionally lists the same node in both class_talent_nodes and spec_talent_nodes.
+  // Deduplicate by ID, preferring the most specific section: hero > spec > class.
+  // "First wins" would drop hero nodes that also appear in class_talent_nodes.
+  const sectionPriority = (s: string) => s === 'hero' ? 2 : s === 'spec' ? 1 : 0;
+  const bestById = new Map<number, any>();
+  for (const n of allRawUnsorted) {
+    const existing = bestById.get(n.id);
+    if (!existing || sectionPriority(n._section) > sectionPriority(existing._section)) {
+      bestById.set(n.id, n);
+    }
+  }
+  const allRaw = [...bestById.values()];
 
   const mapped = await Promise.all(allRaw.map(async (node: any) => {
     const firstRank = node.ranks?.[0];

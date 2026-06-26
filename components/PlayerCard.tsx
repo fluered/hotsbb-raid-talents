@@ -11,6 +11,7 @@ export default function PlayerCard({
   wowClass,
   specName,
   heroTrees,
+  metric = 'dps',
 }: {
   player: any;
   layout: any[];
@@ -19,6 +20,7 @@ export default function PlayerCard({
   wowClass?: string;
   specName?: string;
   heroTrees?: Array<{ id: number; name: string; imageUrl?: string }>;
+  metric?: string;
 }) {
   const activeNodeIds = new Set<number>((player.telemetry?.event?.talentTree ?? []).map((t: any) => t.nodeID));
   const activeHeroTreeId = layout.find((n: any) => n.section === 'hero' && n.heroTreeId != null && activeNodeIds.has(n.nodeID))?.heroTreeId ?? null;
@@ -85,7 +87,7 @@ export default function PlayerCard({
                 <span className="text-sm font-black text-emerald-400 tabular-nums">
                   {Math.round(player.amount).toLocaleString()}
                 </span>
-                <span className="text-[10px] text-zinc-600 ml-1">DPS</span>
+                <span className="text-[10px] text-zinc-600 ml-1">{metric.toUpperCase()}</span>
               </div>
             </>
           )}

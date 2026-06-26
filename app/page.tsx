@@ -7,13 +7,13 @@ import DungeonCardImage from '../components/DungeonCardImage';
 import {
   getWclToken, getBlizzardToken, getRaidStructure,
   POPULAR_SPECS, SPEC_IDS, MIDNIGHT_RAIDS, CLASS_IDS,
-  MIDNIGHT_DUNGEONS, MPLUS_DIFFICULTY, MPLUS_ZONE_ID,
+  MIDNIGHT_DUNGEONS, MPLUS_DIFFICULTY, MPLUS_ZONE_ID, HEALER_SPECS,
 } from '../lib/wow';
 
 // ─── Metadata ─────────────────────────────────────────────────────────────────
 
 interface PageProps {
-  searchParams: Promise<{ boss?: string; bossName?: string; dungeon?: string; dungeonName?: string; mode?: string; class?: string; spec?: string; difficulty?: string; region?: string }>;
+  searchParams: Promise<{ boss?: string; bossName?: string; dungeon?: string; dungeonName?: string; mode?: string; class?: string; spec?: string; difficulty?: string; region?: string; metric?: string }>;
 }
 
 export async function generateMetadata({ searchParams }: PageProps): Promise<Metadata> {
@@ -86,6 +86,8 @@ export default async function Home(props: PageProps) {
   const activeSpec = searchParams.spec || null;
   const activeDifficulty = searchParams.difficulty ? parseInt(searchParams.difficulty) : 5;
   const activeRegion = (searchParams.region === 'eu' ? 'eu' : 'us') as 'us' | 'eu';
+  const isHealer = HEALER_SPECS.some(h => h.class === activeClass && h.spec === activeSpec);
+  const activeMetric: 'hps' | 'dps' = searchParams.metric === 'dps' ? 'dps' : searchParams.metric === 'hps' ? 'hps' : (isHealer ? 'hps' : 'dps');
 
   // Phase 1: zone structure (always needed for sidebar + boss grid)
   let zones: any[] = [];
@@ -208,19 +210,23 @@ export default async function Home(props: PageProps) {
     ? { color: currentClassObj.color, border: currentClassObj.border, activeBg: currentClassObj.activeBg }
     : { color: 'text-amber-400', border: 'border-amber-500/40', activeBg: 'bg-amber-500/10' };
 
-  const getFilterUrl = (overrides: { boss?: number | null; bossName?: string | null; class?: string | null; spec?: string | null; difficulty?: number; region?: string }) => {
+  const getFilterUrl = (overrides: { boss?: number | null; bossName?: string | null; class?: string | null; spec?: string | null; difficulty?: number; region?: string; metric?: string | null }) => {
     const b = overrides.boss !== undefined ? overrides.boss : activeBossId;
     const bn = overrides.bossName !== undefined ? overrides.bossName : (overrides.boss !== undefined ? null : activeBossName);
     const c = overrides.class !== undefined ? overrides.class : activeClass;
     const s = overrides.spec !== undefined ? overrides.spec : activeSpec;
     const d = overrides.difficulty !== undefined ? overrides.difficulty : activeDifficulty;
     const r = overrides.region !== undefined ? overrides.region : activeRegion;
+    // null means "clear metric from URL"; undefined means "inherit current metric"
+    const m = overrides.metric !== undefined ? overrides.metric : activeMetric;
     const params: string[] = [`difficulty=${d}`];
     if (r !== 'us') params.push(`region=${r}`);
     if (b) params.push(`boss=${b}`);
     if (bn) params.push(`bossName=${encodeURIComponent(bn)}`);
     if (c) params.push(`class=${encodeURIComponent(c)}`);
     if (s) params.push(`spec=${encodeURIComponent(s)}`);
+    const specMetricDefault = isHealer ? 'hps' : 'dps';
+    if (m && m !== specMetricDefault) params.push(`metric=${m}`);
     return `?${params.join('&')}`;
   };
 
@@ -320,7 +326,7 @@ export default async function Home(props: PageProps) {
               return (
                 <Link
                   key={cls.class}
-                  href={activeMode === 'dungeons' ? getDungeonUrl({ class: cls.class, spec: null, dungeon: null }) : getFilterUrl({ class: cls.class, spec: null, boss: null })}
+                  href={activeMode === 'dungeons' ? getDungeonUrl({ class: cls.class, spec: null, dungeon: null }) : getFilterUrl({ class: cls.class, spec: null, boss: null, metric: null })}
                   className={`flex items-center gap-2.5 whitespace-nowrap px-3 py-2 rounded-lg text-sm font-medium transition-all ${
                     activeClass === cls.class
                       ? `${cls.activeBg} ${cls.color} font-black`
@@ -359,7 +365,7 @@ export default async function Home(props: PageProps) {
                     return (
                       <Link
                         key={cls.class}
-                        href={activeMode === 'dungeons' ? getDungeonUrl({ class: cls.class, spec: null, dungeon: null }) : getFilterUrl({ class: cls.class, spec: null, boss: null })}
+                        href={activeMode === 'dungeons' ? getDungeonUrl({ class: cls.class, spec: null, dungeon: null }) : getFilterUrl({ class: cls.class, spec: null, boss: null, metric: null })}
                         className="flex flex-col items-center gap-2 p-3 rounded-xl border border-zinc-800/60 bg-zinc-900/30 hover:bg-zinc-900/70 hover:border-zinc-700 transition-all group"
                       >
                         {iconUrl
@@ -398,7 +404,7 @@ export default async function Home(props: PageProps) {
                     const iconUrl = specIconMap[spec];
                     const href = activeMode === 'dungeons'
                       ? getDungeonUrl({ spec, dungeon: null })
-                      : getFilterUrl({ spec, boss: null });
+                      : getFilterUrl({ spec, boss: null, metric: null });
                     return (
                       <Link
                         key={spec}
@@ -415,6 +421,23 @@ export default async function Home(props: PageProps) {
                     );
                   })}
                 </div>
+
+                {/* Metric toggle — visible whenever a healer spec is selected */}
+                {isHealer && activeSpec && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-black text-zinc-600 uppercase tracking-widest">Ranked by</span>
+                    <div className="flex items-center gap-1 bg-zinc-900 rounded-lg p-0.5 border border-zinc-800/80">
+                      <Link
+                        href={getFilterUrl({ metric: 'hps' })}
+                        className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${activeMetric === 'hps' ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30' : 'text-zinc-500 hover:text-zinc-300'}`}
+                      >HPS</Link>
+                      <Link
+                        href={getFilterUrl({ metric: 'dps' })}
+                        className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${activeMetric === 'dps' ? 'bg-orange-500/15 text-orange-400 border border-orange-500/30' : 'text-zinc-500 hover:text-zinc-300'}`}
+                      >DPS</Link>
+                    </div>
+                  </div>
+                )}
 
                 {activeMode === 'raids' ? (
                   <>
@@ -449,6 +472,7 @@ export default async function Home(props: PageProps) {
                           nodeColors={nodeColors}
                           region={activeRegion}
                           wclZoneId={wclZoneId}
+                          metric={activeMetric}
                         />
                       </Suspense>
                     )}

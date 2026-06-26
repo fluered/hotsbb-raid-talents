@@ -96,6 +96,7 @@ export default function BossView({
   dataFetchedAt,
   wclUrl,
   wowClass,
+  metric = 'dps',
 }: {
   variants: HeroVariant[];
   layout: any[];
@@ -106,6 +107,7 @@ export default function BossView({
   dataFetchedAt?: number;
   wclUrl?: string;
   wowClass?: string;
+  metric?: string;
 }) {
   const [activeIdx, setActiveIdx] = useState(0);
   const [activeTip, setActiveTip] = useState<ItemTip | null>(null);
@@ -250,7 +252,7 @@ export default function BossView({
           : Math.max(...trees.map(v => v.topDps!));
         const getTop = (v: typeof trees[0]) => useScore ? v.topScore! : v.topDps!;
         const getAvg = (v: typeof trees[0]) => useScore ? v.avgScore : v.avgDps;
-        const label = useScore ? 'M+ Score by Hero Path' : 'DPS by Hero Path';
+        const label = useScore ? 'M+ Score by Hero Path' : `${metric.toUpperCase()} by Hero Path`;
         const fmtTop = (v: number) => useScore ? v.toFixed(1) : Math.round(v).toLocaleString();
         const fmtAvg = (v: number) => useScore ? v.toFixed(1) : Math.round(v).toLocaleString();
         return (
@@ -647,6 +649,7 @@ export default function BossView({
                 idx={idx}
                 wowClass={wowClass}
                 specName={spec}
+                metric={metric}
                 heroTrees={variants
                   .filter(v => v.id !== null)
                   .map(v => ({ id: v.id!, name: v.name, imageUrl: v.imageUrl }))}
