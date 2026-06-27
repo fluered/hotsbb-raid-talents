@@ -75,6 +75,56 @@ function Tooltip({ tip, colors }: { tip: TooltipState; colors: { color: string }
   );
 }
 
+function ChoicePopup({
+  node,
+  rect,
+  aChosen,
+  choiceFreq,
+  colors,
+}: {
+  node: any;
+  rect: DOMRect;
+  aChosen: boolean;
+  choiceFreq?: { aPct: number; bPct: number };
+  colors: { color: string; border: string };
+}) {
+  const POPUP_W = 176;
+  const midX = rect.left + rect.width / 2;
+  let left = midX - POPUP_W / 2;
+  if (left + POPUP_W > window.innerWidth - 8) left = window.innerWidth - POPUP_W - 8;
+  if (left < 8) left = 8;
+
+  const choices = [
+    { name: node.name, iconUrl: node.iconUrl, spellId: node.spellId, isChosen: aChosen, pct: choiceFreq?.aPct ?? null },
+    { name: node.choiceB?.name ?? '', iconUrl: node.choiceB?.iconUrl ?? '', spellId: node.choiceB?.spellId ?? null, isChosen: !aChosen, pct: choiceFreq?.bPct ?? null },
+  ];
+
+  return createPortal(
+    <div
+      style={{ position: 'fixed', top: rect.top - 8, left, transform: 'translateY(-100%)', zIndex: 9997, width: POPUP_W, pointerEvents: 'none' }}
+      className="flex gap-2 pb-1.5"
+    >
+      {choices.map((c, i) => (
+        <div
+          key={i}
+          className={`flex-1 flex flex-col items-center gap-1 p-2 rounded-xl bg-zinc-950/95 border backdrop-blur-sm shadow-xl ${c.isChosen ? colors.border : 'border-zinc-800/60'}`}
+        >
+          <div className={`w-9 h-9 rounded-full overflow-hidden border-2 flex-shrink-0 ${c.isChosen ? colors.border : 'border-zinc-700/50'}`}>
+            {c.iconUrl
+              ? <img src={c.iconUrl} alt={c.name} className="w-full h-full object-cover" />
+              : <div className="w-full h-full bg-zinc-800" />}
+          </div>
+          {c.pct !== null && (
+            <span className={`text-[10px] font-black tabular-nums leading-none ${c.isChosen ? 'text-white' : 'text-zinc-500'}`}>{c.pct}%</span>
+          )}
+          <span className={`text-[9px] font-medium text-center leading-tight line-clamp-2 px-0.5 ${c.isChosen ? 'text-zinc-200' : 'text-zinc-500'}`}>{c.name}</span>
+        </div>
+      ))}
+    </div>,
+    document.body
+  );
+}
+
 export default function NewFeature({
   telemetry,
   layout,
@@ -90,6 +140,7 @@ export default function NewFeature({
   topPlayerTelemetry,
   activeHeroTreeId,
   consensusEntryIds,
+  choiceFreqMap,
 }: {
   telemetry: any;
   layout: any[];
@@ -105,8 +156,10 @@ export default function NewFeature({
   topPlayerTelemetry?: any;
   activeHeroTreeId?: number;
   consensusEntryIds?: Record<number, number>;
+  choiceFreqMap?: Record<number, { aEntryId: number; bEntryId: number; aPct: number; bPct: number }>;
 }) {
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
+  const [choiceHover, setChoiceHover] = useState<{ node: any; rect: DOMRect; aChosen: boolean } | null>(null);
   const activeNodes = telemetry?.event?.talentTree || [];
   const activeNodeIds = new Set<number>(activeNodes.map((t: any) => t.nodeID));
 
@@ -472,6 +525,8 @@ export default function NewFeature({
             ? { ...node, name: node.choiceB.name, spellId: node.choiceB.spellId, iconUrl: node.choiceB.iconUrl, description: node.choiceB.description, castTime: node.choiceB.castTime, range: node.choiceB.range, cost: node.choiceB.cost, cooldown: node.choiceB.cooldown }
             : node;
 
+          const isChoiceNode = node.isChoice && node.choiceB != null;
+
           return (
             <div
               key={node.nodeID}
@@ -480,8 +535,15 @@ export default function NewFeature({
                 gridColumn: colSpan > 1 ? `${mappedColumn} / span ${colSpan}` : mappedColumn,
               }}
               className={colSpan > 1 ? 'flex justify-center' : undefined}
-              onMouseEnter={(e) => handleMouseEnter(e, displayNode, rank, showRank, freq)}
-              onMouseLeave={handleMouseLeave}
+              onMouseEnter={(e) => {
+                if (isChoiceNode) {
+                  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                  setChoiceHover({ node, rect, aChosen: !chosenIsB });
+                } else {
+                  handleMouseEnter(e, displayNode, rank, showRank, freq);
+                }
+              }}
+              onMouseLeave={() => { setChoiceHover(null); handleMouseLeave(); }}
             >
               <div
                 className={`w-10 h-10 rounded-full border-2 overflow-hidden transition-all relative ${
@@ -499,10 +561,11 @@ export default function NewFeature({
                 ) : (
                   <div className={`w-full h-full ${isActive ? colors.activeBg : 'bg-zinc-900/50'}`} />
                 )}
-                {node.isChoice && (
-                  <div className="absolute top-0 right-0 w-3 h-3 rounded-full bg-zinc-900 border border-zinc-600 flex items-center justify-center" style={{ transform: 'translate(25%, -25%)' }}>
-                    <span className="text-[6px] text-zinc-400 leading-none font-bold">2</span>
-                  </div>
+                {isChoiceNode && (
+                  <>
+                    <span className="absolute left-0 top-1/2 -translate-y-1/2 text-amber-300 font-black leading-none pointer-events-none select-none" style={{ fontSize: 18, textShadow: '0 0 8px rgba(251,191,36,0.95), 0 0 4px rgba(251,191,36,0.7), 0 0 2px #000' }}>‹</span>
+                    <span className="absolute right-0 top-1/2 -translate-y-1/2 text-amber-300 font-black leading-none pointer-events-none select-none" style={{ fontSize: 18, textShadow: '0 0 8px rgba(251,191,36,0.95), 0 0 4px rgba(251,191,36,0.7), 0 0 2px #000' }}>›</span>
+                  </>
                 )}
                 {freq != null && freq > 0 && node.section !== 'hero' && (
                   <div className="absolute bottom-0 inset-x-0 bg-black/75 flex items-center justify-center py-0.5">
@@ -522,6 +585,15 @@ export default function NewFeature({
         </div>
       )}
 
+      {choiceHover && (
+        <ChoicePopup
+          node={choiceHover.node}
+          rect={choiceHover.rect}
+          aChosen={choiceHover.aChosen}
+          choiceFreq={choiceFreqMap?.[choiceHover.node.nodeID]}
+          colors={colors}
+        />
+      )}
       {tooltip && <Tooltip tip={tooltip} colors={colors} />}
     </>
   );

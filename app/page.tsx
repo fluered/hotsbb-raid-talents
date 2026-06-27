@@ -352,32 +352,47 @@ export default async function Home(props: PageProps) {
             )}
 
             {!activeClass ? (
-              <div className="py-10 space-y-8">
-                <div className="text-center space-y-2">
-                  <h1 className="text-2xl font-black text-zinc-100">Talent Finder</h1>
-                  <p className="text-sm text-zinc-500 max-w-sm mx-auto">
-                    Meta talent builds from top parses — per boss and per dungeon, per spec.
+              <div className="py-8 md:py-12 space-y-10">
+                {/* Hero */}
+                <div className="text-center space-y-3 max-w-lg mx-auto">
+                  <div className="flex items-center justify-center gap-2 text-[10px] font-black text-zinc-600 uppercase tracking-widest">
+                    <span>Sporefall</span>
+                    <span className="text-zinc-800">·</span>
+                    <span>Midnight</span>
+                    <span className="text-zinc-800">·</span>
+                    <span>Season 1 Dungeons</span>
+                  </div>
+                  <h1 className="text-3xl font-black text-zinc-100 leading-tight">
+                    Meta builds for every boss
+                  </h1>
+                  <p className="text-sm text-zinc-500">
+                    Consensus talent trees and gear from top-parsing players, per boss, per spec.
                   </p>
                 </div>
-                <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-3 max-w-2xl mx-auto">
-                  {POPULAR_SPECS.map(cls => {
-                    const iconUrl = classIconMap[cls.class];
-                    return (
-                      <Link
-                        key={cls.class}
-                        href={activeMode === 'dungeons' ? getDungeonUrl({ class: cls.class, spec: null, dungeon: null }) : getFilterUrl({ class: cls.class, spec: null, boss: null, metric: null })}
-                        className="flex flex-col items-center gap-2 p-3 rounded-xl border border-zinc-800/60 bg-zinc-900/30 hover:bg-zinc-900/70 hover:border-zinc-700 transition-all group"
-                      >
-                        {iconUrl
-                          ? <img src={iconUrl} alt={cls.class} className="w-10 h-10 rounded-lg" />
-                          : <div className="w-10 h-10 rounded-lg bg-zinc-800" />
-                        }
-                        <span className={`text-[11px] font-bold text-center leading-tight ${cls.color} group-hover:opacity-100 opacity-80`}>
-                          {cls.class}
-                        </span>
-                      </Link>
-                    );
-                  })}
+
+                {/* Class picker */}
+                <div className="space-y-3">
+                  <p className="text-center text-[10px] font-black text-zinc-600 uppercase tracking-widest">Pick your class to get started</p>
+                  <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2.5 max-w-2xl mx-auto">
+                    {POPULAR_SPECS.map(cls => {
+                      const iconUrl = classIconMap[cls.class];
+                      return (
+                        <Link
+                          key={cls.class}
+                          href={activeMode === 'dungeons' ? getDungeonUrl({ class: cls.class, spec: null, dungeon: null }) : getFilterUrl({ class: cls.class, spec: null, boss: null, metric: null })}
+                          className={`flex flex-col items-center gap-2.5 p-3.5 rounded-xl border border-zinc-800/60 bg-zinc-900/20 hover:bg-zinc-900/60 hover:border-zinc-700 transition-all group`}
+                        >
+                          {iconUrl
+                            ? <img src={iconUrl} alt={cls.class} className="w-10 h-10 rounded-lg opacity-90 group-hover:opacity-100 transition-opacity" />
+                            : <div className="w-10 h-10 rounded-lg bg-zinc-800" />
+                          }
+                          <span className={`text-[11px] font-bold text-center leading-tight ${cls.color} opacity-75 group-hover:opacity-100 transition-opacity`}>
+                            {cls.class}
+                          </span>
+                        </Link>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
             ) : (

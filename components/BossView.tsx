@@ -21,6 +21,7 @@ export interface HeroVariant {
     talentString: string | null;
     frequencyPct: Record<number, number>;
     entryIds?: Record<number, number>;
+    choiceFreq?: Record<number, { aEntryId: number; bEntryId: number; aPct: number; bPct: number }>;
   } | null;
   gear: {
     trinkets: Array<{ name: string; count: number; pct: number; avgIlvl: number; itemId: number; iconUrl: string; description: string }>;
@@ -110,10 +111,17 @@ export default function BossView({
   metric?: string;
 }) {
   const [activeIdx, setActiveIdx] = useState(0);
+  const [fading, setFading] = useState(false);
   const [activeTip, setActiveTip] = useState<ItemTip | null>(null);
   const [activeSection, setActiveSection] = useState('meta-build');
   const [pillsVisible, setPillsVisible] = useState(true);
   const pillsRef = useRef<HTMLDivElement>(null);
+
+  const switchVariant = (idx: number) => {
+    if (idx === activeIdx) return;
+    setFading(true);
+    setTimeout(() => { setActiveIdx(idx); setFading(false); }, 120);
+  };
 
   const safeIdx = Math.min(activeIdx, Math.max(variants.length - 1, 0));
 
@@ -187,7 +195,7 @@ export default function BossView({
               return (
                 <button
                   key={i}
-                  onClick={() => setActiveIdx(i)}
+                  onClick={() => switchVariant(i)}
                   className={`flex items-center gap-1.5 rounded-full transition-all border px-2.5 py-1 ${
                     isActive
                       ? `${colors.activeBg} ${colors.border}`
@@ -205,6 +213,9 @@ export default function BossView({
         )}
       </nav>
 
+      {/* Everything below the sticky nav fades when switching hero tree tabs */}
+      <div className={`transition-opacity duration-[120ms] ${fading ? 'opacity-0' : 'opacity-100'}`}>
+
       {/* Large hero filter pills */}
       {hasHeroFilter && (
         <div ref={pillsRef} className="flex flex-wrap items-center gap-2">
@@ -216,7 +227,7 @@ export default function BossView({
             return (
               <button
                 key={i}
-                onClick={() => setActiveIdx(i)}
+                onClick={() => switchVariant(i)}
                 className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-bold transition-all border ${
                   isActive
                     ? `${colors.activeBg} ${colors.border} ${colors.color}`
@@ -265,7 +276,7 @@ export default function BossView({
               return (
                 <button
                   key={v.id}
-                  onClick={() => setActiveIdx(variants.indexOf(v))}
+                  onClick={() => switchVariant(variants.indexOf(v))}
                   className="w-full text-left group"
                 >
                   <div className="flex items-center gap-3 mb-1.5">
@@ -347,12 +358,13 @@ export default function BossView({
               }
               onHeroTreeClick={active.id === null ? (name) => {
                 const idx = variants.findIndex(v => v.name === name);
-                if (idx !== -1) setActiveIdx(idx);
+                if (idx !== -1) switchVariant(idx);
               } : undefined}
               wowClass={wowClass}
               specName={spec}
               topPlayerTelemetry={active.players[0]?.telemetry}
               consensusEntryIds={active.consensus?.entryIds}
+              choiceFreqMap={active.consensus?.choiceFreq}
             />
           </div>
         ) : (
@@ -666,6 +678,8 @@ export default function BossView({
           </div>
         </section>
       )}
+
+      </div>{/* end fade wrapper */}
 
       {activeTip && <ItemTooltip tip={activeTip} accentHex={accentHex} />}
     </div>

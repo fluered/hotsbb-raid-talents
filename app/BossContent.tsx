@@ -220,6 +220,34 @@ export default async function BossContent({
       return { ...player, telemetry: telemetryData, talentString, renderUrl, profileNodes };
     });
 
+    // Per-choice frequency: tally which entry (A or B) each player chose for every choice node,
+    // using the profileNodes from their Blizzard character loadout (which carries entryId).
+    const choiceFreqRaw: Record<number, { aEntryId: number; bEntryId: number; aCount: number; bCount: number }> = {};
+    for (const n of skeletonMap) {
+      const node = n as any;
+      if (node.isChoice && node.choiceAEntryId != null && node.choiceBEntryId != null)
+        choiceFreqRaw[node.nodeID] = { aEntryId: node.choiceAEntryId, bEntryId: node.choiceBEntryId, aCount: 0, bCount: 0 };
+    }
+    for (const player of detailedRankings) {
+      for (const pn of (player as any).profileNodes ?? []) {
+        const entry = choiceFreqRaw[pn.id];
+        if (!entry) continue;
+        const eid: number = pn.tooltip?.talent?.id;
+        if (eid === entry.aEntryId) entry.aCount++;
+        else if (eid === entry.bEntryId) entry.bCount++;
+      }
+    }
+    const metaChoiceFreq: Record<number, { aEntryId: number; bEntryId: number; aPct: number; bPct: number }> = {};
+    for (const [nodeIdStr, entry] of Object.entries(choiceFreqRaw)) {
+      const total = entry.aCount + entry.bCount;
+      if (total === 0) continue;
+      metaChoiceFreq[Number(nodeIdStr)] = {
+        aEntryId: entry.aEntryId, bEntryId: entry.bEntryId,
+        aPct: Math.round(entry.aCount / total * 100),
+        bPct: Math.round(entry.bCount / total * 100),
+      };
+    }
+
     // Aggregate trinkets â€” keyed by "name|ilvl" so each ilvl tier is a separate entry
     const trinketPlayerSets = new Map<string, { players: Set<number>; itemId: number; ilvl: number; name: string }>();
     // Track trinket names per player for pair synergy detection
@@ -1074,7 +1102,7 @@ export default async function BossContent({
         name: 'All',
         count: totalConsensusPlayers,
         totalPlayers: totalConsensusPlayers,
-        consensus: { telemetry: consensusTelemetry, talentString: metaTalentString, frequencyPct: metaFrequencyPct, entryIds: consensusEntryIds },
+        consensus: { telemetry: consensusTelemetry, talentString: metaTalentString, frequencyPct: metaFrequencyPct, entryIds: consensusEntryIds, choiceFreq: metaChoiceFreq },
         gear: { trinkets: topTrinkets, stats: avgStats, enchants: topEnchants, avgItemLevel, gems: topGems, consumables: topConsumables, embellishments: topEmbellishments, playerCount: totalGearPlayerCount, gearBySlot, trinketSynergy: topTrinketPair, ringSynergy: topRingPair },
         players: detailedRankings.slice(0, DISPLAY_N),
       });
@@ -1090,6 +1118,7 @@ export default async function BossContent({
             talentString: htc.talentString,
             frequencyPct: htc.frequencyPct ?? {},
             entryIds: htc.entryIds,
+            choiceFreq: metaChoiceFreq,
           } : null,
           gear: htc.gear ?? null,
           players: (htc.topPlayers ?? []).slice(0, DISPLAY_N),
