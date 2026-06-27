@@ -489,7 +489,7 @@ export default async function Home(props: PageProps) {
                               <Link
                                 key={dungeon.id}
                                 href={getDungeonUrl({ dungeon: dungeon.id, dungeonName: dungeon.name })}
-                                className={`relative h-16 rounded-xl overflow-hidden flex items-end transition-all border ${isSelected ? 'border-amber-500/60 ring-1 ring-amber-500/20' : 'border-zinc-800/60 hover:border-zinc-600'}`}
+                                className={`relative h-20 rounded-xl overflow-hidden flex items-end transition-all border ${isSelected ? 'border-amber-500/70 ring-2 ring-amber-500/25' : 'border-zinc-800/60 hover:border-zinc-600'}`}
                               >
                                 <DungeonCardImage
                                   primary={dungeonImageMap[dungeon.id]}

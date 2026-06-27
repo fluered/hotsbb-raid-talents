@@ -153,7 +153,7 @@ export default function BossView({
     <div className="space-y-6 md:space-y-8">
 
       {/* Sticky bar: jump nav + hero tree switcher */}
-      <nav className="sticky top-0 z-30 -mx-4 px-4 md:-mx-6 md:px-6 bg-[#0a0a0a]/95 backdrop-blur-sm border-b border-zinc-800/60">
+      <nav className="sticky top-0 z-30 -mx-4 px-4 md:-mx-6 md:px-6 bg-[#0a0a0a]/95 backdrop-blur-sm border-b border-zinc-800/60 shadow-lg shadow-black/40">
         {/* Row 1: Jump links */}
         <div className="flex gap-4 md:gap-5 overflow-x-auto scrollbar-none">
           {([
@@ -500,7 +500,15 @@ export default function BossView({
         const playerCount = gear!.playerCount;
         return (
           <section id="meta-gear" style={{ scrollMarginTop: '3rem' }}>
-            <h2 className="text-base font-black text-white tracking-tight mb-3">Meta Gear</h2>
+            <div className="mb-3 flex items-baseline gap-3">
+              <h2 className="text-base font-black text-white tracking-tight">Meta Gear</h2>
+              <p className="text-sm text-zinc-500">
+                · {active.totalPlayers} top {active.id !== null ? `${active.name} ` : ''}parses
+                {gear!.playerCount < active.totalPlayers && (
+                  <span className="text-zinc-600"> · {gear!.playerCount} with gear data</span>
+                )}
+              </p>
+            </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
               {slots.map(slotKey => {
                 const items = gearBySlot[slotKey];
