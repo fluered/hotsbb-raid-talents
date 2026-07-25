@@ -845,8 +845,10 @@ export default async function BossContent({
     const dataFetchedAt = rankingsResult.fetchedAt;
     const totalAvailableParses = rawRankings.length;
     if (rawRankings.length === 0) {
-      const diffLabel = difficulty === 5 ? 'Mythic' : 'Heroic';
-      const altDiff = difficulty === 5 ? 'Heroic' : 'Mythic';
+      const isRaidDifficulty = difficulty === 4 || difficulty === 5;
+      const diffLabel = isRaidDifficulty ? (difficulty === 5 ? 'Mythic' : 'Heroic') : 'Mythic+';
+      const altDiff = isRaidDifficulty ? (difficulty === 5 ? 'Heroic' : 'Mythic') : null;
+      const contentNoun = isRaidDifficulty ? 'boss' : 'dungeon';
       return (
         <div className="flex flex-col items-center justify-center py-20 text-center space-y-4">
           <div className="w-16 h-16 rounded-full bg-zinc-900 border border-zinc-800 flex items-center justify-center text-2xl opacity-40">
@@ -855,11 +857,13 @@ export default async function BossContent({
           <div>
             <p className="text-zinc-300 font-bold">No {diffLabel} data</p>
             <p className="text-zinc-600 text-sm mt-1">
-              No {diffLabel} {spec} {className} parses found for this boss.
+              No {diffLabel} {spec} {className} parses found for this {contentNoun}.
             </p>
-            <p className="text-zinc-700 text-xs mt-3">
-              Try switching to {altDiff} using the toggle in the header.
-            </p>
+            {altDiff && (
+              <p className="text-zinc-700 text-xs mt-3">
+                Try switching to {altDiff} using the toggle in the header.
+              </p>
+            )}
           </div>
         </div>
       );
@@ -1288,7 +1292,8 @@ export default async function BossContent({
       );
     }
 
-    const diffLabel2 = difficulty === 5 ? 'Mythic' : 'Heroic';
+    const isRaidDifficulty2 = difficulty === 4 || difficulty === 5;
+    const diffLabel2 = isRaidDifficulty2 ? (difficulty === 5 ? 'Mythic' : 'Heroic') : 'Mythic+';
     return (
       <div className="flex flex-col items-center justify-center py-20 text-center space-y-4">
         <div className="w-16 h-16 rounded-full bg-zinc-900 border border-zinc-800 flex items-center justify-center text-2xl opacity-40">
@@ -1297,11 +1302,13 @@ export default async function BossContent({
         <div>
           <p className="text-zinc-300 font-bold">No {diffLabel2} data</p>
           <p className="text-zinc-600 text-sm mt-1">
-            No {diffLabel2} {spec} {className} parses found for this boss.
+            No {diffLabel2} {spec} {className} parses found for this {isRaidDifficulty2 ? 'boss' : 'dungeon'}.
           </p>
-          <p className="text-zinc-700 text-xs mt-3">
-            Try switching to {difficulty === 5 ? 'Heroic' : 'Mythic'} using the toggle in the header.
-          </p>
+          {isRaidDifficulty2 && (
+            <p className="text-zinc-700 text-xs mt-3">
+              Try switching to {difficulty === 5 ? 'Heroic' : 'Mythic'} using the toggle in the header.
+            </p>
+          )}
         </div>
       </div>
     );
