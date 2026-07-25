@@ -3,6 +3,10 @@
     {
       "path": "/api/warm-tier-cache",
       "schedule": "0 4 * * 1"
+    },
+    {
+      "path": "/api/warm-talent-layouts",
+      "schedule": "0 3 * * 1"
     }
   ]
 }
