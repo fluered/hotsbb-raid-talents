@@ -89,36 +89,63 @@ function ChoicePopup({
   choiceFreq?: { aPct: number; bPct: number };
   colors: { color: string; border: string };
 }) {
-  const POPUP_W = 176;
+  const POPUP_W = 272;
   const midX = rect.left + rect.width / 2;
   let left = midX - POPUP_W / 2;
   if (left + POPUP_W > window.innerWidth - 8) left = window.innerWidth - POPUP_W - 8;
   if (left < 8) left = 8;
 
   const choices = [
-    { name: node.name, iconUrl: node.iconUrl, spellId: node.spellId, isChosen: aChosen, pct: choiceFreq?.aPct ?? null },
-    { name: node.choiceB?.name ?? '', iconUrl: node.choiceB?.iconUrl ?? '', spellId: node.choiceB?.spellId ?? null, isChosen: !aChosen, pct: choiceFreq?.bPct ?? null },
+    {
+      name: node.name, iconUrl: node.iconUrl, spellId: node.spellId, isChosen: aChosen,
+      pct: choiceFreq?.aPct ?? null, description: node.description,
+      castTime: node.castTime, range: node.range, cost: node.cost, cooldown: node.cooldown,
+    },
+    {
+      name: node.choiceB?.name ?? '', iconUrl: node.choiceB?.iconUrl ?? '',
+      spellId: node.choiceB?.spellId ?? null, isChosen: !aChosen,
+      pct: choiceFreq?.bPct ?? null, description: node.choiceB?.description ?? '',
+      castTime: node.choiceB?.castTime ?? '', range: node.choiceB?.range ?? '',
+      cost: node.choiceB?.cost ?? '', cooldown: node.choiceB?.cooldown ?? '',
+    },
   ];
 
   return createPortal(
     <div
       style={{ position: 'fixed', top: rect.top - 8, left, transform: 'translateY(-100%)', zIndex: 9997, width: POPUP_W, pointerEvents: 'none' }}
-      className="flex gap-2 pb-1.5"
+      className="bg-zinc-950 border border-zinc-700 rounded-lg shadow-2xl overflow-hidden"
     >
       {choices.map((c, i) => (
         <div
           key={i}
-          className={`flex-1 flex flex-col items-center gap-1 p-2 rounded-xl bg-zinc-950/95 border backdrop-blur-sm shadow-xl ${c.isChosen ? colors.border : 'border-zinc-800/60'}`}
+          className={`px-3 py-2.5 ${i === 0 ? 'border-b border-zinc-800' : ''} ${c.isChosen ? 'bg-zinc-900/50' : ''}`}
         >
-          <div className={`relative w-9 h-9 rounded-full overflow-hidden border-2 flex-shrink-0 ${c.isChosen ? colors.border : 'border-zinc-700/50'}`}>
-            {c.iconUrl
-              ? <Image src={c.iconUrl} alt={c.name} fill className="object-cover" />
-              : <div className="w-full h-full bg-zinc-800" />}
+          <div className="flex items-center gap-2 mb-1">
+            <div className={`relative w-8 h-8 rounded-full overflow-hidden border-2 flex-shrink-0 ${c.isChosen ? colors.border : 'border-zinc-700/50'}`}>
+              {c.iconUrl
+                ? <Image src={c.iconUrl} alt={c.name} fill className="object-cover" />
+                : <div className="w-full h-full bg-zinc-800" />}
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between gap-2">
+                <span className={`text-xs font-black leading-tight ${c.isChosen ? 'text-white' : 'text-zinc-400'}`}>{c.name}</span>
+                {c.pct !== null && (
+                  <span className={`text-[10px] font-black tabular-nums shrink-0 ${c.isChosen ? 'text-white' : 'text-zinc-500'}`}>{c.pct}%</span>
+                )}
+              </div>
+              {(c.castTime || c.range || c.cooldown || c.cost) && (
+                <div className="flex flex-wrap gap-x-2 mt-0.5">
+                  {c.castTime && <span className="text-[9px] text-zinc-500">{c.castTime}</span>}
+                  {c.range && <span className="text-[9px] text-zinc-500">{c.range}</span>}
+                  {c.cost && <span className="text-[9px] text-zinc-500">{c.cost}</span>}
+                  {c.cooldown && <span className="text-[9px] text-zinc-500">{c.cooldown}</span>}
+                </div>
+              )}
+            </div>
           </div>
-          {c.pct !== null && (
-            <span className={`text-[10px] font-black tabular-nums leading-none ${c.isChosen ? 'text-white' : 'text-zinc-500'}`}>{c.pct}%</span>
+          {c.description && (
+            <p className="text-[10px] text-zinc-400 leading-relaxed whitespace-pre-line line-clamp-4 pl-10">{c.description}</p>
           )}
-          <span className={`text-[9px] font-medium text-center leading-tight line-clamp-2 px-0.5 ${c.isChosen ? 'text-zinc-200' : 'text-zinc-500'}`}>{c.name}</span>
         </div>
       ))}
     </div>,
