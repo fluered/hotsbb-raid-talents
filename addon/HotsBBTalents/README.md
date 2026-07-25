@@ -1,7 +1,6 @@
 # HotsBB Talents (addon)
 
-**Import confirmed working in-game.** Compliance overlay (Phase 3) is
-implemented but **not yet tested in-game** — see that section below.
+**Import confirmed working in-game.**
 
 ## What this does
 
@@ -23,18 +22,19 @@ Each populated card has:
 - **Copy** — shows the raw import string in a selectable box, to paste into
   the built-in Talents panel's own Import dialog by hand. Always works
   regardless of Import's status, since it doesn't depend on any decode logic.
-- **Compare** — draws colored borders directly on your real Talents UI
-  showing how your current selections differ from that build. Not yet
-  tested in-game — see "Compliance overlay" below.
-
-A **Clear Overlay** button in the top-right of the panel removes any active
-comparison borders.
 
 (Earlier version was one flat row per boss+hero-tree combo — unusable once
 real data covers 8-10 bosses and 8 dungeons per season, each with up to 3
 hero-tree variants. Redesigned around cards-per-encounter with pills for
 variants, plus the full roster placeholder above, specifically to handle
 that scale.)
+
+A build-compliance overlay (colored borders on the real Talents UI showing
+how your selections differ from a chosen meta build) was prototyped and
+removed — it touched Blizzard's protected Talents UI, which was judged not
+worth the risk/maintenance for the value it added. `Data.lua` still bundles
+`frequencyPct`/`entryIds` per node (harmless unused fields) in case that's
+revisited later; nothing in `Core.lua` reads them anymore.
 
 ## Install (manual, for testing — no packager set up yet)
 
@@ -67,43 +67,6 @@ from the spellbook (`P`) back onto your bars. This happens with Blizzard's
 own built-in Import too on a big enough build change; it's not specific to
 this addon.
 
-## Compliance overlay (Phase 3): implemented, NOT yet tested in-game
-
-Clicking **Compare** on a build row draws colored borders directly on the
-real Talents UI nodes, comparing your current selections against that
-build's bundled `frequencyPct`/`entryIds`:
-- **Amber border** — the meta build takes this node (≥50% pick rate), you don't
-- **Blue border** — you have this node, most meta builds skip it
-- **Red border** — choice node where you picked the other option
-
-This is the riskiest piece of the addon, by design choice (discussed and
-agreed on explicitly rather than defaulted into): it touches Blizzard's own
-protected Talents UI, which this project has hit real taint issues with
-before on this WoW version (in a related addon project). To minimize that
-risk:
-- Every overlay element is a child of the addon's own frame (parented to
-  `UIParent`), never a child of any Blizzard frame or button — only
-  `SetPoint` is used to visually align to a button, which is a read-only
-  positional reference, not a parenting relationship that could carry taint.
-- Only `C_Traits.GetNodeInfo` / `C_ClassTalents.GetActiveConfigID` are called
-  (both read-only). Nothing that spends points or otherwise mutates state.
-- Refreshes are driven only by `RegisterEvent("TRAIT_CONFIG_UPDATED")` and
-  `HookScript("OnShow", ...)` / `hooksecurefunc(PlayerSpellsFrame, "Show", ...)`
-  — Blizzard's own sanctioned safe-extension APIs. Nothing is intercepted or
-  replaced.
-- The whole draw pass is wrapped in `pcall`; any error prints clearly and
-  clears the overlay rather than leaving it in a broken state.
-
-Frame path (`PlayerSpellsFrame.TalentsFrame`, `:EnumerateAllTalentButtons()`,
-`button:GetNodeInfo()`) was confirmed directly from Blizzard's own live
-source (`Blizzard_PlayerSpellsFrame.xml` / `Blizzard_ClassTalentsFrame.lua`
-in the `Gethe/wow-ui-source` mirror), not guessed. Still, this is new code
-touching live protected UI and **has not been run in-game yet**. If clicking
-Compare does nothing, errors, or (worst case) causes anything to feel
-"blocked"/unresponsive elsewhere in the UI afterward, stop and report back
-immediately — `/reload` should clear any addon-side state regardless, since
-nothing here is saved.
-
 ## Other unverified item: `.toc` Interface number
 
 `## Interface: 120000` is a guess at the 12.0.0 build number for Midnight.
@@ -121,7 +84,16 @@ node scripts/export-meta-builds.js --base http://localhost:3000 --concurrency 2
 ```
 
 Keep concurrency low (2-ish) — each combo already fans out to ~75 sub-requests
-internally against Blizzard/WCL, so higher concurrency triggers rate limiting
-(confirmed: concurrency 8 produced an 96% error rate that all cleared up when
-retried individually). Run against a local `next start`, not the live production
-URL, to avoid adding load to the deployment real users hit.
+internally against Blizzard/WCL, so higher concurrency triggers rate limiting.
+Run against a local `next start`, not the live production URL, to avoid
+adding load to the deployment real users hit.
+
+**Important:** `getWclRankings()` (in `lib/wow.ts`) has its own internal
+fetch-level cache separate from whatever `unstable_cache` wrapper the caller
+uses. Always pass its final `noCache` argument as `true` when wrapping it in
+your own cache (as this script's underlying API route does) — otherwise a
+boss/spec/difficulty combo that returned zero rankings once gets stuck
+reporting `no_data` for up to 7 days regardless of how often you regenerate,
+even after real parses exist. This bit the addon directly: a first export
+run showed only 1-2 of 18 encounters with data per spec; after the fix,
+most specs show 17-18 of 18.

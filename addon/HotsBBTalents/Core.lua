@@ -1,12 +1,11 @@
--- HotsBB Talents — Phase 2 proof of concept: import panel only (no compliance overlay yet).
+-- HotsBB Talents — import/copy meta talent builds per boss/dungeon for your current spec.
 --
 -- Import decodes the loadout string client-side into real entries before calling
 -- C_ClassTalents.ImportLoadout — a faithful Lua port of Blizzard's own decode logic
 -- (ClassTalentImportExportMixin in Blizzard_ClassTalentImportExport.lua), since that
--- mixin isn't exposed for addons to call directly. STILL UNTESTED IN-GAME as of writing
--- this — this fixes the earlier confirmed bug (empty-loadout result from passing
--- entries={}), but hasn't been verified end-to-end yet. Copy remains available as a
--- guaranteed-safe fallback that doesn't depend on any of this decode logic.
+-- mixin isn't exposed for addons to call directly. Confirmed working in-game.
+-- Copy remains available as a guaranteed-safe fallback that doesn't depend on any
+-- of this decode logic — paste into the built-in Talents > Import dialog by hand.
 
 local ADDON_NAME = ...
 
@@ -284,150 +283,6 @@ local function ImportBuild(importString, displayName)
   return true
 end
 
--- ── Build compliance overlay (Phase 3) ────────────────────────────────────────
--- Shows how your CURRENT talent selections compare to a chosen meta build directly
--- on the real Talents UI. Untested in-game as of writing this.
---
--- Safety design (this is the part that risks touching Blizzard's protected UI):
--- every overlay element below is created as a child of our OWN frame (parented to
--- UIParent), never as a child of any Blizzard frame/button. We only ever visually
--- align our frames to Blizzard's buttons via SetPoint (a read-only positional
--- reference, not a parenting relationship), and only ever READ state via
--- C_Traits.GetNodeInfo/GetActiveConfigID — never call anything that spends points
--- or otherwise mutates protected state. Refreshes are driven purely by RegisterEvent
--- and HookScript/hooksecurefunc (Blizzard's own sanctioned safe-extension APIs),
--- never by replacing or intercepting a Blizzard function's execution.
---
--- Frame path confirmed via Blizzard's own source (Blizzard_PlayerSpellsFrame.xml):
--- PlayerSpellsFrame.TalentsFrame is the ClassTalentsFrameTemplate instance, with
--- :EnumerateAllTalentButtons() and per-button :GetNodeInfo().
-
-local overlayContainer = CreateFrame("Frame", nil, UIParent)
-overlayContainer:SetFrameStrata("HIGH")
-
-local function CreateBorderOverlay()
-  local f = CreateFrame("Frame", nil, overlayContainer)
-  local thickness = 2
-  f.top = f:CreateTexture(nil, "OVERLAY")
-  f.top:SetPoint("TOPLEFT", f, "TOPLEFT", 0, 0)
-  f.top:SetPoint("TOPRIGHT", f, "TOPRIGHT", 0, 0)
-  f.top:SetHeight(thickness)
-  f.bottom = f:CreateTexture(nil, "OVERLAY")
-  f.bottom:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 0, 0)
-  f.bottom:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", 0, 0)
-  f.bottom:SetHeight(thickness)
-  f.left = f:CreateTexture(nil, "OVERLAY")
-  f.left:SetPoint("TOPLEFT", f, "TOPLEFT", 0, 0)
-  f.left:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 0, 0)
-  f.left:SetWidth(thickness)
-  f.right = f:CreateTexture(nil, "OVERLAY")
-  f.right:SetPoint("TOPRIGHT", f, "TOPRIGHT", 0, 0)
-  f.right:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", 0, 0)
-  f.right:SetWidth(thickness)
-  function f:SetColor(r, g, b, a)
-    self.top:SetColorTexture(r, g, b, a)
-    self.bottom:SetColorTexture(r, g, b, a)
-    self.left:SetColorTexture(r, g, b, a)
-    self.right:SetColorTexture(r, g, b, a)
-  end
-  return f
-end
-
-local borderPool = {}
-local function GetBorderOverlay(index)
-  local f = borderPool[index]
-  if not f then
-    f = CreateBorderOverlay()
-    borderPool[index] = f
-  end
-  return f
-end
-
-local function ClearComplianceOverlay()
-  for _, f in ipairs(borderPool) do f:Hide() end
-end
-
--- The build currently being compared against: { frequencyPct, entryIds, label }
-local activeComparisonData = nil
-
-local META_THRESHOLD = 50 -- pick % at/above which a node counts as "the meta pick"
-
-local function DrawComplianceOverlay()
-  ClearComplianceOverlay()
-  if not activeComparisonData then return end
-  if not (PlayerSpellsFrame and PlayerSpellsFrame.TalentsFrame and PlayerSpellsFrame.TalentsFrame.EnumerateAllTalentButtons) then
-    return
-  end
-  if not (C_ClassTalents and C_ClassTalents.GetActiveConfigID) then return end
-  local configID = C_ClassTalents.GetActiveConfigID()
-  if not configID then return end
-
-  local ok, err = pcall(function()
-    local idx = 0
-    for button in PlayerSpellsFrame.TalentsFrame:EnumerateAllTalentButtons() do
-      local nodeInfo = button.GetNodeInfo and button:GetNodeInfo()
-      local nodeID = nodeInfo and nodeInfo.ID
-      if nodeID then
-        local freq = activeComparisonData.frequencyPct[nodeID]
-        local playerHas = (nodeInfo.activeRank or 0) > 0
-        local isMeta = freq ~= nil and freq >= META_THRESHOLD
-
-        local color = nil
-        if isMeta and not playerHas then
-          color = { 1, 0.65, 0, 0.9 } -- amber: the meta build takes this, you don't
-        elseif playerHas and not isMeta then
-          color = { 0.55, 0.65, 1, 0.9 } -- blue: you have this, most meta builds don't
-        elseif playerHas and isMeta and nodeInfo.activeEntry then
-          local metaEntry = activeComparisonData.entryIds[nodeID]
-          if metaEntry and nodeInfo.activeEntry.entryID ~= metaEntry then
-            color = { 1, 0.3, 0.3, 0.9 } -- red: you picked the other side of a choice node
-          end
-        end
-
-        if color then
-          idx = idx + 1
-          local ov = GetBorderOverlay(idx)
-          ov:SetSize((button:GetWidth() or 36) + 6, (button:GetHeight() or 36) + 6)
-          ov:ClearAllPoints()
-          ov:SetPoint("CENTER", button, "CENTER", 0, 0)
-          ov:SetColor(color[1], color[2], color[3], color[4])
-          ov:Show()
-        end
-      end
-    end
-  end)
-  if not ok then
-    Announce("|cffff4444HotsBB Talents:|r Compliance overlay error: " .. tostring(err), 1.0, 0.3, 0.3)
-    ClearComplianceOverlay()
-  end
-end
-
-local function SetComparisonBuild(frequencyPct, entryIds, label)
-  activeComparisonData = { frequencyPct = frequencyPct, entryIds = entryIds or {}, label = label }
-  DrawComplianceOverlay()
-  Announce("|cff44ff44HotsBB Talents:|r Comparing your talents against \"" .. label .. "\". Amber = meta pick you're missing, blue = pick most meta builds skip, red = wrong side of a choice node.", 0.3, 1.0, 0.3)
-end
-
--- Redraw automatically when talents change or the panel is reopened, using
--- whichever build was last selected via a Compare click.
-do
-  local eventFrame = CreateFrame("Frame")
-  eventFrame:RegisterEvent("TRAIT_CONFIG_UPDATED")
-  eventFrame:SetScript("OnEvent", function()
-    if activeComparisonData then DrawComplianceOverlay() end
-  end)
-  if PlayerSpellsFrame then
-    hooksecurefunc(PlayerSpellsFrame, "Show", function()
-      if activeComparisonData then C_Timer.After(0.15, DrawComplianceOverlay) end
-    end)
-    if PlayerSpellsFrame.TalentsFrame then
-      PlayerSpellsFrame.TalentsFrame:HookScript("OnShow", function()
-        if activeComparisonData then C_Timer.After(0.15, DrawComplianceOverlay) end
-      end)
-    end
-  end
-end
-
 -- ── Copy-string popup (guaranteed-safe fallback: no addon API dependency) ────
 
 local copyFrame = CreateFrame("Frame", "HotsBBTalentsCopyFrame", UIParent, "BasicFrameTemplateWithInset")
@@ -500,15 +355,6 @@ do
   end
 end
 
-frame.clearOverlayBtn = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-frame.clearOverlayBtn:SetSize(95, 18)
-frame.clearOverlayBtn:SetPoint("TOPRIGHT", -34, -3)
-frame.clearOverlayBtn:SetText("Clear Overlay")
-frame.clearOverlayBtn:SetScript("OnClick", function()
-  activeComparisonData = nil
-  ClearComplianceOverlay()
-end)
-
 frame.subtitle = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
 frame.subtitle:SetPoint("TOPLEFT", 16, -28)
 frame.subtitle:SetPoint("RIGHT", -16, 0)
@@ -553,9 +399,6 @@ local function RefreshCardButtons(card, variants)
   local importString = variant.importString
   card.importBtn:SetScript("OnClick", function() ImportBuild(importString, label) end)
   card.copyBtn:SetScript("OnClick", function() ShowCopyBox(importString) end)
-  card.compareBtn:SetScript("OnClick", function()
-    SetComparisonBuild(variant.frequencyPct or {}, variant.entryIds or {}, label)
-  end)
   for i, pill in ipairs(card.pills) do
     if pill:IsShown() then
       if i == (card.selectedVariantIndex or 1) then pill:Disable() else pill:Enable() end
@@ -600,10 +443,6 @@ local function GetCard(index)
   card.copyBtn:SetSize(50, 20)
   card.copyBtn:SetText("Copy")
 
-  card.compareBtn = CreateFrame("Button", nil, card, "UIPanelButtonTemplate")
-  card.compareBtn:SetSize(65, 20)
-  card.compareBtn:SetText("Compare")
-
   cardPool[index] = card
   return card
 end
@@ -618,7 +457,6 @@ local function PopulateCard(card, bossName, variants)
     card.badge:SetText("No data yet")
     card.importBtn:Hide()
     card.copyBtn:Hide()
-    card.compareBtn:Hide()
     card:SetHeight(34)
     return 34
   end
@@ -657,11 +495,8 @@ local function PopulateCard(card, bossName, variants)
   card.importBtn:SetPoint("TOPRIGHT", -10, buttonRowY)
   card.copyBtn:ClearAllPoints()
   card.copyBtn:SetPoint("RIGHT", card.importBtn, "LEFT", -4, 0)
-  card.compareBtn:ClearAllPoints()
-  card.compareBtn:SetPoint("RIGHT", card.copyBtn, "LEFT", -4, 0)
   card.importBtn:Show()
   card.copyBtn:Show()
-  card.compareBtn:Show()
 
   RefreshCardButtons(card, variants)
 
