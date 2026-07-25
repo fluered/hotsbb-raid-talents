@@ -18,8 +18,8 @@ function stripWowCodes(text: string): string {
     .trim();
 }
 
-// Extracted from the inner closure so it can be shared across phases
-function scorePlayerTree(tree: any[], cMap: Map<number, number>): number {
+// Extracted from the inner closure so it can be shared across phases (also used by lib/metaBuild.ts)
+export function scorePlayerTree(tree: any[], cMap: Map<number, number>): number {
   const rankMap = new Map<number, number>();
   for (const t of tree) rankMap.set(t.nodeID, Math.max(rankMap.get(t.nodeID) ?? 0, t.rank));
   let score = 0;
