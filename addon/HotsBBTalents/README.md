@@ -1,16 +1,18 @@
 # HotsBB Talents (addon) — Phase 2 proof of concept
 
-Import panel only. No compliance overlay yet (that's Phase 3, once import is fixed
-and confirmed reliable in-game).
+Import panel only. No compliance overlay yet (that's Phase 3, once import is
+confirmed reliable in-game).
 
 ## What this does
 
 `/hbt` opens a panel listing bundled meta talent builds for your **currently
 active spec** (detected automatically). Each row has:
-- **Import** — *currently disabled, see known bug below*
+- **Import** — decodes the build string client-side, then applies it via
+  `C_ClassTalents.ImportLoadout`. See status below.
 - **Copy** — shows the raw import string in a selectable box, to paste into
-  the built-in Talents panel's own Import dialog by hand. **This is the only
-  working path right now.**
+  the built-in Talents panel's own Import dialog by hand. Always works
+  regardless of Import's status, since it doesn't depend on any of the
+  decode logic below.
 
 ## Install (manual, for testing — no packager set up yet)
 
@@ -18,31 +20,39 @@ Copy this whole `HotsBBTalents` folder into your WoW `_retail_/Interface/AddOns/
 directory, then `/reload` or restart the client. Enable it at the character
 select AddOns list if it isn't already.
 
-## Known bug: Import creates an EMPTY loadout, not the real build
+## Import status: fixed in code, not yet verified in-game
 
-Confirmed in testing: clicking Import reports success (`ImportLoadout` returns
-`true`) but the resulting loadout has no talents selected at all.
+First attempt: `ImportLoadout(configID, {}, name, importString)` reported
+success but produced a completely **empty** loadout. Root cause: `entries`
+(an array of `{nodeID, ranksGranted, ranksPurchased, selectionEntryID}`
+records) is what Blizzard's API actually uses to build the loadout —
+the raw `importString` argument is not auto-decoded internally as hoped.
+Passing `entries = {}` is exactly why nothing got selected.
 
-Root cause: `C_ClassTalents.ImportLoadout(configID, entries, name, importString)`
-takes `entries` — an array of `{nodeID, ranksGranted, ranksPurchased,
-selectionEntryID}` records — as the actual source of truth for what gets applied.
-The `importString` 4th argument (added in patch 11.2.5) was a guess that Blizzard
-would auto-decode the raw string into entries internally. It does not. Passing
-`entries = {}` produces exactly what we saw: a loadout with nothing in it.
+Second attempt (current `Core.lua`): the loadout string is now decoded into
+real `entries` client-side before calling `ImportLoadout`. This is a faithful
+line-by-line Lua port of Blizzard's own decode logic — `ClassTalentImportExportMixin`
+in `Interface/AddOns/Blizzard_PlayerSpells/ClassTalents/Blizzard_ClassTalentImportExport.lua`
+— not a guess at the binary format. Confirmed via that source: header is
+8-bit version + 16-bit specID + 128-bit tree hash (16 bytes), then per-node
+flags (selected/purchased/partial-rank/choice) walked in `C_Traits.GetTreeNodes(treeID)`
+order, converted to entries via `C_Traits.GetNodeInfo`/`GetEntryInfo`, using
+`ExportUtil.MakeImportDataStream` — Blizzard's own built-in bitstream reader,
+not a custom base64 implementation.
 
-Fixing this properly requires decoding Blizzard's binary loadout-string format
-into real `entries` client-side in Lua, rather than relying on the API to do it.
-That's a well-defined but nontrivial binary format, and it needs to be verified
-against real strings before being trusted — guessing at it blind risks producing
-a *plausible-looking but wrong* build rather than a clean failure, which is worse.
-The Import button is disabled (grayed out with a tooltip) until this is done properly.
+**This has not been tested in-game yet.** It's a faithful port of verified
+source rather than a blind guess, which is a meaningfully different risk
+profile than the first attempt, but "should be correct by construction" still
+needs a real test to confirm. If it errors, the message will say exactly
+which step failed (header read, content read, entry conversion, or the
+`ImportLoadout` call itself) — send that back verbatim. Copy is unaffected
+either way.
 
-**If Import already ran for you:** it almost certainly created/modified a
-*saved loadout slot* (visible in the dropdown at the top of the Talents panel)
-rather than touching your actively-spent talent points. Check that dropdown —
-if there's a broken/empty entry named after the build you tried to import,
-you can delete it or just switch back to your real loadout. Your live spec
-should be unaffected.
+**If the first (broken) Import already ran for you:** it almost certainly
+created/modified a *saved loadout slot* (visible in the dropdown at the top
+of the Talents panel) rather than touching your actively-spent talent points.
+Check that dropdown — if there's a broken/empty entry, delete it or switch
+back to your real loadout. Your live spec should be unaffected.
 
 ## Other unverified item: `.toc` Interface number
 

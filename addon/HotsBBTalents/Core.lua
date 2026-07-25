@@ -1,13 +1,12 @@
 -- HotsBB Talents — Phase 2 proof of concept: import panel only (no compliance overlay yet).
 --
--- KNOWN UNCERTAINTY (flagged for whoever tests this in-game, since it can't be verified
--- without a live client): the exact calling convention for C_ClassTalents.ImportLoadout on
--- this patch. The 4-argument form (configID, entries, name, importString) was documented as
--- added in patch 11.2.5; passing an empty `entries` table and relying on the raw `importString`
--- is the best-effort interpretation of that signature. If ImportBuild() below errors or silently
--- does nothing in-game, that call is the first place to check — the Copy fallback (paste into
--- the built-in Talents > Import dialog) always works regardless, since it doesn't depend on any
--- addon API guess.
+-- Import decodes the loadout string client-side into real entries before calling
+-- C_ClassTalents.ImportLoadout — a faithful Lua port of Blizzard's own decode logic
+-- (ClassTalentImportExportMixin in Blizzard_ClassTalentImportExport.lua), since that
+-- mixin isn't exposed for addons to call directly. STILL UNTESTED IN-GAME as of writing
+-- this — this fixes the earlier confirmed bug (empty-loadout result from passing
+-- entries={}), but hasn't been verified end-to-end yet. Copy remains available as a
+-- guaranteed-safe fallback that doesn't depend on any of this decode logic.
 
 local ADDON_NAME = ...
 
@@ -18,6 +17,191 @@ local function GetCurrentSpecID()
   if not specIndex then return nil end
   local specID = GetSpecializationInfo(specIndex)
   return specID
+end
+
+-- ── Loadout string decoder ──────────────────────────────────────────────────
+-- Faithful port of Blizzard's Interface/AddOns/Blizzard_PlayerSpells/ClassTalents/
+-- Blizzard_ClassTalentImportExport.lua (ClassTalentImportExportMixin). Field order,
+-- bit widths, and per-node logic below are copied to match that source exactly.
+
+local BIT_WIDTH_HEADER_VERSION = 8
+local BIT_WIDTH_SPEC_ID = 16
+local BIT_WIDTH_RANKS_PURCHASED = 6
+
+local function HashEquals(a, b)
+  if #a ~= #b then return false end
+  for i = 1, #a do
+    if a[i] ~= b[i] then return false end
+  end
+  return true
+end
+
+local function IsHashEmpty(hash)
+  for _, v in ipairs(hash) do
+    if v ~= 0 then return false end
+  end
+  return true
+end
+
+local function ReadLoadoutHeader(importStream)
+  local serializationVersion = importStream:ExtractValue(BIT_WIDTH_HEADER_VERSION)
+  local specID = importStream:ExtractValue(BIT_WIDTH_SPEC_ID)
+  local treeHash = {}
+  for i = 1, 16 do
+    treeHash[i] = importStream:ExtractValue(8)
+  end
+  return serializationVersion, specID, treeHash
+end
+
+local function ReadLoadoutContent(importStream, treeID)
+  local results = {}
+  local treeNodes = C_Traits.GetTreeNodes(treeID)
+  for i = 1, #treeNodes do
+    local isNodeSelected = importStream:ExtractValue(1) == 1
+    local isNodePurchased = false
+    local isPartiallyRanked = false
+    local partialRanksPurchased = 0
+    local isChoiceNode = false
+    local choiceNodeSelection = 0
+
+    if isNodeSelected then
+      isNodePurchased = importStream:ExtractValue(1) == 1
+      if isNodePurchased then
+        isPartiallyRanked = importStream:ExtractValue(1) == 1
+        if isPartiallyRanked then
+          partialRanksPurchased = importStream:ExtractValue(BIT_WIDTH_RANKS_PURCHASED)
+        end
+        isChoiceNode = importStream:ExtractValue(1) == 1
+        if isChoiceNode then
+          choiceNodeSelection = importStream:ExtractValue(2)
+        end
+      end
+    end
+
+    results[i] = {
+      isNodeSelected = isNodeSelected,
+      isNodeGranted = isNodeSelected and not isNodePurchased,
+      isPartiallyRanked = isPartiallyRanked,
+      partialRanksPurchased = partialRanksPurchased,
+      isChoiceNode = isChoiceNode,
+      choiceNodeSelection = choiceNodeSelection + 1,
+    }
+  end
+  return results
+end
+
+local function CreateEntryFromSingleNode(results, treeNodeInfo, indexInfo)
+  if not treeNodeInfo or not indexInfo or not indexInfo.isNodeSelected then return end
+
+  local result = { nodeID = treeNodeInfo.ID }
+  result.ranksGranted = indexInfo.isNodeGranted and 1 or 0
+  if indexInfo.isNodeSelected and not indexInfo.isNodeGranted then
+    result.ranksPurchased = indexInfo.isPartiallyRanked and indexInfo.partialRanksPurchased or treeNodeInfo.maxRanks
+  else
+    result.ranksPurchased = 0
+  end
+
+  result.selectionEntryID = nil
+  if indexInfo.isChoiceNode and indexInfo.choiceNodeSelection then
+    result.selectionEntryID = treeNodeInfo.entryIDs[indexInfo.choiceNodeSelection]
+  elseif treeNodeInfo.activeEntry then
+    result.selectionEntryID = treeNodeInfo.activeEntry.entryID
+  end
+  if not result.selectionEntryID then
+    result.selectionEntryID = treeNodeInfo.entryIDs[1]
+  end
+
+  if result.selectionEntryID ~= nil then
+    table.insert(results, result)
+  end
+end
+
+local function CreateEntryFromTieredNode(results, configID, treeNodeInfo, indexInfo)
+  if not treeNodeInfo or not indexInfo or not indexInfo.isNodeSelected then return end
+
+  local totalRanksPurchased = 0
+  if not indexInfo.isNodeGranted then
+    totalRanksPurchased = indexInfo.isPartiallyRanked and indexInfo.partialRanksPurchased or treeNodeInfo.maxRanks
+  end
+
+  local remainingRanks = totalRanksPurchased
+  for index, entryID in ipairs(treeNodeInfo.entryIDs) do
+    local entryInfo = C_Traits.GetEntryInfo(configID, entryID)
+    if entryInfo then
+      local ranksForThisEntry = math.min(remainingRanks, entryInfo.maxRanks)
+      local isGranted = indexInfo.isNodeGranted and (index == 1)
+      if ranksForThisEntry > 0 or isGranted then
+        table.insert(results, {
+          nodeID = treeNodeInfo.ID,
+          ranksGranted = isGranted and 1 or 0,
+          ranksPurchased = ranksForThisEntry,
+          selectionEntryID = entryID,
+        })
+      end
+      remainingRanks = remainingRanks - ranksForThisEntry
+    end
+  end
+end
+
+local function ConvertToImportLoadoutEntryInfo(configID, treeID, loadoutContent)
+  local results = {}
+  local treeNodes = C_Traits.GetTreeNodes(treeID)
+  for index, treeNodeID in ipairs(treeNodes) do
+    local indexInfo = loadoutContent[index]
+    local treeNodeInfo = C_Traits.GetNodeInfo(configID, treeNodeID)
+    if treeNodeInfo then
+      if treeNodeInfo.type == Enum.TraitNodeType.Tiered then
+        CreateEntryFromTieredNode(results, configID, treeNodeInfo, indexInfo)
+      else
+        CreateEntryFromSingleNode(results, treeNodeInfo, indexInfo)
+      end
+    end
+  end
+  return results
+end
+
+-- Decodes a Blizzard talent loadout string into ImportLoadoutEntryInfo[] ready for
+-- C_ClassTalents.ImportLoadout. Returns entries, nil on success or nil, errorMessage on failure.
+local function DecodeLoadoutString(importString, configID, treeID)
+  if not (ExportUtil and ExportUtil.MakeImportDataStream) then
+    return nil, "ExportUtil.MakeImportDataStream not found on this client"
+  end
+  local cleaned = importString:gsub("^talents=", "")
+  local importStream = ExportUtil.MakeImportDataStream(cleaned)
+
+  local okHeader, serializationVersion, specID, treeHash = pcall(ReadLoadoutHeader, importStream)
+  if not okHeader then
+    return nil, "Failed to read loadout header: " .. tostring(serializationVersion)
+  end
+
+  if C_Traits.GetLoadoutSerializationVersion and serializationVersion ~= C_Traits.GetLoadoutSerializationVersion() then
+    return nil, "Loadout string version mismatch — likely from a different patch"
+  end
+  local currentSpecID = GetCurrentSpecID()
+  if currentSpecID and specID ~= currentSpecID then
+    return nil, "This build is for a different specialization than your current one"
+  end
+  if not IsHashEmpty(treeHash) and C_Traits.GetTreeHash then
+    local currentHash = C_Traits.GetTreeHash(treeID)
+    if currentHash and not HashEquals(treeHash, currentHash) then
+      return nil, "Talent tree has changed since this build was recorded"
+    end
+  end
+
+  local okContent, content = pcall(ReadLoadoutContent, importStream, treeID)
+  if not okContent then
+    return nil, "Failed to read loadout content: " .. tostring(content)
+  end
+
+  local okEntries, entries = pcall(ConvertToImportLoadoutEntryInfo, configID, treeID, content)
+  if not okEntries then
+    return nil, "Failed to build entries: " .. tostring(entries)
+  end
+  if #entries == 0 then
+    return nil, "Decoded loadout has no talents selected"
+  end
+
+  return entries, nil
 end
 
 -- Failures here are easy to miss as plain chat prints in a busy chat window (this is
@@ -69,7 +253,25 @@ local function ImportBuild(importString, displayName)
     Announce("|cffff4444HotsBB Talents:|r Could not find your active talent config. Open your Talents panel (default key: N) once, then try Import again.", 1.0, 0.3, 0.3)
     return false
   end
-  local ok, success, importError = pcall(C_ClassTalents.ImportLoadout, configID, {}, displayName or "HotsBB Meta Build", importString)
+
+  if not (C_Traits and C_Traits.GetConfigInfo and C_Traits.GetTreeNodes and C_Traits.GetNodeInfo) then
+    Announce("|cffff4444HotsBB Talents:|r C_Traits API not found on this client. Use Copy instead.", 1.0, 0.3, 0.3)
+    return false
+  end
+  local configInfo = C_Traits.GetConfigInfo(configID)
+  local treeID = configInfo and configInfo.treeIDs and configInfo.treeIDs[1]
+  if not treeID then
+    Announce("|cffff4444HotsBB Talents:|r Could not determine your talent tree ID. Use Copy instead.", 1.0, 0.3, 0.3)
+    return false
+  end
+
+  local entries, decodeErr = DecodeLoadoutString(importString, configID, treeID)
+  if not entries then
+    Announce("|cffff4444HotsBB Talents:|r Decode failed: " .. tostring(decodeErr) .. ". Use Copy instead.", 1.0, 0.3, 0.3)
+    return false
+  end
+
+  local ok, success, importError = pcall(C_ClassTalents.ImportLoadout, configID, entries, displayName or "HotsBB Meta Build", importString)
   if not ok then
     Announce("|cffff4444HotsBB Talents:|r Import call errored (" .. tostring(success) .. "). Use Copy and paste manually instead.", 1.0, 0.3, 0.3)
     return false
@@ -78,7 +280,7 @@ local function ImportBuild(importString, displayName)
     Announce("|cffff4444HotsBB Talents:|r Import rejected (" .. tostring(importError) .. "). Use Copy and paste manually instead.", 1.0, 0.3, 0.3)
     return false
   end
-  Announce("|cff44ff44HotsBB Talents:|r Imported \"" .. (displayName or "build") .. "\" — review it in your Talents panel before applying.", 0.3, 1.0, 0.3)
+  Announce("|cff44ff44HotsBB Talents:|r Imported \"" .. (displayName or "build") .. "\" with " .. #entries .. " talents — review it in your Talents panel before applying.", 0.3, 1.0, 0.3)
   return true
 end
 
@@ -157,21 +359,10 @@ local function GetRow(index)
   row.sub = row:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
   row.sub:SetPoint("TOPLEFT", row.header, "BOTTOMLEFT", 0, -2)
 
-  -- Import is disabled: confirmed in testing that it reports success while producing an
-  -- EMPTY loadout (entries={} was never a valid stand-in for a real decoded selection list —
-  -- the raw importString is not auto-decoded by the API as hoped). Re-enable only once the
-  -- loadout string is properly decoded into real entries client-side. See README.
   row.importBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
   row.importBtn:SetSize(90, 20)
   row.importBtn:SetPoint("TOPRIGHT", 0, -2)
   row.importBtn:SetText("Import")
-  row.importBtn:Disable()
-  row.importBtn:SetScript("OnEnter", function(self)
-    GameTooltip:SetOwner(self, "ANCHOR_TOP")
-    GameTooltip:SetText("Known issue: currently creates an empty loadout instead of the real build. Use Copy for now.", nil, nil, nil, nil, true)
-    GameTooltip:Show()
-  end)
-  row.importBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
   row.copyBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
   row.copyBtn:SetSize(70, 20)
@@ -205,7 +396,7 @@ local function Refresh()
     return
   end
 
-  frame.subtitle:SetText("Import is temporarily disabled (known bug). Use Copy, then paste into Talents > Import.")
+  frame.subtitle:SetText("Import decodes the build client-side before applying. If it errors, Copy always works.")
 
   local rowIndex = 0
   local y = 0
