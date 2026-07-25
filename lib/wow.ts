@@ -181,7 +181,18 @@ export async function getTalentTreeLayout(treeId: number, specId: number, access
   const heroNodeIds = new Set(heroNodeTreeMap.keys());
   const heroTreeNames: Array<{ id: number; name: string; imageUrl: string }> = await Promise.all(
     (data.hero_talent_trees || []).map(async (ht: any) => {
-      const imageUrl = await getHeroTreeIconUrl(ht.media?.key?.href, accessToken);
+      let imageUrl = await getHeroTreeIconUrl(ht.media?.key?.href, accessToken);
+      // Dedicated hero-tree portrait art often isn't uploaded yet for brand-new content —
+      // fall back to the first hero node's own spell icon (already proven working for
+      // regular talent nodes) rather than showing nothing.
+      if (!imageUrl) {
+        const firstNode = (ht.hero_talent_nodes || [])[0];
+        const firstRank = firstNode?.ranks?.[0];
+        const choices: any[] = firstRank?.choice_of_tooltips ?? [];
+        const tooltip = firstRank?.tooltip ?? choices[0];
+        const spellId = tooltip?.spell_tooltip?.spell?.id;
+        if (spellId) imageUrl = await getSpellIconUrl(spellId, accessToken);
+      }
       return { id: ht.id, name: ht.name, imageUrl };
     })
   );
@@ -300,7 +311,7 @@ export async function getTalentTreeLayout(treeId: number, specId: number, access
 export function getCachedTalentLayout(treeId: number, specId: number, accessToken: string) {
   return unstable_cache(
     () => getTalentTreeLayout(treeId, specId, accessToken),
-    [`talent-layout-v3-${treeId}-${specId}`],
+    [`talent-layout-v4-${treeId}-${specId}`],
     { revalidate: 604800 }
   )();
 }
