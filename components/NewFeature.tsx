@@ -82,12 +82,14 @@ function ChoicePopup({
   aChosen,
   choiceFreq,
   colors,
+  onClose,
 }: {
   node: any;
   rect: DOMRect;
   aChosen: boolean;
   choiceFreq?: { aPct: number; bPct: number };
   colors: { color: string; border: string };
+  onClose: () => void;
 }) {
   const POPUP_W = 272;
   const midX = rect.left + rect.width / 2;
@@ -111,44 +113,52 @@ function ChoicePopup({
   ];
 
   return createPortal(
-    <div
-      style={{ position: 'fixed', top: rect.top - 8, left, transform: 'translateY(-100%)', zIndex: 9997, width: POPUP_W, pointerEvents: 'none' }}
-      className="bg-zinc-950 border border-zinc-700 rounded-lg shadow-2xl overflow-hidden"
-    >
-      {choices.map((c, i) => (
-        <div
-          key={i}
-          className={`px-3 py-2.5 ${i === 0 ? 'border-b border-zinc-800' : ''} ${c.isChosen ? 'bg-zinc-900/50' : ''}`}
-        >
-          <div className="flex items-center gap-2 mb-1">
-            <div className={`relative w-8 h-8 rounded-full overflow-hidden border-2 flex-shrink-0 ${c.isChosen ? colors.border : 'border-zinc-700/50'}`}>
-              {c.iconUrl
-                ? <Image src={c.iconUrl} alt={c.name} fill className="object-cover" />
-                : <div className="w-full h-full bg-zinc-800" />}
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center justify-between gap-2">
-                <span className={`text-xs font-black leading-tight ${c.isChosen ? 'text-white' : 'text-zinc-400'}`}>{c.name}</span>
-                {c.pct !== null && (
-                  <span className={`text-[10px] font-black tabular-nums shrink-0 ${c.isChosen ? 'text-white' : 'text-zinc-500'}`}>{c.pct}%</span>
+    <>
+      {/* Tap/click anywhere outside to dismiss — needed since touch has no hover-out to close on */}
+      <div style={{ position: 'fixed', inset: 0, zIndex: 9996 }} onClick={onClose} />
+      <div
+        style={{ position: 'fixed', top: rect.top - 8, left, transform: 'translateY(-100%)', zIndex: 9997, width: POPUP_W }}
+        className="bg-zinc-950 border border-zinc-700 rounded-lg shadow-2xl overflow-hidden"
+      >
+        {choices.map((c, i) => (
+          <div
+            key={i}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (c.spellId) window.open(`https://www.wowhead.com/spell=${c.spellId}`, '_blank', 'noopener,noreferrer');
+            }}
+            className={`px-3 py-2.5 ${i === 0 ? 'border-b border-zinc-800' : ''} ${c.isChosen ? 'bg-zinc-900/50' : ''} ${c.spellId ? 'cursor-pointer active:bg-zinc-800/60' : ''}`}
+          >
+            <div className="flex items-center gap-2 mb-1">
+              <div className={`relative w-8 h-8 rounded-full overflow-hidden border-2 flex-shrink-0 ${c.isChosen ? colors.border : 'border-zinc-700/50'}`}>
+                {c.iconUrl
+                  ? <Image src={c.iconUrl} alt={c.name} fill className="object-cover" />
+                  : <div className="w-full h-full bg-zinc-800" />}
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between gap-2">
+                  <span className={`text-xs font-black leading-tight ${c.isChosen ? 'text-white' : 'text-zinc-400'}`}>{c.name}</span>
+                  {c.pct !== null && (
+                    <span className={`text-[10px] font-black tabular-nums shrink-0 ${c.isChosen ? 'text-white' : 'text-zinc-500'}`}>{c.pct}%</span>
+                  )}
+                </div>
+                {(c.castTime || c.range || c.cooldown || c.cost) && (
+                  <div className="flex flex-wrap gap-x-2 mt-0.5">
+                    {c.castTime && <span className="text-[9px] text-zinc-500">{c.castTime}</span>}
+                    {c.range && <span className="text-[9px] text-zinc-500">{c.range}</span>}
+                    {c.cost && <span className="text-[9px] text-zinc-500">{c.cost}</span>}
+                    {c.cooldown && <span className="text-[9px] text-zinc-500">{c.cooldown}</span>}
+                  </div>
                 )}
               </div>
-              {(c.castTime || c.range || c.cooldown || c.cost) && (
-                <div className="flex flex-wrap gap-x-2 mt-0.5">
-                  {c.castTime && <span className="text-[9px] text-zinc-500">{c.castTime}</span>}
-                  {c.range && <span className="text-[9px] text-zinc-500">{c.range}</span>}
-                  {c.cost && <span className="text-[9px] text-zinc-500">{c.cost}</span>}
-                  {c.cooldown && <span className="text-[9px] text-zinc-500">{c.cooldown}</span>}
-                </div>
-              )}
             </div>
+            {c.description && (
+              <p className="text-[10px] text-zinc-400 leading-relaxed whitespace-pre-line line-clamp-4 pl-10">{c.description}</p>
+            )}
           </div>
-          {c.description && (
-            <p className="text-[10px] text-zinc-400 leading-relaxed whitespace-pre-line line-clamp-4 pl-10">{c.description}</p>
-          )}
-        </div>
-      ))}
-    </div>,
+        ))}
+      </div>
+    </>,
     document.body
   );
 }
@@ -187,7 +197,8 @@ export default function NewFeature({
   choiceFreqMap?: Record<number, { aEntryId: number; bEntryId: number; aPct: number; bPct: number }>;
 }) {
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
-  const [choiceHover, setChoiceHover] = useState<{ node: any; rect: DOMRect; aChosen: boolean } | null>(null);
+  // pinned = opened via click/tap and stays open until an outside tap or re-click; unpinned = mouse-hover preview
+  const [choiceHover, setChoiceHover] = useState<{ node: any; rect: DOMRect; aChosen: boolean; pinned: boolean } | null>(null);
   const activeNodes = telemetry?.event?.talentTree || [];
   const activeNodeIds = new Set<number>(activeNodes.map((t: any) => t.nodeID));
 
@@ -566,19 +577,36 @@ export default function NewFeature({
               className={colSpan > 1 ? 'flex justify-center' : undefined}
               onMouseEnter={(e) => {
                 if (isChoiceNode) {
-                  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                  setChoiceHover({ node, rect, aChosen: !chosenIsB });
+                  setChoiceHover(prev =>
+                    prev?.pinned && prev.node.nodeID === node.nodeID
+                      ? prev
+                      : { node, rect: (e.currentTarget as HTMLElement).getBoundingClientRect(), aChosen: !chosenIsB, pinned: false }
+                  );
                 } else {
                   handleMouseEnter(e, displayNode, rank, showRank, freq);
                 }
               }}
-              onMouseLeave={() => { setChoiceHover(null); handleMouseLeave(); }}
+              onMouseLeave={() => {
+                if (isChoiceNode) {
+                  setChoiceHover(prev => (prev && prev.node.nodeID === node.nodeID && !prev.pinned) ? null : prev);
+                } else {
+                  handleMouseLeave();
+                }
+              }}
+              onClick={(e) => {
+                if (!isChoiceNode) return;
+                setChoiceHover(prev =>
+                  prev && prev.node.nodeID === node.nodeID
+                    ? null
+                    : { node, rect: (e.currentTarget as HTMLElement).getBoundingClientRect(), aChosen: !chosenIsB, pinned: true }
+                );
+              }}
             >
               <div
                 className={`w-10 h-10 rounded-full border-2 overflow-hidden transition-all relative ${
-                  displayNode.spellId ? 'cursor-pointer' : 'cursor-default'
+                  isChoiceNode || displayNode.spellId ? 'cursor-pointer' : 'cursor-default'
                 } ${topPlayerTakes ? 'border-amber-400 shadow-[0_0_6px_1px_rgba(251,191,36,0.5)]' : isActive ? colors.border : 'border-zinc-700/20'}`}
-                onClick={() => displayNode.spellId && window.open(`https://www.wowhead.com/spell=${displayNode.spellId}`, '_blank', 'noopener,noreferrer')}
+                onClick={() => { if (!isChoiceNode && displayNode.spellId) window.open(`https://www.wowhead.com/spell=${displayNode.spellId}`, '_blank', 'noopener,noreferrer'); }}
               >
                 {displayNode.iconUrl ? (
                   <Image
@@ -622,6 +650,7 @@ export default function NewFeature({
           aChosen={choiceHover.aChosen}
           choiceFreq={choiceFreqMap?.[choiceHover.node.nodeID]}
           colors={colors}
+          onClose={() => setChoiceHover(null)}
         />
       )}
       {tooltip && <Tooltip tip={tooltip} colors={colors} />}
