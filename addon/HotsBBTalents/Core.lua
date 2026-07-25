@@ -20,30 +20,65 @@ local function GetCurrentSpecID()
   return specID
 end
 
+-- Failures here are easy to miss as plain chat prints in a busy chat window (this is
+-- exactly what happened during testing — GetActiveConfigID() was returning nil silently).
+-- Always pair a chat print with a big on-screen banner so nothing goes unnoticed again.
+local function Announce(msg, r, g, b)
+  print(msg)
+  if UIErrorsFrame then
+    UIErrorsFrame:AddMessage(msg:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""), r, g, b, 1.0)
+  end
+end
+
+-- Best-effort: C_ClassTalents.GetActiveConfigID() returns nil until the Talents UI has
+-- been opened at least once this session (Blizzard lazily initializes that state when the
+-- frame loads). Try to nudge it open/closed once so Import works without the player having
+-- to manually open their Talents panel first. Wrapped in pcall since the exact frame name
+-- may differ on this patch — if none of these exist, this just silently no-ops.
+local function EnsureTalentFrameLoaded()
+  pcall(function()
+    if C_AddOns and C_AddOns.LoadAddOn then
+      C_AddOns.LoadAddOn("Blizzard_PlayerSpells")
+      C_AddOns.LoadAddOn("Blizzard_ClassTalentUI")
+    end
+    if PlayerSpellsFrame and ShowUIPanel then
+      ShowUIPanel(PlayerSpellsFrame)
+      HideUIPanel(PlayerSpellsFrame)
+    elseif ClassTalentFrame and ShowUIPanel then
+      ShowUIPanel(ClassTalentFrame)
+      HideUIPanel(ClassTalentFrame)
+    end
+  end)
+end
+
 local function ImportBuild(importString, displayName)
   if not importString then
-    print("|cffff4444HotsBB Talents:|r No import string for this build.")
+    Announce("|cffff4444HotsBB Talents:|r No import string for this build.", 1.0, 0.3, 0.3)
     return false
   end
   if not (C_ClassTalents and C_ClassTalents.ImportLoadout and C_ClassTalents.GetActiveConfigID) then
-    print("|cffff4444HotsBB Talents:|r Talent import API not found on this client. Use Copy and paste into the in-game Talents > Import dialog instead.")
+    Announce("|cffff4444HotsBB Talents:|r Talent import API not found on this client. Use Copy and paste into the in-game Talents > Import dialog instead.", 1.0, 0.3, 0.3)
     return false
   end
   local configID = C_ClassTalents.GetActiveConfigID()
   if not configID then
-    print("|cffff4444HotsBB Talents:|r Could not find your active talent config. Open the Talents panel once, then try again.")
+    EnsureTalentFrameLoaded()
+    configID = C_ClassTalents.GetActiveConfigID()
+  end
+  if not configID then
+    Announce("|cffff4444HotsBB Talents:|r Could not find your active talent config. Open your Talents panel (default key: N) once, then try Import again.", 1.0, 0.3, 0.3)
     return false
   end
   local ok, success, importError = pcall(C_ClassTalents.ImportLoadout, configID, {}, displayName or "HotsBB Meta Build", importString)
   if not ok then
-    print("|cffff4444HotsBB Talents:|r Import call errored (" .. tostring(success) .. "). Use Copy and paste manually instead.")
+    Announce("|cffff4444HotsBB Talents:|r Import call errored (" .. tostring(success) .. "). Use Copy and paste manually instead.", 1.0, 0.3, 0.3)
     return false
   end
   if not success then
-    print("|cffff4444HotsBB Talents:|r Import rejected (" .. tostring(importError) .. "). Use Copy and paste manually instead.")
+    Announce("|cffff4444HotsBB Talents:|r Import rejected (" .. tostring(importError) .. "). Use Copy and paste manually instead.", 1.0, 0.3, 0.3)
     return false
   end
-  print("|cff44ff44HotsBB Talents:|r Imported \"" .. (displayName or "build") .. "\" — review it in your Talents panel before applying.")
+  Announce("|cff44ff44HotsBB Talents:|r Imported \"" .. (displayName or "build") .. "\" — review it in your Talents panel before applying.", 0.3, 1.0, 0.3)
   return true
 end
 
@@ -122,13 +157,24 @@ local function GetRow(index)
   row.sub = row:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
   row.sub:SetPoint("TOPLEFT", row.header, "BOTTOMLEFT", 0, -2)
 
+  -- Import is disabled: confirmed in testing that it reports success while producing an
+  -- EMPTY loadout (entries={} was never a valid stand-in for a real decoded selection list —
+  -- the raw importString is not auto-decoded by the API as hoped). Re-enable only once the
+  -- loadout string is properly decoded into real entries client-side. See README.
   row.importBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-  row.importBtn:SetSize(70, 20)
+  row.importBtn:SetSize(90, 20)
   row.importBtn:SetPoint("TOPRIGHT", 0, -2)
   row.importBtn:SetText("Import")
+  row.importBtn:Disable()
+  row.importBtn:SetScript("OnEnter", function(self)
+    GameTooltip:SetOwner(self, "ANCHOR_TOP")
+    GameTooltip:SetText("Known issue: currently creates an empty loadout instead of the real build. Use Copy for now.", nil, nil, nil, nil, true)
+    GameTooltip:Show()
+  end)
+  row.importBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
   row.copyBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-  row.copyBtn:SetSize(60, 20)
+  row.copyBtn:SetSize(70, 20)
   row.copyBtn:SetPoint("RIGHT", row.importBtn, "LEFT", -4, 0)
   row.copyBtn:SetText("Copy")
 
@@ -159,7 +205,7 @@ local function Refresh()
     return
   end
 
-  frame.subtitle:SetText("Bundled builds for your current spec. Data refreshes with each addon update.")
+  frame.subtitle:SetText("Import is temporarily disabled (known bug). Use Copy, then paste into Talents > Import.")
 
   local rowIndex = 0
   local y = 0
