@@ -831,7 +831,7 @@ export default async function BossContent({
     const [treeInfo, rankingsResult] = await Promise.all([
       getTalentTreeId(spec, className, blizzardToken),
       unstable_cache(
-        async () => ({ rankings: await getWclRankings(wclToken, bossId, className, spec, difficulty, region, metric), fetchedAt: Date.now() }),
+        async () => ({ rankings: await getWclRankings(wclToken, bossId, className, spec, difficulty, region, metric, true), fetchedAt: Date.now() }),
         [`wcl-rankings-${bossId}-${className}-${spec}-${difficulty}-${region}-${metric}`],
         { revalidate: 21600 }
       )(),

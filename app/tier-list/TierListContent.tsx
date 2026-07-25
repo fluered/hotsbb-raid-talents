@@ -83,7 +83,7 @@ export default async function TierListContent({
     Promise.all(
       specs.map(({ class: cls, spec }) =>
         unstable_cache(
-          () => getWclRankings(wclToken, bossId, cls, spec, difficulty, region, metric),
+          () => getWclRankings(wclToken, bossId, cls, spec, difficulty, region, metric, true),
           [`wcl-rankings-${bossId}-${cls}-${spec}-${difficulty}-${region}${metric ? `-${metric}` : ''}`],
           { revalidate: 604800 }
         )().then(rankings => ({ cls, spec, rankings })).catch(() => ({ cls, spec, rankings: [] }))
