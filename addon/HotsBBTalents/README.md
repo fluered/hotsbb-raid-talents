@@ -5,8 +5,19 @@ implemented but **not yet tested in-game** — see that section below.
 
 ## What this does
 
-`/hbt` opens a panel listing bundled meta talent builds for your **currently
-active spec** (detected automatically). Each row has:
+`/hbt` opens a panel for your **currently active spec** (detected
+automatically), with **Raid** / **Dungeons** tabs across the top.
+
+Each tab lists the **full expected roster** for that content — all ~10 raid
+bosses or all 8 dungeons — not just whichever ones happen to have bundled
+data. Bosses/dungeons without enough parses yet show as a muted "No data
+yet" card, so the panel is honest about coverage instead of silently only
+showing a sparse handful and leaving you to wonder why. The subtitle also
+shows a running count, e.g. "Raid: 3 of 10 have data."
+
+Each populated card has:
+- **Hero-tree pills** (only shown when a spec has more than one build for
+  that encounter) — pick which variant the buttons below act on.
 - **Import** — decodes the build string client-side, then applies it via
   `C_ClassTalents.ImportLoadout`. Confirmed working.
 - **Copy** — shows the raw import string in a selectable box, to paste into
@@ -18,6 +29,12 @@ active spec** (detected automatically). Each row has:
 
 A **Clear Overlay** button in the top-right of the panel removes any active
 comparison borders.
+
+(Earlier version was one flat row per boss+hero-tree combo — unusable once
+real data covers 8-10 bosses and 8 dungeons per season, each with up to 3
+hero-tree variants. Redesigned around cards-per-encounter with pills for
+variants, plus the full roster placeholder above, specifically to handle
+that scale.)
 
 ## Install (manual, for testing — no packager set up yet)
 

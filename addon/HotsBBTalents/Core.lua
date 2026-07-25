@@ -457,10 +457,29 @@ local function ShowCopyBox(importString)
   copyBox:HighlightText()
 end
 
+-- ── Content roster ───────────────────────────────────────────────────────────
+-- Mirrors scripts/export-meta-builds.js's boss/dungeon lists. Bundled so the panel
+-- can show the FULL expected raid/dungeon list even where no data exists yet
+-- (rather than silently only showing whatever happened to have enough parses) —
+-- the earlier flat-list design made 2 populated bosses look like "the whole list,"
+-- when really it was 2-of-10 with the rest just missing.
+
+local RAID_BOSSES = {
+  "Rotmire", "Imperator Averzian", "Vorasius", "Fallen-King Salhadaar",
+  "Vaelgor & Ezzorak", "Lightblinded Vanguard", "Crown of the Cosmos",
+  "Chimaerus, the Undreamt God", "Belo'ren, Child of Al'ar", "Midnight Falls",
+}
+local DUNGEON_NAMES = {
+  "Windrunner Spire", "Maisara Caverns", "Nexus-Point Xenas", "Algeth'ar Academy",
+  "Magisters' Terrace", "Pit of Saron", "Seat of the Triumvirate", "Skyreach",
+}
+
 -- ── Main panel ───────────────────────────────────────────────────────────────
 
+local CARD_WIDTH = 410
+
 local frame = CreateFrame("Frame", "HotsBBTalentsFrame", UIParent, "BasicFrameTemplateWithInset")
-frame:SetSize(380, 440)
+frame:SetSize(460, 520)
 frame:SetPoint("CENTER")
 frame:SetMovable(true)
 frame:EnableMouse(true)
@@ -472,7 +491,14 @@ tinsert(UISpecialFrames, "HotsBBTalentsFrame") -- lets Esc close it like a defau
 
 frame.title = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
 frame.title:SetPoint("LEFT", frame.TitleBg, "LEFT", 5, 0)
-frame.title:SetText("HotsBB Talents — Meta Builds")
+frame.title:SetText("HotsBB Talents")
+do
+  local _, classToken = UnitClass("player")
+  if RAID_CLASS_COLORS and classToken and RAID_CLASS_COLORS[classToken] then
+    local c = RAID_CLASS_COLORS[classToken]
+    frame.title:SetTextColor(c.r, c.g, c.b)
+  end
+end
 
 frame.clearOverlayBtn = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
 frame.clearOverlayBtn:SetSize(95, 18)
@@ -484,110 +510,219 @@ frame.clearOverlayBtn:SetScript("OnClick", function()
 end)
 
 frame.subtitle = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-frame.subtitle:SetPoint("TOPLEFT", 14, -30)
-frame.subtitle:SetPoint("RIGHT", -14, 0)
+frame.subtitle:SetPoint("TOPLEFT", 16, -28)
+frame.subtitle:SetPoint("RIGHT", -16, 0)
 frame.subtitle:SetJustifyH("LEFT")
 frame.subtitle:SetText("")
 
+-- Tabs: which content type is browsed. Plain buttons with Disable() marking the
+-- active one, rather than Blizzard's PanelTabButtonTemplate — that template's
+-- exact helper functions (PanelTemplates_SetTab etc.) weren't worth depending on
+-- unverified when a simple, guaranteed-correct pattern does the same job.
+local activeTabKey = "raid"
+local tabRaidBtn = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+tabRaidBtn:SetSize(90, 22)
+tabRaidBtn:SetPoint("TOPLEFT", 16, -50)
+tabRaidBtn:SetText("Raid")
+
+local tabDungeonBtn = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+tabDungeonBtn:SetSize(90, 22)
+tabDungeonBtn:SetPoint("LEFT", tabRaidBtn, "RIGHT", 6, 0)
+tabDungeonBtn:SetText("Dungeons")
+
 local scrollFrame = CreateFrame("ScrollFrame", nil, frame, "UIPanelScrollFrameTemplate")
-scrollFrame:SetPoint("TOPLEFT", 14, -50)
+scrollFrame:SetPoint("TOPLEFT", 14, -78)
 scrollFrame:SetPoint("BOTTOMRIGHT", -32, 14)
 
 local content = CreateFrame("Frame", nil, scrollFrame)
 content:SetSize(1, 1)
 scrollFrame:SetScrollChild(content)
 
-local rowPool = {}
-local function GetRow(index)
-  local row = rowPool[index]
-  if row then return row end
-  row = CreateFrame("Frame", nil, content)
-  row:SetSize(320, 54)
+-- ── Card rendering ───────────────────────────────────────────────────────────
+-- One card per boss/dungeon (not per hero-tree variant — that's what made the old
+-- flat list unmanageable at raid/season scale). Multiple hero-tree builds for the
+-- same encounter are pill-selectable within the card instead of separate rows.
 
-  row.header = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-  row.header:SetPoint("TOPLEFT", 0, 0)
-  row.header:SetPoint("RIGHT", 0, 0)
-  row.header:SetJustifyH("LEFT")
+local function RefreshCardButtons(card, variants)
+  local variant = variants[card.selectedVariantIndex or 1]
+  if not variant then return end
+  local label = card.bossName
+  if variant.heroTreeName and variant.heroTreeName ~= "Overall" then
+    label = label .. " — " .. variant.heroTreeName
+  end
+  local importString = variant.importString
+  card.importBtn:SetScript("OnClick", function() ImportBuild(importString, label) end)
+  card.copyBtn:SetScript("OnClick", function() ShowCopyBox(importString) end)
+  card.compareBtn:SetScript("OnClick", function()
+    SetComparisonBuild(variant.frequencyPct or {}, variant.entryIds or {}, label)
+  end)
+  for i, pill in ipairs(card.pills) do
+    if pill:IsShown() then
+      if i == (card.selectedVariantIndex or 1) then pill:Disable() else pill:Enable() end
+    end
+  end
+end
 
-  row.sub = row:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-  row.sub:SetPoint("TOPLEFT", row.header, "BOTTOMLEFT", 0, -2)
+local cardPool = {}
+local function GetCard(index)
+  local card = cardPool[index]
+  if card then return card end
+  card = CreateFrame("Frame", nil, content, "BackdropTemplate")
+  card:SetSize(CARD_WIDTH, 34)
+  card:SetBackdrop({
+    bgFile = "Interface\\Buttons\\WHITE8x8",
+    edgeFile = "Interface\\Buttons\\WHITE8x8",
+    edgeSize = 1,
+  })
+  card:SetBackdropColor(1, 1, 1, 0.04)
+  card:SetBackdropBorderColor(1, 1, 1, 0.10)
 
-  row.importBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-  row.importBtn:SetSize(60, 20)
-  row.importBtn:SetPoint("TOPRIGHT", 0, -2)
-  row.importBtn:SetText("Import")
+  card.header = card:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  card.header:SetPoint("TOPLEFT", 10, -8)
+  card.header:SetJustifyH("LEFT")
 
-  row.copyBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-  row.copyBtn:SetSize(50, 20)
-  row.copyBtn:SetPoint("RIGHT", row.importBtn, "LEFT", -4, 0)
-  row.copyBtn:SetText("Copy")
+  card.badge = card:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+  card.badge:SetPoint("TOPRIGHT", -10, -9)
+  card.badge:SetJustifyH("RIGHT")
 
-  row.compareBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-  row.compareBtn:SetSize(65, 20)
-  row.compareBtn:SetPoint("RIGHT", row.copyBtn, "LEFT", -4, 0)
-  row.compareBtn:SetText("Compare")
+  card.pills = {}
+  for i = 1, 4 do
+    local pill = CreateFrame("Button", nil, card, "UIPanelButtonTemplate")
+    pill:SetSize(90, 18)
+    card.pills[i] = pill
+  end
 
-  row.sep = row:CreateTexture(nil, "ARTWORK")
-  row.sep:SetHeight(1)
-  row.sep:SetPoint("BOTTOMLEFT", 0, -6)
-  row.sep:SetPoint("BOTTOMRIGHT", 0, -6)
-  row.sep:SetColorTexture(1, 1, 1, 0.08)
+  card.importBtn = CreateFrame("Button", nil, card, "UIPanelButtonTemplate")
+  card.importBtn:SetSize(60, 20)
+  card.importBtn:SetText("Import")
 
-  rowPool[index] = row
-  return row
+  card.copyBtn = CreateFrame("Button", nil, card, "UIPanelButtonTemplate")
+  card.copyBtn:SetSize(50, 20)
+  card.copyBtn:SetText("Copy")
+
+  card.compareBtn = CreateFrame("Button", nil, card, "UIPanelButtonTemplate")
+  card.compareBtn:SetSize(65, 20)
+  card.compareBtn:SetText("Compare")
+
+  cardPool[index] = card
+  return card
+end
+
+-- Populates a pooled card and returns the height it should occupy.
+local function PopulateCard(card, bossName, variants)
+  card.bossName = bossName
+  card.header:SetText(bossName)
+  for _, pill in ipairs(card.pills) do pill:Hide() end
+
+  if not variants or #variants == 0 then
+    card.badge:SetText("No data yet")
+    card.importBtn:Hide()
+    card.copyBtn:Hide()
+    card.compareBtn:Hide()
+    card:SetHeight(34)
+    return 34
+  end
+
+  card.badge:SetText((variants[1].sampleSize or 0) .. " parses")
+
+  local selectedIndex = card.selectedVariantIndex or 1
+  if selectedIndex > #variants then selectedIndex = 1 end
+  card.selectedVariantIndex = selectedIndex
+
+  local hasPills = #variants > 1
+  local buttonRowY = -30
+
+  if hasPills then
+    local x = 10
+    for i, variant in ipairs(variants) do
+      local pill = card.pills[i]
+      if pill then
+        pill:ClearAllPoints()
+        pill:SetPoint("TOPLEFT", x, -30)
+        pill:SetText(variant.heroTreeName or "Overall")
+        local textWidth = pill:GetFontString() and pill:GetFontString():GetStringWidth() or 40
+        pill:SetWidth(math.max(60, textWidth + 20))
+        pill:SetScript("OnClick", function()
+          card.selectedVariantIndex = i
+          RefreshCardButtons(card, variants)
+        end)
+        pill:Show()
+        x = x + pill:GetWidth() + 4
+      end
+    end
+    buttonRowY = -54
+  end
+
+  card.importBtn:ClearAllPoints()
+  card.importBtn:SetPoint("TOPRIGHT", -10, buttonRowY)
+  card.copyBtn:ClearAllPoints()
+  card.copyBtn:SetPoint("RIGHT", card.importBtn, "LEFT", -4, 0)
+  card.compareBtn:ClearAllPoints()
+  card.compareBtn:SetPoint("RIGHT", card.copyBtn, "LEFT", -4, 0)
+  card.importBtn:Show()
+  card.copyBtn:Show()
+  card.compareBtn:Show()
+
+  RefreshCardButtons(card, variants)
+
+  local totalHeight = hasPills and 78 or 54
+  card:SetHeight(totalHeight)
+  return totalHeight
 end
 
 local function Refresh()
   local specID = GetCurrentSpecID()
-  local _, className = UnitClass("player")
-
-  for _, row in ipairs(rowPool) do row:Hide() end
-
   if not specID then
     frame.subtitle:SetText("Could not detect your current specialization.")
+    for _, card in ipairs(cardPool) do card:Hide() end
     return
   end
 
   local specData = HotsBBTalentsData and HotsBBTalentsData[specID]
-  if not specData then
-    frame.subtitle:SetText("No meta build data bundled for this spec yet (spec ID " .. specID .. ").")
-    return
+  local roster = activeTabKey == "raid" and RAID_BOSSES or DUNGEON_NAMES
+
+  local haveCount = 0
+  for _, name in ipairs(roster) do
+    if specData and specData[name] then haveCount = haveCount + 1 end
   end
+  local tabLabel = activeTabKey == "raid" and "Raid" or "Dungeons"
+  frame.subtitle:SetText(tabLabel .. ": " .. haveCount .. " of " .. #roster ..
+    " have data. Import decodes client-side; Copy always works as a fallback.")
 
-  frame.subtitle:SetText("Import decodes the build client-side before applying. If it errors, Copy always works.")
+  for _, card in ipairs(cardPool) do card:Hide() end
 
-  local rowIndex = 0
   local y = 0
-  for bossName, bossEntry in pairs(specData) do
-    for _, variant in ipairs(bossEntry.variants or {}) do
-      rowIndex = rowIndex + 1
-      local row = GetRow(rowIndex)
-      row:ClearAllPoints()
-      row:SetPoint("TOPLEFT", content, "TOPLEFT", 0, -y)
-      row:SetPoint("RIGHT", content, "RIGHT", 0, 0)
+  local cardIndex = 0
+  for _, name in ipairs(roster) do
+    cardIndex = cardIndex + 1
+    local card = GetCard(cardIndex)
+    card:ClearAllPoints()
+    card:SetPoint("TOPLEFT", content, "TOPLEFT", 0, -y)
+    card:SetPoint("RIGHT", content, "RIGHT", 0, 0)
 
-      local label = bossName
-      if variant.heroTreeName and variant.heroTreeName ~= "Overall" then
-        label = label .. " — " .. variant.heroTreeName
-      end
-      row.header:SetText(label)
-      row.sub:SetText((variant.sampleSize or 0) .. " top parses")
-
-      local importString = variant.importString
-      local displayName = label
-      row.importBtn:SetScript("OnClick", function() ImportBuild(importString, displayName) end)
-      row.copyBtn:SetScript("OnClick", function() ShowCopyBox(importString) end)
-      row.compareBtn:SetScript("OnClick", function()
-        SetComparisonBuild(variant.frequencyPct or {}, variant.entryIds or {}, displayName)
-      end)
-
-      row:Show()
-      y = y + 60
-    end
+    local bossEntry = specData and specData[name]
+    local h = PopulateCard(card, name, bossEntry and bossEntry.variants)
+    card:Show()
+    y = y + h + 6
   end
 
-  content:SetSize(320, math.max(y, 1))
+  content:SetSize(CARD_WIDTH, math.max(y, 1))
 end
+
+local function SetActiveTab(key)
+  activeTabKey = key
+  if key == "raid" then
+    tabRaidBtn:Disable()
+    tabDungeonBtn:Enable()
+  else
+    tabDungeonBtn:Disable()
+    tabRaidBtn:Enable()
+  end
+  Refresh()
+end
+tabRaidBtn:SetScript("OnClick", function() SetActiveTab("raid") end)
+tabDungeonBtn:SetScript("OnClick", function() SetActiveTab("dungeon") end)
+tabRaidBtn:Disable() -- raid tab active by default
 
 frame:SetScript("OnShow", Refresh)
 
