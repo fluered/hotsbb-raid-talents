@@ -574,8 +574,8 @@ local function GetCard(index)
     edgeFile = "Interface\\Buttons\\WHITE8x8",
     edgeSize = 1,
   })
-  card:SetBackdropColor(1, 1, 1, 0.04)
-  card:SetBackdropBorderColor(1, 1, 1, 0.10)
+  card:SetBackdropColor(1, 1, 1, 0.07)
+  card:SetBackdropBorderColor(1, 1, 1, 0.28)
 
   card.header = card:CreateFontString(nil, "OVERLAY", "GameFontNormal")
   card.header:SetPoint("TOPLEFT", 10, -8)
