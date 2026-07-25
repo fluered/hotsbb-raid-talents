@@ -1,0 +1,9 @@
+## Interface: 120000
+## Title: HotsBB Talents
+## Notes: One-click import of meta talent builds from hotsbb-raid-talents.
+## Author: HotsBB
+## Version: 0.1.0-alpha
+## IconTexture: Interface\Icons\INV_Misc_Book_09
+
+Data.lua
+Core.lua
