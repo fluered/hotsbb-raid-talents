@@ -1,5 +1,6 @@
 'use client';
 import React from 'react';
+import Image from 'next/image';
 import NewFeature from './NewFeature';
 import CopyBuildButton from './CopyBuildButton';
 
@@ -31,9 +32,11 @@ export default function PlayerCard({
       <div className="px-5 py-3 border-b border-zinc-800/50 flex items-center justify-between gap-4">
         <div className="flex items-center gap-3 min-w-0">
           {player.renderUrl ? (
-            <img
+            <Image
               src={player.renderUrl}
               alt=""
+              width={36}
+              height={36}
               className="w-9 h-9 rounded-full object-cover object-top flex-shrink-0 border border-zinc-700"
             />
           ) : (

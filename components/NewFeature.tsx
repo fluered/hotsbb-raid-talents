@@ -1,6 +1,7 @@
 'use client';
 import React, { useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
+import Image from 'next/image';
 
 function makeColMap(nodes: any[]): Map<number, number> {
   const unique = [...new Set(nodes.map((n: any) => n.column as number))].sort((a, b) => a - b);
@@ -38,7 +39,7 @@ function Tooltip({ tip, colors }: { tip: TooltipState; colors: { color: string }
     >
       <div className="px-3 py-2 border-b border-zinc-800 flex items-center gap-2">
         {node.iconUrl && (
-          <img src={node.iconUrl} alt="" className="w-7 h-7 rounded flex-shrink-0" />
+          <Image src={node.iconUrl} alt="" width={28} height={28} className="w-7 h-7 rounded flex-shrink-0" />
         )}
         <div>
           <div className={`text-sm font-black ${colors.color}`}>{node.name}</div>
@@ -109,9 +110,9 @@ function ChoicePopup({
           key={i}
           className={`flex-1 flex flex-col items-center gap-1 p-2 rounded-xl bg-zinc-950/95 border backdrop-blur-sm shadow-xl ${c.isChosen ? colors.border : 'border-zinc-800/60'}`}
         >
-          <div className={`w-9 h-9 rounded-full overflow-hidden border-2 flex-shrink-0 ${c.isChosen ? colors.border : 'border-zinc-700/50'}`}>
+          <div className={`relative w-9 h-9 rounded-full overflow-hidden border-2 flex-shrink-0 ${c.isChosen ? colors.border : 'border-zinc-700/50'}`}>
             {c.iconUrl
-              ? <img src={c.iconUrl} alt={c.name} className="w-full h-full object-cover" />
+              ? <Image src={c.iconUrl} alt={c.name} fill className="object-cover" />
               : <div className="w-full h-full bg-zinc-800" />}
           </div>
           {c.pct !== null && (
@@ -460,10 +461,11 @@ export default function NewFeature({
             }}
           >
             {heroTreeImageUrl ? (
-              <img
+              <Image
                 src={heroTreeImageUrl}
                 alt={heroTreeName ?? ''}
-                style={{ width: '4.5rem', height: '4.5rem' }}
+                width={72}
+                height={72}
                 className="rounded-full object-cover ring-2 ring-zinc-600"
               />
             ) : heroTrees && heroTrees.length > 0 ? (
@@ -476,7 +478,7 @@ export default function NewFeature({
                     onClick={onHeroTreeClick ? () => onHeroTreeClick(ht.name) : undefined}
                   >
                     {ht.imageUrl
-                      ? <img src={ht.imageUrl} alt={ht.name} className={`w-16 h-16 rounded-full object-cover ring-1 ring-zinc-600 ${onHeroTreeClick ? 'group-hover:ring-2 group-hover:ring-zinc-400 transition-all' : ''}`} />
+                      ? <Image src={ht.imageUrl} alt={ht.name} width={64} height={64} className={`w-16 h-16 rounded-full object-cover ring-1 ring-zinc-600 ${onHeroTreeClick ? 'group-hover:ring-2 group-hover:ring-zinc-400 transition-all' : ''}`} />
                       : <div className="w-16 h-16 rounded-full bg-zinc-800 ring-1 ring-zinc-600" />
                     }
                     <span className="text-[10px] font-bold text-zinc-400">{ht.pct}%</span>
@@ -552,10 +554,11 @@ export default function NewFeature({
                 onClick={() => displayNode.spellId && window.open(`https://www.wowhead.com/spell=${displayNode.spellId}`, '_blank', 'noopener,noreferrer')}
               >
                 {displayNode.iconUrl ? (
-                  <img
+                  <Image
                     src={displayNode.iconUrl}
                     alt={displayNode.name}
-                    className="w-full h-full object-cover"
+                    fill
+                    className="object-cover"
                     style={{ opacity: isActive ? 1 : 0.15 }}
                   />
                 ) : (
