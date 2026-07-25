@@ -124,6 +124,14 @@ function luaStr(s) {
   return '"' + String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
 }
 
+// Serializes a {nodeID: number} map (frequencyPct or entryIds) into a Lua table
+// literal keyed by numeric nodeID, e.g. { [94962] = 100, [94966] = 87, }
+function luaNumMap(obj) {
+  const keys = Object.keys(obj || {});
+  if (keys.length === 0) return '{}';
+  return '{ ' + keys.map(k => `[${k}] = ${obj[k]}`).join(', ') + ' }';
+}
+
 (async () => {
   const results = await mapConcurrent(activeJobs, CONCURRENCY, fetchJob);
 
@@ -163,6 +171,8 @@ function luaStr(s) {
         lines.push(`          heroTreeName = ${luaStr(v.name)},`);
         lines.push(`          sampleSize = ${v.count},`);
         lines.push(`          importString = ${luaStr(v.talentString)},`);
+        lines.push(`          frequencyPct = ${luaNumMap(v.frequencyPct)},`);
+        lines.push(`          entryIds = ${luaNumMap(v.entryIds)},`);
         lines.push('        },');
       }
       lines.push('      },');

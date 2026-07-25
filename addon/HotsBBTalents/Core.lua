@@ -284,6 +284,150 @@ local function ImportBuild(importString, displayName)
   return true
 end
 
+-- ── Build compliance overlay (Phase 3) ────────────────────────────────────────
+-- Shows how your CURRENT talent selections compare to a chosen meta build directly
+-- on the real Talents UI. Untested in-game as of writing this.
+--
+-- Safety design (this is the part that risks touching Blizzard's protected UI):
+-- every overlay element below is created as a child of our OWN frame (parented to
+-- UIParent), never as a child of any Blizzard frame/button. We only ever visually
+-- align our frames to Blizzard's buttons via SetPoint (a read-only positional
+-- reference, not a parenting relationship), and only ever READ state via
+-- C_Traits.GetNodeInfo/GetActiveConfigID — never call anything that spends points
+-- or otherwise mutates protected state. Refreshes are driven purely by RegisterEvent
+-- and HookScript/hooksecurefunc (Blizzard's own sanctioned safe-extension APIs),
+-- never by replacing or intercepting a Blizzard function's execution.
+--
+-- Frame path confirmed via Blizzard's own source (Blizzard_PlayerSpellsFrame.xml):
+-- PlayerSpellsFrame.TalentsFrame is the ClassTalentsFrameTemplate instance, with
+-- :EnumerateAllTalentButtons() and per-button :GetNodeInfo().
+
+local overlayContainer = CreateFrame("Frame", nil, UIParent)
+overlayContainer:SetFrameStrata("HIGH")
+
+local function CreateBorderOverlay()
+  local f = CreateFrame("Frame", nil, overlayContainer)
+  local thickness = 2
+  f.top = f:CreateTexture(nil, "OVERLAY")
+  f.top:SetPoint("TOPLEFT", f, "TOPLEFT", 0, 0)
+  f.top:SetPoint("TOPRIGHT", f, "TOPRIGHT", 0, 0)
+  f.top:SetHeight(thickness)
+  f.bottom = f:CreateTexture(nil, "OVERLAY")
+  f.bottom:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 0, 0)
+  f.bottom:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", 0, 0)
+  f.bottom:SetHeight(thickness)
+  f.left = f:CreateTexture(nil, "OVERLAY")
+  f.left:SetPoint("TOPLEFT", f, "TOPLEFT", 0, 0)
+  f.left:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 0, 0)
+  f.left:SetWidth(thickness)
+  f.right = f:CreateTexture(nil, "OVERLAY")
+  f.right:SetPoint("TOPRIGHT", f, "TOPRIGHT", 0, 0)
+  f.right:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", 0, 0)
+  f.right:SetWidth(thickness)
+  function f:SetColor(r, g, b, a)
+    self.top:SetColorTexture(r, g, b, a)
+    self.bottom:SetColorTexture(r, g, b, a)
+    self.left:SetColorTexture(r, g, b, a)
+    self.right:SetColorTexture(r, g, b, a)
+  end
+  return f
+end
+
+local borderPool = {}
+local function GetBorderOverlay(index)
+  local f = borderPool[index]
+  if not f then
+    f = CreateBorderOverlay()
+    borderPool[index] = f
+  end
+  return f
+end
+
+local function ClearComplianceOverlay()
+  for _, f in ipairs(borderPool) do f:Hide() end
+end
+
+-- The build currently being compared against: { frequencyPct, entryIds, label }
+local activeComparisonData = nil
+
+local META_THRESHOLD = 50 -- pick % at/above which a node counts as "the meta pick"
+
+local function DrawComplianceOverlay()
+  ClearComplianceOverlay()
+  if not activeComparisonData then return end
+  if not (PlayerSpellsFrame and PlayerSpellsFrame.TalentsFrame and PlayerSpellsFrame.TalentsFrame.EnumerateAllTalentButtons) then
+    return
+  end
+  if not (C_ClassTalents and C_ClassTalents.GetActiveConfigID) then return end
+  local configID = C_ClassTalents.GetActiveConfigID()
+  if not configID then return end
+
+  local ok, err = pcall(function()
+    local idx = 0
+    for button in PlayerSpellsFrame.TalentsFrame:EnumerateAllTalentButtons() do
+      local nodeInfo = button.GetNodeInfo and button:GetNodeInfo()
+      local nodeID = nodeInfo and nodeInfo.ID
+      if nodeID then
+        local freq = activeComparisonData.frequencyPct[nodeID]
+        local playerHas = (nodeInfo.activeRank or 0) > 0
+        local isMeta = freq ~= nil and freq >= META_THRESHOLD
+
+        local color = nil
+        if isMeta and not playerHas then
+          color = { 1, 0.65, 0, 0.9 } -- amber: the meta build takes this, you don't
+        elseif playerHas and not isMeta then
+          color = { 0.55, 0.65, 1, 0.9 } -- blue: you have this, most meta builds don't
+        elseif playerHas and isMeta and nodeInfo.activeEntry then
+          local metaEntry = activeComparisonData.entryIds[nodeID]
+          if metaEntry and nodeInfo.activeEntry.entryID ~= metaEntry then
+            color = { 1, 0.3, 0.3, 0.9 } -- red: you picked the other side of a choice node
+          end
+        end
+
+        if color then
+          idx = idx + 1
+          local ov = GetBorderOverlay(idx)
+          ov:SetSize((button:GetWidth() or 36) + 6, (button:GetHeight() or 36) + 6)
+          ov:ClearAllPoints()
+          ov:SetPoint("CENTER", button, "CENTER", 0, 0)
+          ov:SetColor(color[1], color[2], color[3], color[4])
+          ov:Show()
+        end
+      end
+    end
+  end)
+  if not ok then
+    Announce("|cffff4444HotsBB Talents:|r Compliance overlay error: " .. tostring(err), 1.0, 0.3, 0.3)
+    ClearComplianceOverlay()
+  end
+end
+
+local function SetComparisonBuild(frequencyPct, entryIds, label)
+  activeComparisonData = { frequencyPct = frequencyPct, entryIds = entryIds or {}, label = label }
+  DrawComplianceOverlay()
+  Announce("|cff44ff44HotsBB Talents:|r Comparing your talents against \"" .. label .. "\". Amber = meta pick you're missing, blue = pick most meta builds skip, red = wrong side of a choice node.", 0.3, 1.0, 0.3)
+end
+
+-- Redraw automatically when talents change or the panel is reopened, using
+-- whichever build was last selected via a Compare click.
+do
+  local eventFrame = CreateFrame("Frame")
+  eventFrame:RegisterEvent("TRAIT_CONFIG_UPDATED")
+  eventFrame:SetScript("OnEvent", function()
+    if activeComparisonData then DrawComplianceOverlay() end
+  end)
+  if PlayerSpellsFrame then
+    hooksecurefunc(PlayerSpellsFrame, "Show", function()
+      if activeComparisonData then C_Timer.After(0.15, DrawComplianceOverlay) end
+    end)
+    if PlayerSpellsFrame.TalentsFrame then
+      PlayerSpellsFrame.TalentsFrame:HookScript("OnShow", function()
+        if activeComparisonData then C_Timer.After(0.15, DrawComplianceOverlay) end
+      end)
+    end
+  end
+end
+
 -- ── Copy-string popup (guaranteed-safe fallback: no addon API dependency) ────
 
 local copyFrame = CreateFrame("Frame", "HotsBBTalentsCopyFrame", UIParent, "BasicFrameTemplateWithInset")
@@ -330,6 +474,15 @@ frame.title = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
 frame.title:SetPoint("LEFT", frame.TitleBg, "LEFT", 5, 0)
 frame.title:SetText("HotsBB Talents — Meta Builds")
 
+frame.clearOverlayBtn = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+frame.clearOverlayBtn:SetSize(95, 18)
+frame.clearOverlayBtn:SetPoint("TOPRIGHT", -34, -3)
+frame.clearOverlayBtn:SetText("Clear Overlay")
+frame.clearOverlayBtn:SetScript("OnClick", function()
+  activeComparisonData = nil
+  ClearComplianceOverlay()
+end)
+
 frame.subtitle = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
 frame.subtitle:SetPoint("TOPLEFT", 14, -30)
 frame.subtitle:SetPoint("RIGHT", -14, 0)
@@ -360,14 +513,19 @@ local function GetRow(index)
   row.sub:SetPoint("TOPLEFT", row.header, "BOTTOMLEFT", 0, -2)
 
   row.importBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-  row.importBtn:SetSize(90, 20)
+  row.importBtn:SetSize(60, 20)
   row.importBtn:SetPoint("TOPRIGHT", 0, -2)
   row.importBtn:SetText("Import")
 
   row.copyBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-  row.copyBtn:SetSize(70, 20)
+  row.copyBtn:SetSize(50, 20)
   row.copyBtn:SetPoint("RIGHT", row.importBtn, "LEFT", -4, 0)
   row.copyBtn:SetText("Copy")
+
+  row.compareBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+  row.compareBtn:SetSize(65, 20)
+  row.compareBtn:SetPoint("RIGHT", row.copyBtn, "LEFT", -4, 0)
+  row.compareBtn:SetText("Compare")
 
   row.sep = row:CreateTexture(nil, "ARTWORK")
   row.sep:SetHeight(1)
@@ -419,6 +577,9 @@ local function Refresh()
       local displayName = label
       row.importBtn:SetScript("OnClick", function() ImportBuild(importString, displayName) end)
       row.copyBtn:SetScript("OnClick", function() ShowCopyBox(importString) end)
+      row.compareBtn:SetScript("OnClick", function()
+        SetComparisonBuild(variant.frequencyPct or {}, variant.entryIds or {}, displayName)
+      end)
 
       row:Show()
       y = y + 60
