@@ -105,17 +105,38 @@ export async function getHistoricalFightTelemetry(wclToken: string, reportCode: 
 
 // ─── Blizzard ─────────────────────────────────────────────────────────────────
 
-export async function getSpellIconUrl(spellId: number, accessToken: string): Promise<string> {
-  try {
-    const res = await fetch(
-      `https://us.api.blizzard.com/data/wow/media/spell/${spellId}?namespace=static-us`,
-      { headers: { 'Authorization': `Bearer ${accessToken}` }, next: { revalidate: 86400 } }
-    );
-    if (!res.ok) return '';
-    return (await res.json()).assets?.[0]?.value ?? '';
-  } catch {
-    return '';
+// Run at most `limit` async tasks concurrently, preserving result order.
+async function mapConcurrent<T, U>(items: T[], limit: number, fn: (item: T) => Promise<U>): Promise<U[]> {
+  const results: U[] = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i]);
+    }
   }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
+export async function getSpellIconUrl(spellId: number, accessToken: string): Promise<string> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await fetch(
+        `https://us.api.blizzard.com/data/wow/media/spell/${spellId}?namespace=static-us`,
+        { headers: { 'Authorization': `Bearer ${accessToken}` }, next: { revalidate: 86400 } }
+      );
+      if (res.ok) return (await res.json()).assets?.[0]?.value ?? '';
+      if (res.status === 429) {
+        await new Promise(r => setTimeout(r, 400 * (attempt + 1)));
+        continue;
+      }
+      return '';
+    } catch {
+      if (attempt < 2) await new Promise(r => setTimeout(r, 200));
+    }
+  }
+  return '';
 }
 
 export async function getTalentTreeLayout(treeId: number, specId: number, accessToken: string) {
@@ -195,7 +216,7 @@ export async function getTalentTreeLayout(treeId: number, specId: number, access
   }
   const allRaw = [...bestById.values()];
 
-  const mapped = await Promise.all(allRaw.map(async (node: any) => {
+  const mapped = await mapConcurrent(allRaw, 10, async (node: any) => {
     const firstRank = node.ranks?.[0];
     const choices: any[] = firstRank?.choice_of_tooltips ?? [];
     const isChoice = choices.length >= 2;
@@ -243,7 +264,7 @@ export async function getTalentTreeLayout(treeId: number, specId: number, access
       choiceBEntryId,
       choiceB,
     };
-  }));
+  });
 
   return { layout: mapped.filter(n => n.name || n.iconUrl), heroTreeNames };
 }

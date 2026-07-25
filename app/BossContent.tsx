@@ -842,7 +842,7 @@ export default async function BossContent({
 
     const { layout: skeletonMap, heroTreeNames: allHeroTreeNames } = await unstable_cache(
       () => getTalentTreeLayout(treeInfo!.treeId, treeInfo!.specId, blizzardToken),
-      [`talent-layout-${treeInfo.treeId}-${treeInfo.specId}`],
+      [`talent-layout-v2-${treeInfo.treeId}-${treeInfo.specId}`],
       { revalidate: 86400 }
     )();
     const rawRankings = rankingsResult.rankings;
