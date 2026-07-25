@@ -141,6 +141,29 @@ export async function getSpellIconUrl(spellId: number, accessToken: string): Pro
   return '';
 }
 
+// Hero talent tree portraits come from a dedicated Blizzard media endpoint
+// (data.hero_talent_trees[].media.key.href), same pattern as getSpellIconUrl.
+// Genuinely 404s for brand-new content until Blizzard uploads the asset —
+// that's a real "not available yet" rather than a transient error, so unlike
+// getSpellIconUrl this does not retry on 404, only on 429/network errors.
+async function getHeroTreeIconUrl(mediaHref: string | undefined, accessToken: string): Promise<string> {
+  if (!mediaHref) return '';
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await fetch(mediaHref, { headers: { 'Authorization': `Bearer ${accessToken}` }, next: { revalidate: 604800 } });
+      if (res.ok) return (await res.json()).assets?.[0]?.value ?? '';
+      if (res.status === 429) {
+        await new Promise(r => setTimeout(r, 400 * (attempt + 1)));
+        continue;
+      }
+      return '';
+    } catch {
+      if (attempt < 2) await new Promise(r => setTimeout(r, 200));
+    }
+  }
+  return '';
+}
+
 export async function getTalentTreeLayout(treeId: number, specId: number, accessToken: string) {
   const url = `https://us.api.blizzard.com/data/wow/talent-tree/${treeId}/playable-specialization/${specId}?namespace=static-us&locale=en_US`;
   const response = await fetch(url, { headers: { 'Authorization': `Bearer ${accessToken}` }, next: { revalidate: 86400 } });
@@ -156,11 +179,12 @@ export async function getTalentTreeLayout(treeId: number, specId: number, access
     }
   }
   const heroNodeIds = new Set(heroNodeTreeMap.keys());
-  const heroTreeNames: Array<{ id: number; name: string; imageUrl: string }> = (data.hero_talent_trees || []).map((ht: any) => {
-    const slug = (ht.name as string).toLowerCase().replace(/\s+/g, '_');
-    const imageUrl = `https://warcraft.wiki.gg/images/Hero_talent_${slug}.png`;
-    return { id: ht.id, name: ht.name, imageUrl };
-  });
+  const heroTreeNames: Array<{ id: number; name: string; imageUrl: string }> = await Promise.all(
+    (data.hero_talent_trees || []).map(async (ht: any) => {
+      const imageUrl = await getHeroTreeIconUrl(ht.media?.key?.href, accessToken);
+      return { id: ht.id, name: ht.name, imageUrl };
+    })
+  );
 
   // Primary source for hero nodes: spec_talent_nodes (Blizzard naturally filters these to the
   // spec's available hero trees). Fall back to hero_talent_trees nodes directly for specs where
@@ -276,7 +300,7 @@ export async function getTalentTreeLayout(treeId: number, specId: number, access
 export function getCachedTalentLayout(treeId: number, specId: number, accessToken: string) {
   return unstable_cache(
     () => getTalentTreeLayout(treeId, specId, accessToken),
-    [`talent-layout-v2-${treeId}-${specId}`],
+    [`talent-layout-v3-${treeId}-${specId}`],
     { revalidate: 604800 }
   )();
 }
