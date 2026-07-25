@@ -1,7 +1,9 @@
 # HotsBB Talents (addon) — Phase 2 proof of concept
 
-Import panel only. No compliance overlay yet (that's Phase 3, once import is
-confirmed reliable in-game).
+Import panel only. No compliance overlay yet (that's Phase 3).
+
+**Import confirmed working in-game** — verified end-to-end on Hunter Beast
+Mastery. See "Import status" below for what to expect.
 
 ## What this does
 
@@ -20,7 +22,7 @@ Copy this whole `HotsBBTalents` folder into your WoW `_retail_/Interface/AddOns/
 directory, then `/reload` or restart the client. Enable it at the character
 select AddOns list if it isn't already.
 
-## Import status: fixed in code, not yet verified in-game
+## Import status: confirmed working
 
 First attempt: `ImportLoadout(configID, {}, name, importString)` reported
 success but produced a completely **empty** loadout. Root cause: `entries`
@@ -29,30 +31,21 @@ records) is what Blizzard's API actually uses to build the loadout —
 the raw `importString` argument is not auto-decoded internally as hoped.
 Passing `entries = {}` is exactly why nothing got selected.
 
-Second attempt (current `Core.lua`): the loadout string is now decoded into
-real `entries` client-side before calling `ImportLoadout`. This is a faithful
-line-by-line Lua port of Blizzard's own decode logic — `ClassTalentImportExportMixin`
-in `Interface/AddOns/Blizzard_PlayerSpells/ClassTalents/Blizzard_ClassTalentImportExport.lua`
-— not a guess at the binary format. Confirmed via that source: header is
-8-bit version + 16-bit specID + 128-bit tree hash (16 bytes), then per-node
-flags (selected/purchased/partial-rank/choice) walked in `C_Traits.GetTreeNodes(treeID)`
-order, converted to entries via `C_Traits.GetNodeInfo`/`GetEntryInfo`, using
-`ExportUtil.MakeImportDataStream` — Blizzard's own built-in bitstream reader,
-not a custom base64 implementation.
+Second attempt (current `Core.lua`): the loadout string is decoded into real
+`entries` client-side before calling `ImportLoadout` — a faithful line-by-line
+Lua port of Blizzard's own decode logic (`ClassTalentImportExportMixin` in
+`Interface/AddOns/Blizzard_PlayerSpells/ClassTalents/Blizzard_ClassTalentImportExport.lua`),
+using `ExportUtil.MakeImportDataStream` (Blizzard's own built-in bitstream
+reader) rather than a custom base64 implementation. **Verified working
+in-game** on Hunter Beast Mastery — the correct talents were applied.
 
-**This has not been tested in-game yet.** It's a faithful port of verified
-source rather than a blind guess, which is a meaningfully different risk
-profile than the first attempt, but "should be correct by construction" still
-needs a real test to confirm. If it errors, the message will say exactly
-which step failed (header read, content read, entry conversion, or the
-`ImportLoadout` call itself) — send that back verbatim. Copy is unaffected
-either way.
-
-**If the first (broken) Import already ran for you:** it almost certainly
-created/modified a *saved loadout slot* (visible in the dropdown at the top
-of the Talents panel) rather than touching your actively-spent talent points.
-Check that dropdown — if there's a broken/empty entry, delete it or switch
-back to your real loadout. Your live spec should be unaffected.
+**Expected side effect, not a bug:** applying a substantially different
+build can leave empty slots on your action bars where abilities you no
+longer have used to sit. The game doesn't try to guess where changed/new
+spells should go. Your spellbook is unaffected — just re-drag what you want
+from the spellbook (`P`) back onto your bars. This happens with Blizzard's
+own built-in Import too on a big enough build change; it's not specific to
+this addon.
 
 ## Other unverified item: `.toc` Interface number
 
