@@ -3,7 +3,7 @@ import { unstable_cache } from 'next/cache';
 import BossView, { type HeroVariant } from '../components/BossView';
 import {
   getWclToken, getBlizzardToken, getWclRankings, getHistoricalFightTelemetry,
-  getTalentTreeId, getTalentTreeLayout,
+  getTalentTreeId, getCachedTalentLayout,
   computeConsensus, getActiveHeroTreeId, makeTelemetry, computeFrequencyPct,
   SPEC_IDS, ENCHANT_SLOT_LABELS, ENCHANT_SLOT_ORDER,
 } from '../lib/wow';
@@ -840,11 +840,7 @@ export default async function BossContent({
       return <div className="text-center py-12 text-zinc-600 text-sm">Talent tree not found for this spec.</div>;
     }
 
-    const { layout: skeletonMap, heroTreeNames: allHeroTreeNames } = await unstable_cache(
-      () => getTalentTreeLayout(treeInfo!.treeId, treeInfo!.specId, blizzardToken),
-      [`talent-layout-v2-${treeInfo.treeId}-${treeInfo.specId}`],
-      { revalidate: 86400 }
-    )();
+    const { layout: skeletonMap, heroTreeNames: allHeroTreeNames } = await getCachedTalentLayout(treeInfo.treeId, treeInfo.specId, blizzardToken);
     const rawRankings = rankingsResult.rankings;
     const dataFetchedAt = rankingsResult.fetchedAt;
     const totalAvailableParses = rawRankings.length;

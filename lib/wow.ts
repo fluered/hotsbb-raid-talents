@@ -1,3 +1,5 @@
+import { unstable_cache } from 'next/cache';
+
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 
 export async function getWclToken() {
@@ -124,7 +126,7 @@ export async function getSpellIconUrl(spellId: number, accessToken: string): Pro
     try {
       const res = await fetch(
         `https://us.api.blizzard.com/data/wow/media/spell/${spellId}?namespace=static-us`,
-        { headers: { 'Authorization': `Bearer ${accessToken}` }, next: { revalidate: 86400 } }
+        { headers: { 'Authorization': `Bearer ${accessToken}` }, next: { revalidate: 604800 } }
       );
       if (res.ok) return (await res.json()).assets?.[0]?.value ?? '';
       if (res.status === 429) {
@@ -269,11 +271,22 @@ export async function getTalentTreeLayout(treeId: number, specId: number, access
   return { layout: mapped.filter(n => n.name || n.iconUrl), heroTreeNames };
 }
 
+// Cached wrapper — keyed by treeId+specId so token rotation doesn't bust it.
+// 7-day TTL: talent trees only change on WoW patches (~every 6-8 weeks).
+export function getCachedTalentLayout(treeId: number, specId: number, accessToken: string) {
+  return unstable_cache(
+    () => getTalentTreeLayout(treeId, specId, accessToken),
+    [`talent-layout-v2-${treeId}-${specId}`],
+    { revalidate: 604800 }
+  )();
+}
+
 export async function getTalentTreeId(specName: string, className: string, accessToken: string): Promise<{ treeId: number; specId: number } | null> {
   const specId = SPEC_IDS[className]?.[specName];
   if (!specId) return null;
   const response = await fetch('https://us.api.blizzard.com/data/wow/talent-tree/index?namespace=static-us&locale=en_US', {
     headers: { 'Authorization': `Bearer ${accessToken}` },
+    next: { revalidate: 604800 },
   });
   if (!response.ok) throw new Error(`Talent tree index failed: ${response.status}`);
   const trees: any[] = (await response.json()).spec_talent_trees || [];
