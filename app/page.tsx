@@ -12,6 +12,13 @@ import {
   MIDNIGHT_DUNGEONS, MPLUS_DIFFICULTY, MPLUS_ZONE_ID, HEALER_SPECS,
 } from '../lib/wow';
 
+// BossContent awaits up to 50 concurrent WCL telemetry fetches + 25 Blizzard profile
+// fetches + rate-limited talent-icon fetching before any response streams. On a fully
+// cold cache (a combo nobody's requested recently) that can exceed the platform's
+// default function timeout, which surfaces to users as a raw "page couldn't load"
+// connection failure rather than a clean error page. Give it real headroom.
+export const maxDuration = 60;
+
 // ─── Metadata ─────────────────────────────────────────────────────────────────
 
 interface PageProps {

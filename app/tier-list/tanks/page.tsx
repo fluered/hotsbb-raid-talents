@@ -5,6 +5,10 @@ import { getWclToken, getRaidStructure, MIDNIGHT_RAIDS, TANK_SPECS } from '../..
 import TierListContent from '../TierListContent';
 import OverallTierListContent from '../OverallTierListContent';
 
+// See app/page.tsx for why: heavy concurrent WCL fetching across many specs can
+// exceed the platform's default function timeout on a cold cache.
+export const maxDuration = 60;
+
 interface PageProps {
   searchParams: Promise<{ boss?: string; bossName?: string; difficulty?: string; region?: string }>;
 }
