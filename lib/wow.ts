@@ -164,6 +164,22 @@ async function getHeroTreeIconUrl(mediaHref: string | undefined, accessToken: st
   return '';
 }
 
+// Confirmed working (unlike the Blizzard media endpoint above, which currently 404s for
+// this content): warcraft.wiki.gg reliably hosts hero-talent portrait art at this exact
+// naming pattern, for both established and brand-new hero trees. Verifies existence via
+// a real fetch rather than trusting the guessed URL blindly, since the naming convention
+// could plausibly miss for less common/oddly-named trees.
+async function getWikiHeroTreeIconUrl(name: string): Promise<string> {
+  const slug = name.toLowerCase().replace(/\s+/g, '_');
+  const url = `https://warcraft.wiki.gg/images/Hero_talent_${slug}.png`;
+  try {
+    const res = await fetch(url, { next: { revalidate: 604800 } });
+    return res.ok ? url : '';
+  } catch {
+    return '';
+  }
+}
+
 export async function getTalentTreeLayout(treeId: number, specId: number, accessToken: string) {
   const url = `https://us.api.blizzard.com/data/wow/talent-tree/${treeId}/playable-specialization/${specId}?namespace=static-us&locale=en_US`;
   const response = await fetch(url, { headers: { 'Authorization': `Bearer ${accessToken}` }, next: { revalidate: 86400 } });
@@ -181,10 +197,11 @@ export async function getTalentTreeLayout(treeId: number, specId: number, access
   const heroNodeIds = new Set(heroNodeTreeMap.keys());
   const heroTreeNames: Array<{ id: number; name: string; imageUrl: string }> = await Promise.all(
     (data.hero_talent_trees || []).map(async (ht: any) => {
+      // Blizzard's own media endpoint first (best when available), then the community
+      // wiki (confirmed reliable for both new and established hero trees), then a hero
+      // node's own spell icon as a last resort if neither source has this specific tree.
       let imageUrl = await getHeroTreeIconUrl(ht.media?.key?.href, accessToken);
-      // Dedicated hero-tree portrait art often isn't uploaded yet for brand-new content —
-      // fall back to the first hero node's own spell icon (already proven working for
-      // regular talent nodes) rather than showing nothing.
+      if (!imageUrl) imageUrl = await getWikiHeroTreeIconUrl(ht.name);
       if (!imageUrl) {
         const firstNode = (ht.hero_talent_nodes || [])[0];
         const firstRank = firstNode?.ranks?.[0];
@@ -311,7 +328,7 @@ export async function getTalentTreeLayout(treeId: number, specId: number, access
 export function getCachedTalentLayout(treeId: number, specId: number, accessToken: string) {
   return unstable_cache(
     () => getTalentTreeLayout(treeId, specId, accessToken),
-    [`talent-layout-v4-${treeId}-${specId}`],
+    [`talent-layout-v5-${treeId}-${specId}`],
     { revalidate: 604800 }
   )();
 }

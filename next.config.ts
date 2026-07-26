@@ -14,6 +14,7 @@ const nextConfig: NextConfig = {
       { protocol: 'https', hostname: 'wow.zamimg.com' },
       { protocol: 'https', hostname: 'assets.rpglogs.com' },
       { protocol: 'https', hostname: 'cdn.raiderio.net' },
+      { protocol: 'https', hostname: 'warcraft.wiki.gg' },
     ],
   },
 };
