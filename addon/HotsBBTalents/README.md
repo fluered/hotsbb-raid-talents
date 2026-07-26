@@ -23,6 +23,24 @@ Each populated card has:
   the built-in Talents panel's own Import dialog by hand. Always works
   regardless of Import's status, since it doesn't depend on any decode logic.
 
+**Auto-jump to your current zone**: opening `/hbt` while inside a dungeon or
+raid instance calls `GetInstanceInfo()` (a local client call, no data
+dependency) to pick the right tab automatically. For dungeons the instance
+name matches a roster entry directly, so it also scrolls straight to that
+card and highlights it gold. Raids can only auto-select the Raid tab, since
+the zone name doesn't map to one specific boss.
+
+**Visual style**: cards use the same border/background textures `GameTooltip`
+itself uses (`Interface\Tooltips\UI-Tooltip-Border/Background`) rather than a
+flat single-color rectangle, and the panel title shows your class + spec icon
+— both sourced directly from the client (`CLASS_ICON_TCOORDS` atlas,
+`GetSpecializationInfo`'s icon fileID), no network fetch involved. Looked
+into Blizzard's newer nine-slice panel system (`NineSliceUtil.ApplyLayout`,
+used by more modern screens like Renown/Delves) for an even more current
+look, but couldn't get fully verified real layout-name strings without
+guessing — went with the tooltip-border route instead since it's guaranteed
+correct. Worth revisiting if someone finds the right layout names.
+
 (Earlier version was one flat row per boss+hero-tree combo — unusable once
 real data covers 8-10 bosses and 8 dungeons per season, each with up to 3
 hero-tree variants. Redesigned around cards-per-encounter with pills for

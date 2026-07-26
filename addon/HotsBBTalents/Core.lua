@@ -344,8 +344,34 @@ frame:SetScript("OnDragStop", frame.StopMovingOrSizing)
 frame:Hide()
 tinsert(UISpecialFrames, "HotsBBTalentsFrame") -- lets Esc close it like a default Blizzard panel
 
+-- Class + spec icons come straight from the client (no network fetch at all): class
+-- icons via the standard CLASS_ICON_TCOORDS atlas every addon uses for this, spec icon
+-- via GetSpecializationInfo's 4th return value, which is a ready-to-use texture fileID.
+frame.classIcon = frame:CreateTexture(nil, "ARTWORK")
+frame.classIcon:SetSize(16, 16)
+frame.classIcon:SetPoint("LEFT", frame.TitleBg, "LEFT", 6, 0)
+do
+  local _, classToken = UnitClass("player")
+  if classToken and CLASS_ICON_TCOORDS and CLASS_ICON_TCOORDS[classToken] then
+    frame.classIcon:SetTexture("Interface\\TargetingFrame\\UI-Classes-Circles")
+    local coords = CLASS_ICON_TCOORDS[classToken]
+    frame.classIcon:SetTexCoord(coords[1], coords[2], coords[3], coords[4])
+  end
+end
+
+frame.specIcon = frame:CreateTexture(nil, "ARTWORK")
+frame.specIcon:SetSize(16, 16)
+frame.specIcon:SetPoint("LEFT", frame.classIcon, "RIGHT", 3, 0)
+do
+  local specIndex = GetSpecialization and GetSpecialization()
+  if specIndex then
+    local _, _, _, icon = GetSpecializationInfo(specIndex)
+    if icon then frame.specIcon:SetTexture(icon) end
+  end
+end
+
 frame.title = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-frame.title:SetPoint("LEFT", frame.TitleBg, "LEFT", 5, 0)
+frame.title:SetPoint("LEFT", frame.specIcon, "RIGHT", 6, 0)
 frame.title:SetText("HotsBB Talents")
 do
   local _, classToken = UnitClass("player")
@@ -412,13 +438,17 @@ local function GetCard(index)
   if card then return card end
   card = CreateFrame("Frame", nil, content, "BackdropTemplate")
   card:SetSize(CARD_WIDTH, 34)
+  -- Same border/background textures GameTooltip itself uses — guaranteed to exist and
+  -- render as a proper beveled panel, rather than a flat single-color rectangle.
   card:SetBackdrop({
-    bgFile = "Interface\\Buttons\\WHITE8x8",
-    edgeFile = "Interface\\Buttons\\WHITE8x8",
-    edgeSize = 1,
+    bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+    tile = true, tileSize = 16, edgeSize = 16,
+    insets = { left = 4, right = 4, top = 4, bottom = 4 },
   })
-  card:SetBackdropColor(1, 1, 1, 0.07)
-  card:SetBackdropBorderColor(1, 1, 1, 0.28)
+  card:SetBackdropColor(0.05, 0.05, 0.05, 0.85)
+  card:SetBackdropBorderColor(1, 1, 1, 0.6)
+  card.defaultBorderColor = { 1, 1, 1, 0.6 }
 
   card.header = card:CreateFontString(nil, "OVERLAY", "GameFontNormal")
   card.header:SetPoint("TOPLEFT", 10, -8)
@@ -451,6 +481,8 @@ end
 local function PopulateCard(card, bossName, variants)
   card.bossName = bossName
   card.header:SetText(bossName)
+  local dc = card.defaultBorderColor
+  card:SetBackdropBorderColor(dc[1], dc[2], dc[3], dc[4])
   for _, pill in ipairs(card.pills) do pill:Hide() end
 
   if not variants or #variants == 0 then
@@ -534,6 +566,7 @@ local function Refresh()
     card:ClearAllPoints()
     card:SetPoint("TOPLEFT", content, "TOPLEFT", 0, -y)
     card:SetPoint("RIGHT", content, "RIGHT", 0, 0)
+    card.topOffset = y
 
     local bossEntry = specData and specData[name]
     local h = PopulateCard(card, name, bossEntry and bossEntry.variants)
@@ -559,7 +592,45 @@ tabRaidBtn:SetScript("OnClick", function() SetActiveTab("raid") end)
 tabDungeonBtn:SetScript("OnClick", function() SetActiveTab("dungeon") end)
 tabRaidBtn:Disable() -- raid tab active by default
 
-frame:SetScript("OnShow", Refresh)
+-- ── Auto-jump to current zone ────────────────────────────────────────────────
+-- GetInstanceInfo() is a local client call, no network/data dependency. For dungeons
+-- the instance name matches our roster names directly, so we can jump straight to
+-- that card. For raids the zone name doesn't map to one specific boss, so we can only
+-- select the right tab — still saves a click over always defaulting to Raid.
+local function DetectCurrentZoneMatch()
+  local name, instanceType = GetInstanceInfo()
+  if not name or name == "" then return nil, nil end
+  if instanceType == "party" then
+    for _, dname in ipairs(DUNGEON_NAMES) do
+      if dname == name then return "dungeon", dname end
+    end
+    return "dungeon", nil
+  elseif instanceType == "raid" then
+    return "raid", nil
+  end
+  return nil, nil
+end
+
+frame:SetScript("OnShow", function()
+  local tabKey, matchedName = DetectCurrentZoneMatch()
+  if tabKey == "raid" then
+    activeTabKey = "raid"; tabRaidBtn:Disable(); tabDungeonBtn:Enable()
+  elseif tabKey == "dungeon" then
+    activeTabKey = "dungeon"; tabDungeonBtn:Disable(); tabRaidBtn:Enable()
+  end
+
+  Refresh()
+
+  if matchedName then
+    for _, card in ipairs(cardPool) do
+      if card.bossName == matchedName and card:IsShown() then
+        scrollFrame:SetVerticalScroll(card.topOffset or 0)
+        card:SetBackdropBorderColor(1, 0.82, 0, 0.9) -- gold: "you're here"
+        break
+      end
+    end
+  end
+end)
 
 -- ── Slash command ────────────────────────────────────────────────────────────
 
