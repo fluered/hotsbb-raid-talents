@@ -4,7 +4,13 @@ import {
   getWclToken, getBlizzardToken, getWclRankings, getHistoricalFightTelemetry,
   getTalentTreeId, getCachedTalentLayout,
   computeConsensus, getActiveHeroTreeId, makeTelemetry, computeFrequencyPct,
+  mapConcurrent,
 } from './wow';
+
+// WCL enforces a burst rate limit independent of its overall points budget. Firing
+// all of a job's telemetry/profile lookups at once (up to 50+25 requests) reliably
+// trips it, so those fan-outs are capped rather than run via unbounded Promise.all.
+const WCL_FANOUT_CONCURRENCY = 5;
 
 // Talent-only meta build export — mirrors BossContent's phase-1 consensus computation
 // (same caching keys, same CONSENSUS_N/DISPLAY_N split) but skips gear/player rendering
@@ -66,17 +72,20 @@ export async function getMetaBuild(params: {
   const CONSENSUS_N = Math.min(rawRankings.length, 50);
   const DISPLAY_N = Math.min(rawRankings.length, 25);
 
-  const allTelemetryData = await Promise.all(
-    rawRankings.slice(0, CONSENSUS_N).map((player: any) =>
+  const allTelemetryData = await mapConcurrent(
+    rawRankings.slice(0, CONSENSUS_N),
+    WCL_FANOUT_CONCURRENCY,
+    (player: any) =>
       unstable_cache(
         async () => getHistoricalFightTelemetry(wclToken, player.report?.code, player.report?.fightID, player.name),
         [`wcl-telemetry-${player.report?.code}-${player.report?.fightID}`],
         { revalidate: 21600 }
       )()
-    )
   );
-  const blizzardProfiles = await Promise.all(
-    rawRankings.slice(0, DISPLAY_N).map(async (player: any) => {
+  const blizzardProfiles = await mapConcurrent(
+    rawRankings.slice(0, DISPLAY_N),
+    WCL_FANOUT_CONCURRENCY,
+    async (player: any) => {
       const realm = (player.server?.slug ?? player.server?.name ?? '').toLowerCase().replace(/\s+/g, '-').replace(/'/g, '');
       const name = player.name.toLowerCase();
       return unstable_cache(
@@ -92,7 +101,7 @@ export async function getMetaBuild(params: {
         [`blizzard-spec-${region}-${realm}-${name}`],
         { revalidate: 21600 }
       )();
-    })
+    }
   );
 
   const detailedRankingsBase = rawRankings.slice(0, CONSENSUS_N).map((player: any, idx: number) => {

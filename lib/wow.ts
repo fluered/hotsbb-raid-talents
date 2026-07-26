@@ -121,7 +121,7 @@ export async function getHistoricalFightTelemetry(wclToken: string, reportCode: 
 // ─── Blizzard ─────────────────────────────────────────────────────────────────
 
 // Run at most `limit` async tasks concurrently, preserving result order.
-async function mapConcurrent<T, U>(items: T[], limit: number, fn: (item: T) => Promise<U>): Promise<U[]> {
+export async function mapConcurrent<T, U>(items: T[], limit: number, fn: (item: T) => Promise<U>): Promise<U[]> {
   const results: U[] = new Array(items.length);
   let next = 0;
   async function worker() {

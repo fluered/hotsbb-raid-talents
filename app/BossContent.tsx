@@ -5,6 +5,7 @@ import {
   getWclToken, getBlizzardToken, getWclRankings, getHistoricalFightTelemetry,
   getTalentTreeId, getCachedTalentLayout,
   computeConsensus, getActiveHeroTreeId, makeTelemetry, computeFrequencyPct,
+  mapConcurrent,
   SPEC_IDS, ENCHANT_SLOT_LABELS, ENCHANT_SLOT_ORDER,
 } from '../lib/wow';
 
@@ -875,14 +876,17 @@ export default async function BossContent({
     // ── Start ALL fetch groups concurrently ──────────────────────────────────
     // Equipment/stats/media start immediately so they run in parallel with telemetry+profiles.
     // We only await telemetry+profiles for the fast talent-tree path.
-    const _telemetryP = Promise.all(
-      rawRankings.slice(0, CONSENSUS_N).map((player: any) =>
+    // Bounded rather than a bare Promise.all — firing all ~50 telemetry lookups at once
+    // reliably trips WCL's burst rate limit (distinct from its overall points budget).
+    const _telemetryP = mapConcurrent(
+      rawRankings.slice(0, CONSENSUS_N),
+      5,
+      (player: any) =>
         unstable_cache(
           async () => getHistoricalFightTelemetry(wclToken, player.report?.code, player.report?.fightID, player.name),
           [`wcl-telemetry-${player.report?.code}-${player.report?.fightID}`],
           { revalidate: 21600 }
         )()
-      )
     );
     const _profilesP = Promise.all(
       rawRankings.slice(0, DISPLAY_N).map(async (player: any) => {
