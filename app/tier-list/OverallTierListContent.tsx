@@ -158,7 +158,7 @@ export default async function OverallTierListContent({
   const [{ specs: rawResults, cachedAt }, specIcons] = await Promise.all([
     unstable_cache(
       async () => ({ specs: await computeOverall(wclToken, specs, bossIds, difficulty, metric), cachedAt: new Date().toISOString() }),
-      [`wcl-overall-v6-${role}-${difficulty}-combined${metric ? `-${metric}` : ''}`],
+      [`wcl-overall-v7-${role}-${difficulty}-combined${metric ? `-${metric}` : ''}`],
       { revalidate: 604800 }
     )().then(r => r),
     (async () => {

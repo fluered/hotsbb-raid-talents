@@ -53,7 +53,7 @@ export async function getMetaBuild(params: {
     getTalentTreeId(spec, className, blizzardToken),
     unstable_cache(
       async () => ({ rankings: await getWclRankings(wclToken, bossId, className, spec, difficulty, region, metric, true), fetchedAt: Date.now() }),
-      [`wcl-rankings-v2-${bossId}-${className}-${spec}-${difficulty}-${region}-${metric ?? 'dps'}`],
+      [`wcl-rankings-v3-${bossId}-${className}-${spec}-${difficulty}-${region}-${metric ?? 'dps'}`],
       { revalidate: 21600 }
     )(),
   ]);
