@@ -69,7 +69,11 @@ export async function getMetaBuild(params: {
   const rawRankings = rankingsResult.rankings;
   if (rawRankings.length === 0) return { status: 'no_data' };
 
-  const CONSENSUS_N = Math.min(rawRankings.length, 50);
+  // Lower than BossContent's live-page CONSENSUS_N (50) on purpose: this path powers the
+  // batch addon export (720 combos/run), where telemetry fan-out is the dominant source of
+  // WCL request volume. 20 samples is still a solid consensus build; it just costs far less
+  // of WCL's points budget per job than mirroring the interactive page's sample size would.
+  const CONSENSUS_N = Math.min(rawRankings.length, 20);
   const DISPLAY_N = Math.min(rawRankings.length, 25);
 
   const allTelemetryData = await mapConcurrent(
