@@ -7,6 +7,10 @@
     {
       "path": "/api/warm-talent-layouts",
       "schedule": "0 3 * * 1"
+    },
+    {
+      "path": "/api/warm-pages",
+      "schedule": "*/10 * * * *"
     }
   ]
 }
