@@ -16,6 +16,10 @@ function argVal(flag, fallback) {
 const BASE = argVal('--base', 'http://localhost:3000');
 const CONCURRENCY = parseInt(argVal('--concurrency', '6'));
 const LIMIT = argVal('--limit', null) ? parseInt(argVal('--limit', null)) : null;
+// A rate-limited run silently drops whole classes (WCL 429s look identical to "no
+// data" further down the pipeline). Without --force-write, a mid-run rate limit
+// aborts before touching Data.lua so a bad partial run can't clobber a good prior one.
+const FORCE_WRITE = process.argv.includes('--force-write');
 
 // Mirrors lib/wow.ts SPEC_IDS
 const SPEC_IDS = {
@@ -89,13 +93,33 @@ async function fetchOnce(job) {
   }
 }
 
+// Circuit breaker: once WCL starts returning 429s, every remaining job would fail
+// the same way. Rather than burning through the whole queue (and writing a Data.lua
+// that's missing entire classes but looks like a normal partial success), trip once
+// and short-circuit the rest without hitting the network.
+let circuitBroken = false;
+let circuitBreakInfo = null;
+
 // Transient rate-limit/network failures are common when hammering Blizzard/WCL at
 // concurrency — retry a couple of times with backoff before giving up on a combo.
 async function fetchJob(job) {
+  if (circuitBroken) return { job, json: { status: 'skipped_rate_limit' } };
+
   let json = await fetchOnce(job);
-  for (let attempt = 0; (json.status === 'error' || json.status === 'fetch_error') && attempt < 2; attempt++) {
+  if (json.status === 'rate_limited') {
+    if (!circuitBroken) {
+      circuitBroken = true;
+      circuitBreakInfo = json;
+    }
+    return { job, json };
+  }
+  for (let attempt = 0; (json.status === 'error' || json.status === 'fetch_error') && attempt < 2 && !circuitBroken; attempt++) {
     await sleep(1500 * (attempt + 1));
     json = await fetchOnce(job);
+    if (json.status === 'rate_limited' && !circuitBroken) {
+      circuitBroken = true;
+      circuitBreakInfo = json;
+    }
   }
   return { job, json };
 }
@@ -151,6 +175,36 @@ function luaNumMap(obj) {
   if (errors.length) {
     console.log(`First ${Math.min(10, errors.length)} errors:`);
     errors.slice(0, 10).forEach(e => console.log('  ' + e));
+  }
+
+  // Full class coverage check, independent of the circuit breaker — a spec with zero
+  // encounters (all 'no_data'/'error') is invisible in Data.lua just like one that
+  // never ran, so surface it explicitly rather than letting it pass silently.
+  const missingSpecs = [];
+  for (const [className, specs] of Object.entries(SPEC_IDS)) {
+    for (const [specName, specID] of Object.entries(specs)) {
+      if (!bySpec.has(specID) || bySpec.get(specID).size === 0) {
+        missingSpecs.push(`${className}/${specName} (${specID})`);
+      }
+    }
+  }
+  if (missingSpecs.length) {
+    console.log(`\nSpecs with NO data at all (${missingSpecs.length}): ${missingSpecs.join(', ')}`);
+  }
+
+  if (circuitBroken) {
+    const completed = results.filter(r => r.json.status !== 'skipped_rate_limit').length;
+    const skipped = results.length - completed;
+    console.log(`\n🛑 Circuit breaker tripped: WCL rate-limited this run (${circuitBreakInfo.message || 'status 429'}).`);
+    if (circuitBreakInfo.retryAfter) console.log(`   Retry-After: ${circuitBreakInfo.retryAfter}s (~${Math.round(circuitBreakInfo.retryAfter / 60)} min)`);
+    console.log(`   ${completed}/${results.length} jobs completed before the trip, ${skipped} skipped.`);
+    if (!FORCE_WRITE) {
+      console.log(`   Refusing to overwrite Data.lua with a partial/incomplete run — the existing file is untouched.`);
+      console.log(`   Wait for the rate limit to clear and re-run, or pass --force-write to write this partial data anyway.`);
+      process.exitCode = 1;
+      return;
+    }
+    console.log(`   --force-write passed — writing partial data anyway.`);
   }
 
   const lines = [];

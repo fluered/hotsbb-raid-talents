@@ -73,6 +73,19 @@ export async function getWclRankings(token: string, bossId: number, className: s
     body: JSON.stringify({ query }),
     ...(noCache ? { cache: 'no-store' } : { next: { revalidate: 604800 } }),
   });
+  // A 429 here was previously swallowed into an empty rankings array — indistinguishable
+  // from a boss/spec combo that genuinely has no parses yet. That's exactly why a WCL
+  // rate-limit exhaustion (confirmed 2026-07-26, "Too many requests... subscribe on
+  // Patreon to increase their request limit") went undetected mid-batch-export: every
+  // caller just saw normal-looking no_data results and had no signal to stop. Throw a
+  // distinguishable error instead so callers (the export script especially) can react
+  // to "we're rate-limited" differently than "this combo has no data."
+  if (response.status === 429) {
+    const err: any = new Error('WCL rate limit exceeded — the API key has hit its request budget for the current window.');
+    err.isRateLimit = true;
+    err.retryAfter = response.headers.get('retry-after');
+    throw err;
+  }
   return (await response.json()).data?.worldData?.encounter?.characterRankings?.rankings || [];
 }
 

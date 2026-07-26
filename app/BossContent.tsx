@@ -1313,6 +1313,14 @@ export default async function BossContent({
       </div>
     );
   } catch (err: any) {
+    if (err?.isRateLimit) {
+      return (
+        <div className="bg-amber-950/40 border border-amber-800/50 text-amber-300 px-4 py-3 rounded-xl text-sm">
+          <span className="font-bold">High demand right now — </span>
+          this data source is temporarily rate-limited. Try again in a few minutes.
+        </div>
+      );
+    }
     return (
       <div className="bg-red-950/40 border border-red-800/50 text-red-300 px-4 py-3 rounded-xl text-sm">
         <span className="font-bold">Error: </span>{err.message}

@@ -283,26 +283,172 @@ local function ImportBuild(importString, displayName)
   return true
 end
 
+-- ── Design system ────────────────────────────────────────────────────────────
+-- Everything below is drawn from scratch — no Blizzard frame/button templates
+-- (BasicFrameTemplateWithInset, UIPanelButtonTemplate, tooltip borders, etc.).
+-- Every visual piece is a plain colored texture (SetColorTexture) or a font
+-- string, so there's zero dependency on guessing atlas/texture names — nothing
+-- here can be "wrong" the way an unverified atlas reference could be.
+
+local COLOR_BG           = { 0.045, 0.045, 0.055 }
+local COLOR_TITLEBAR     = { 0.02, 0.02, 0.03 }
+local COLOR_PANEL        = { 0.10, 0.10, 0.12 }
+local COLOR_PANEL_HOVER  = { 0.13, 0.13, 0.16 }
+local COLOR_DIVIDER      = { 1, 1, 1 }
+local COLOR_TEXT         = { 0.94, 0.94, 0.96 }
+local COLOR_TEXT_MUTED   = { 0.52, 0.52, 0.57 }
+local COLOR_BTN          = { 0.15, 0.15, 0.18 }
+local COLOR_BTN_HOVER    = { 0.20, 0.20, 0.24 }
+local COLOR_GOLD         = { 1, 0.82, 0 }
+
+local COLOR_ACCENT = { 0.55, 0.55, 0.62 }
+do
+  local _, classToken = UnitClass("player")
+  if RAID_CLASS_COLORS and classToken and RAID_CLASS_COLORS[classToken] then
+    local c = RAID_CLASS_COLORS[classToken]
+    COLOR_ACCENT = { c.r, c.g, c.b }
+  end
+end
+
+local function Paint(tex, color, alpha)
+  tex:SetColorTexture(color[1], color[2], color[3], alpha == nil and 1 or alpha)
+end
+
+local function CreatePanel(parent, name)
+  local f = CreateFrame("Frame", name, parent)
+  f.bg = f:CreateTexture(nil, "BACKGROUND")
+  f.bg:SetAllPoints()
+  return f
+end
+
+-- Thin 1px divider line, used instead of a beveled border.
+local function CreateDivider(parent, alpha)
+  local tex = parent:CreateTexture(nil, "ARTWORK")
+  Paint(tex, COLOR_DIVIDER, alpha or 0.08)
+  return tex
+end
+
+-- variant: "primary" (accent fill, dark text), "flat" (subtle dark fill), "ghost" (transparent, text-only)
+local function CreateFlatButton(parent, text, variant, w, h)
+  local btn = CreateFrame("Button", nil, parent)
+  btn:SetSize(w or 60, h or 24)
+  btn.bg = btn:CreateTexture(nil, "BACKGROUND")
+  btn.bg:SetAllPoints()
+
+  btn.label = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  btn.label:SetPoint("CENTER")
+  btn.label:SetText(text)
+
+  local function ApplyIdle()
+    if variant == "primary" then
+      Paint(btn.bg, COLOR_ACCENT, 0.9)
+      btn.label:SetTextColor(0.05, 0.05, 0.05)
+    elseif variant == "ghost" then
+      Paint(btn.bg, COLOR_TEXT, 0)
+      btn.label:SetTextColor(COLOR_TEXT_MUTED[1], COLOR_TEXT_MUTED[2], COLOR_TEXT_MUTED[3])
+    else
+      Paint(btn.bg, COLOR_BTN)
+      btn.label:SetTextColor(COLOR_TEXT[1], COLOR_TEXT[2], COLOR_TEXT[3])
+    end
+  end
+  local function ApplyHover()
+    if variant == "primary" then
+      Paint(btn.bg, COLOR_ACCENT, 1)
+    elseif variant == "ghost" then
+      Paint(btn.bg, COLOR_TEXT, 0.08)
+      btn.label:SetTextColor(COLOR_TEXT[1], COLOR_TEXT[2], COLOR_TEXT[3])
+    else
+      Paint(btn.bg, COLOR_BTN_HOVER)
+    end
+  end
+  ApplyIdle()
+  btn:SetScript("OnEnter", ApplyHover)
+  btn:SetScript("OnLeave", ApplyIdle)
+  return btn
+end
+
+-- Toggle button for tabs/pills: persistent selected state (accent underline/fill)
+-- rather than hover-only feedback.
+local function CreateToggleButton(parent, text, w, h)
+  local btn = CreateFrame("Button", nil, parent)
+  btn:SetSize(w or 80, h or 24)
+  btn.bg = btn:CreateTexture(nil, "BACKGROUND")
+  btn.bg:SetAllPoints()
+  Paint(btn.bg, COLOR_TEXT, 0)
+
+  btn.underline = btn:CreateTexture(nil, "ARTWORK")
+  btn.underline:SetPoint("BOTTOMLEFT", 0, 0)
+  btn.underline:SetPoint("BOTTOMRIGHT", 0, 0)
+  btn.underline:SetHeight(2)
+  Paint(btn.underline, COLOR_ACCENT, 0)
+
+  btn.label = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  btn.label:SetPoint("CENTER")
+  btn.label:SetText(text)
+  btn.label:SetTextColor(COLOR_TEXT_MUTED[1], COLOR_TEXT_MUTED[2], COLOR_TEXT_MUTED[3])
+
+  function btn:SetSelected(selected)
+    self.selected = selected
+    if selected then
+      Paint(self.underline, COLOR_ACCENT, 1)
+      self.label:SetTextColor(COLOR_TEXT[1], COLOR_TEXT[2], COLOR_TEXT[3])
+    else
+      Paint(self.underline, COLOR_ACCENT, 0)
+      self.label:SetTextColor(COLOR_TEXT_MUTED[1], COLOR_TEXT_MUTED[2], COLOR_TEXT_MUTED[3])
+    end
+  end
+  btn:SetScript("OnEnter", function(self) if not self.selected then Paint(self.bg, COLOR_TEXT, 0.05) end end)
+  btn:SetScript("OnLeave", function(self) Paint(self.bg, COLOR_TEXT, 0) end)
+  return btn
+end
+
 -- ── Copy-string popup (guaranteed-safe fallback: no addon API dependency) ────
 
-local copyFrame = CreateFrame("Frame", "HotsBBTalentsCopyFrame", UIParent, "BasicFrameTemplateWithInset")
-copyFrame:SetSize(420, 120)
+local copyFrame = CreatePanel(UIParent, "HotsBBTalentsCopyFrame")
+copyFrame:SetSize(420, 130)
 copyFrame:SetPoint("CENTER")
+copyFrame:SetFrameStrata("DIALOG")
 copyFrame:SetMovable(true)
 copyFrame:EnableMouse(true)
 copyFrame:RegisterForDrag("LeftButton")
 copyFrame:SetScript("OnDragStart", copyFrame.StartMoving)
 copyFrame:SetScript("OnDragStop", copyFrame.StopMovingOrSizing)
-copyFrame:SetFrameStrata("DIALOG")
 copyFrame:Hide()
-copyFrame.title = copyFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-copyFrame.title:SetPoint("LEFT", copyFrame.TitleBg, "LEFT", 5, 0)
-copyFrame.title:SetText("Copy build string (Ctrl+C, then paste into Talents > Import)")
+Paint(copyFrame.bg, COLOR_PANEL, 0.98)
+tinsert(UISpecialFrames, "HotsBBTalentsCopyFrame")
 
-local copyBox = CreateFrame("EditBox", nil, copyFrame, "InputBoxTemplate")
-copyBox:SetSize(380, 20)
-copyBox:SetPoint("TOP", 0, -40)
+local copyTitleBar = CreatePanel(copyFrame)
+copyTitleBar:SetPoint("TOPLEFT")
+copyTitleBar:SetPoint("TOPRIGHT")
+copyTitleBar:SetHeight(30)
+Paint(copyTitleBar.bg, COLOR_TITLEBAR)
+
+copyFrame.title = copyTitleBar:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+copyFrame.title:SetPoint("LEFT", 12, 0)
+copyFrame.title:SetText("Copy build string")
+copyFrame.title:SetTextColor(COLOR_TEXT[1], COLOR_TEXT[2], COLOR_TEXT[3])
+
+local copyCloseBtn = CreateFlatButton(copyTitleBar, "x", "ghost", 26, 22)
+copyCloseBtn:SetPoint("RIGHT", -4, 0)
+copyCloseBtn:SetScript("OnClick", function() copyFrame:Hide() end)
+
+local copyHint = copyFrame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+copyHint:SetPoint("TOPLEFT", 14, -38)
+copyHint:SetText("Ctrl+C, then paste into Talents > Import")
+copyHint:SetTextColor(COLOR_TEXT_MUTED[1], COLOR_TEXT_MUTED[2], COLOR_TEXT_MUTED[3])
+
+local copyBoxBg = CreatePanel(copyFrame)
+copyBoxBg:SetPoint("TOPLEFT", 14, -58)
+copyBoxBg:SetPoint("TOPRIGHT", -14, -58)
+copyBoxBg:SetHeight(26)
+Paint(copyBoxBg.bg, COLOR_TITLEBAR)
+
+local copyBox = CreateFrame("EditBox", nil, copyBoxBg)
+copyBox:SetPoint("TOPLEFT", 6, 0)
+copyBox:SetPoint("BOTTOMRIGHT", -6, 0)
 copyBox:SetAutoFocus(false)
+copyBox:SetFontObject(GameFontNormalSmall)
+copyBox:SetTextColor(COLOR_TEXT[1], COLOR_TEXT[2], COLOR_TEXT[3])
 copyBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
 
 local function ShowCopyBox(importString)
@@ -331,25 +477,44 @@ local DUNGEON_NAMES = {
 
 -- ── Main panel ───────────────────────────────────────────────────────────────
 
-local CARD_WIDTH = 410
+local CARD_WIDTH = 430
 
-local frame = CreateFrame("Frame", "HotsBBTalentsFrame", UIParent, "BasicFrameTemplateWithInset")
-frame:SetSize(460, 520)
+local frame = CreatePanel(UIParent, "HotsBBTalentsFrame")
+frame:SetSize(480, 560)
 frame:SetPoint("CENTER")
+frame:SetFrameStrata("HIGH")
 frame:SetMovable(true)
 frame:EnableMouse(true)
 frame:RegisterForDrag("LeftButton")
 frame:SetScript("OnDragStart", frame.StartMoving)
 frame:SetScript("OnDragStop", frame.StopMovingOrSizing)
 frame:Hide()
+Paint(frame.bg, COLOR_BG, 0.98)
 tinsert(UISpecialFrames, "HotsBBTalentsFrame") -- lets Esc close it like a default Blizzard panel
+
+-- Thin accent-colored strip along the very top edge — a small "branded" touch.
+local accentStrip = frame:CreateTexture(nil, "ARTWORK")
+accentStrip:SetPoint("TOPLEFT")
+accentStrip:SetPoint("TOPRIGHT")
+accentStrip:SetHeight(3)
+Paint(accentStrip, COLOR_ACCENT, 0.9)
+
+local titleBar = CreatePanel(frame)
+titleBar:SetPoint("TOPLEFT", 0, -3)
+titleBar:SetPoint("TOPRIGHT", 0, -3)
+titleBar:SetHeight(40)
+Paint(titleBar.bg, COLOR_TITLEBAR)
+titleBar:EnableMouse(true)
+titleBar:RegisterForDrag("LeftButton")
+titleBar:SetScript("OnDragStart", function() frame:StartMoving() end)
+titleBar:SetScript("OnDragStop", function() frame:StopMovingOrSizing() end)
 
 -- Class + spec icons come straight from the client (no network fetch at all): class
 -- icons via the standard CLASS_ICON_TCOORDS atlas every addon uses for this, spec icon
 -- via GetSpecializationInfo's 4th return value, which is a ready-to-use texture fileID.
-frame.classIcon = frame:CreateTexture(nil, "ARTWORK")
-frame.classIcon:SetSize(16, 16)
-frame.classIcon:SetPoint("LEFT", frame.TitleBg, "LEFT", 6, 0)
+frame.classIcon = titleBar:CreateTexture(nil, "ARTWORK")
+frame.classIcon:SetSize(18, 18)
+frame.classIcon:SetPoint("LEFT", 14, 0)
 do
   local _, classToken = UnitClass("player")
   if classToken and CLASS_ICON_TCOORDS and CLASS_ICON_TCOORDS[classToken] then
@@ -359,9 +524,9 @@ do
   end
 end
 
-frame.specIcon = frame:CreateTexture(nil, "ARTWORK")
-frame.specIcon:SetSize(16, 16)
-frame.specIcon:SetPoint("LEFT", frame.classIcon, "RIGHT", 3, 0)
+frame.specIcon = titleBar:CreateTexture(nil, "ARTWORK")
+frame.specIcon:SetSize(18, 18)
+frame.specIcon:SetPoint("LEFT", frame.classIcon, "RIGHT", 5, 0)
 do
   local specIndex = GetSpecialization and GetSpecialization()
   if specIndex then
@@ -370,41 +535,38 @@ do
   end
 end
 
-frame.title = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-frame.title:SetPoint("LEFT", frame.specIcon, "RIGHT", 6, 0)
+frame.title = titleBar:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+frame.title:SetPoint("LEFT", frame.specIcon, "RIGHT", 8, 0)
 frame.title:SetText("HotsBB Talents")
-do
-  local _, classToken = UnitClass("player")
-  if RAID_CLASS_COLORS and classToken and RAID_CLASS_COLORS[classToken] then
-    local c = RAID_CLASS_COLORS[classToken]
-    frame.title:SetTextColor(c.r, c.g, c.b)
-  end
-end
+frame.title:SetTextColor(COLOR_TEXT[1], COLOR_TEXT[2], COLOR_TEXT[3])
+
+local closeBtn = CreateFlatButton(titleBar, "x", "ghost", 30, 26)
+closeBtn:SetPoint("RIGHT", -6, 0)
+closeBtn:SetScript("OnClick", function() frame:Hide() end)
 
 frame.subtitle = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-frame.subtitle:SetPoint("TOPLEFT", 16, -28)
+frame.subtitle:SetPoint("TOPLEFT", 16, -50)
 frame.subtitle:SetPoint("RIGHT", -16, 0)
 frame.subtitle:SetJustifyH("LEFT")
+frame.subtitle:SetTextColor(COLOR_TEXT_MUTED[1], COLOR_TEXT_MUTED[2], COLOR_TEXT_MUTED[3])
 frame.subtitle:SetText("")
 
--- Tabs: which content type is browsed. Plain buttons with Disable() marking the
--- active one, rather than Blizzard's PanelTabButtonTemplate — that template's
--- exact helper functions (PanelTemplates_SetTab etc.) weren't worth depending on
--- unverified when a simple, guaranteed-correct pattern does the same job.
+-- Tabs: which content type is browsed. Underline-indicator toggle buttons.
 local activeTabKey = "raid"
-local tabRaidBtn = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-tabRaidBtn:SetSize(90, 22)
-tabRaidBtn:SetPoint("TOPLEFT", 16, -50)
-tabRaidBtn:SetText("Raid")
+local tabRaidBtn = CreateToggleButton(frame, "Raid", 70, 26)
+tabRaidBtn:SetPoint("TOPLEFT", 12, -70)
 
-local tabDungeonBtn = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-tabDungeonBtn:SetSize(90, 22)
-tabDungeonBtn:SetPoint("LEFT", tabRaidBtn, "RIGHT", 6, 0)
-tabDungeonBtn:SetText("Dungeons")
+local tabDungeonBtn = CreateToggleButton(frame, "Dungeons", 90, 26)
+tabDungeonBtn:SetPoint("LEFT", tabRaidBtn, "RIGHT", 4, 0)
+
+local tabDivider = CreateDivider(frame)
+tabDivider:SetPoint("TOPLEFT", 0, -96)
+tabDivider:SetPoint("TOPRIGHT", 0, -96)
+tabDivider:SetHeight(1)
 
 local scrollFrame = CreateFrame("ScrollFrame", nil, frame, "UIPanelScrollFrameTemplate")
-scrollFrame:SetPoint("TOPLEFT", 14, -78)
-scrollFrame:SetPoint("BOTTOMRIGHT", -32, 14)
+scrollFrame:SetPoint("TOPLEFT", 14, -104)
+scrollFrame:SetPoint("BOTTOMRIGHT", -30, 16)
 
 local content = CreateFrame("Frame", nil, scrollFrame)
 content:SetSize(1, 1)
@@ -427,7 +589,7 @@ local function RefreshCardButtons(card, variants)
   card.copyBtn:SetScript("OnClick", function() ShowCopyBox(importString) end)
   for i, pill in ipairs(card.pills) do
     if pill:IsShown() then
-      if i == (card.selectedVariantIndex or 1) then pill:Disable() else pill:Enable() end
+      pill:SetSelected(i == (card.selectedVariantIndex or 1))
     end
   end
 end
@@ -436,42 +598,39 @@ local cardPool = {}
 local function GetCard(index)
   local card = cardPool[index]
   if card then return card end
-  card = CreateFrame("Frame", nil, content, "BackdropTemplate")
-  card:SetSize(CARD_WIDTH, 34)
-  -- Same border/background textures GameTooltip itself uses — guaranteed to exist and
-  -- render as a proper beveled panel, rather than a flat single-color rectangle.
-  card:SetBackdrop({
-    bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-    tile = true, tileSize = 16, edgeSize = 16,
-    insets = { left = 4, right = 4, top = 4, bottom = 4 },
-  })
-  card:SetBackdropColor(0.05, 0.05, 0.05, 0.85)
-  card:SetBackdropBorderColor(1, 1, 1, 0.6)
-  card.defaultBorderColor = { 1, 1, 1, 0.6 }
+  card = CreatePanel(content)
+  card:SetSize(CARD_WIDTH, 40)
+  Paint(card.bg, COLOR_PANEL)
+  card:EnableMouse(true)
+  card:SetScript("OnEnter", function(self) if not self.highlighted then Paint(self.bg, COLOR_PANEL_HOVER) end end)
+  card:SetScript("OnLeave", function(self) if not self.highlighted then Paint(self.bg, COLOR_PANEL) end end)
+
+  -- Left accent bar, hidden by default — shown gold when this is the auto-detected
+  -- "you are here" card.
+  card.accentBar = card:CreateTexture(nil, "ARTWORK")
+  card.accentBar:SetPoint("TOPLEFT")
+  card.accentBar:SetPoint("BOTTOMLEFT")
+  card.accentBar:SetWidth(3)
+  Paint(card.accentBar, COLOR_GOLD, 0)
 
   card.header = card:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-  card.header:SetPoint("TOPLEFT", 10, -8)
+  card.header:SetPoint("TOPLEFT", 14, -10)
   card.header:SetJustifyH("LEFT")
+  card.header:SetTextColor(COLOR_TEXT[1], COLOR_TEXT[2], COLOR_TEXT[3])
 
   card.badge = card:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-  card.badge:SetPoint("TOPRIGHT", -10, -9)
+  card.badge:SetPoint("TOPRIGHT", -12, -11)
   card.badge:SetJustifyH("RIGHT")
+  card.badge:SetTextColor(COLOR_TEXT_MUTED[1], COLOR_TEXT_MUTED[2], COLOR_TEXT_MUTED[3])
 
   card.pills = {}
   for i = 1, 4 do
-    local pill = CreateFrame("Button", nil, card, "UIPanelButtonTemplate")
-    pill:SetSize(90, 18)
+    local pill = CreateToggleButton(card, "", 90, 20)
     card.pills[i] = pill
   end
 
-  card.importBtn = CreateFrame("Button", nil, card, "UIPanelButtonTemplate")
-  card.importBtn:SetSize(60, 20)
-  card.importBtn:SetText("Import")
-
-  card.copyBtn = CreateFrame("Button", nil, card, "UIPanelButtonTemplate")
-  card.copyBtn:SetSize(50, 20)
-  card.copyBtn:SetText("Copy")
+  card.importBtn = CreateFlatButton(card, "Import", "primary", 64, 22)
+  card.copyBtn = CreateFlatButton(card, "Copy", "flat", 54, 22)
 
   cardPool[index] = card
   return card
@@ -481,16 +640,17 @@ end
 local function PopulateCard(card, bossName, variants)
   card.bossName = bossName
   card.header:SetText(bossName)
-  local dc = card.defaultBorderColor
-  card:SetBackdropBorderColor(dc[1], dc[2], dc[3], dc[4])
+  card.highlighted = false
+  Paint(card.accentBar, COLOR_GOLD, 0)
+  Paint(card.bg, COLOR_PANEL)
   for _, pill in ipairs(card.pills) do pill:Hide() end
 
   if not variants or #variants == 0 then
     card.badge:SetText("No data yet")
     card.importBtn:Hide()
     card.copyBtn:Hide()
-    card:SetHeight(34)
-    return 34
+    card:SetHeight(40)
+    return 40
   end
 
   card.badge:SetText((variants[1].sampleSize or 0) .. " parses")
@@ -500,39 +660,39 @@ local function PopulateCard(card, bossName, variants)
   card.selectedVariantIndex = selectedIndex
 
   local hasPills = #variants > 1
-  local buttonRowY = -30
+  local buttonRowY = -34
 
   if hasPills then
-    local x = 10
+    local x = 14
     for i, variant in ipairs(variants) do
       local pill = card.pills[i]
       if pill then
         pill:ClearAllPoints()
-        pill:SetPoint("TOPLEFT", x, -30)
-        pill:SetText(variant.heroTreeName or "Overall")
-        local textWidth = pill:GetFontString() and pill:GetFontString():GetStringWidth() or 40
-        pill:SetWidth(math.max(60, textWidth + 20))
+        pill:SetPoint("TOPLEFT", x, -36)
+        pill.label:SetText(variant.heroTreeName or "Overall")
+        local textWidth = pill.label:GetStringWidth() or 40
+        pill:SetWidth(math.max(64, textWidth + 24))
         pill:SetScript("OnClick", function()
           card.selectedVariantIndex = i
           RefreshCardButtons(card, variants)
         end)
         pill:Show()
-        x = x + pill:GetWidth() + 4
+        x = x + pill:GetWidth() + 6
       end
     end
-    buttonRowY = -54
+    buttonRowY = -62
   end
 
   card.importBtn:ClearAllPoints()
-  card.importBtn:SetPoint("TOPRIGHT", -10, buttonRowY)
+  card.importBtn:SetPoint("TOPRIGHT", -12, buttonRowY)
   card.copyBtn:ClearAllPoints()
-  card.copyBtn:SetPoint("RIGHT", card.importBtn, "LEFT", -4, 0)
+  card.copyBtn:SetPoint("RIGHT", card.importBtn, "LEFT", -6, 0)
   card.importBtn:Show()
   card.copyBtn:Show()
 
   RefreshCardButtons(card, variants)
 
-  local totalHeight = hasPills and 78 or 54
+  local totalHeight = hasPills and 88 or 62
   card:SetHeight(totalHeight)
   return totalHeight
 end
@@ -571,7 +731,7 @@ local function Refresh()
     local bossEntry = specData and specData[name]
     local h = PopulateCard(card, name, bossEntry and bossEntry.variants)
     card:Show()
-    y = y + h + 6
+    y = y + h + 8
   end
 
   content:SetSize(CARD_WIDTH, math.max(y, 1))
@@ -579,18 +739,13 @@ end
 
 local function SetActiveTab(key)
   activeTabKey = key
-  if key == "raid" then
-    tabRaidBtn:Disable()
-    tabDungeonBtn:Enable()
-  else
-    tabDungeonBtn:Disable()
-    tabRaidBtn:Enable()
-  end
+  tabRaidBtn:SetSelected(key == "raid")
+  tabDungeonBtn:SetSelected(key == "dungeon")
   Refresh()
 end
 tabRaidBtn:SetScript("OnClick", function() SetActiveTab("raid") end)
 tabDungeonBtn:SetScript("OnClick", function() SetActiveTab("dungeon") end)
-tabRaidBtn:Disable() -- raid tab active by default
+tabRaidBtn:SetSelected(true) -- raid tab active by default
 
 -- ── Auto-jump to current zone ────────────────────────────────────────────────
 -- GetInstanceInfo() is a local client call, no network/data dependency. For dungeons
@@ -613,10 +768,10 @@ end
 
 frame:SetScript("OnShow", function()
   local tabKey, matchedName = DetectCurrentZoneMatch()
-  if tabKey == "raid" then
-    activeTabKey = "raid"; tabRaidBtn:Disable(); tabDungeonBtn:Enable()
-  elseif tabKey == "dungeon" then
-    activeTabKey = "dungeon"; tabDungeonBtn:Disable(); tabRaidBtn:Enable()
+  if tabKey then
+    activeTabKey = tabKey
+    tabRaidBtn:SetSelected(tabKey == "raid")
+    tabDungeonBtn:SetSelected(tabKey == "dungeon")
   end
 
   Refresh()
@@ -625,7 +780,9 @@ frame:SetScript("OnShow", function()
     for _, card in ipairs(cardPool) do
       if card.bossName == matchedName and card:IsShown() then
         scrollFrame:SetVerticalScroll(card.topOffset or 0)
-        card:SetBackdropBorderColor(1, 0.82, 0, 0.9) -- gold: "you're here"
+        card.highlighted = true
+        Paint(card.accentBar, COLOR_GOLD, 1)
+        Paint(card.bg, COLOR_PANEL_HOVER)
         break
       end
     end

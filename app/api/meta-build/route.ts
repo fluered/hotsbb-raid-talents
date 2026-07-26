@@ -29,6 +29,14 @@ export async function GET(request: NextRequest) {
       headers: { 'Cache-Control': 'public, s-maxage=21600, stale-while-revalidate=86400' },
     });
   } catch (e: any) {
+    // Surfaced distinctly from a generic error so batch callers (the export script) can
+    // detect "we're rate-limited, stop entirely" rather than "this one combo failed."
+    if (e?.isRateLimit) {
+      return NextResponse.json(
+        { status: 'rate_limited', message: e.message, retryAfter: e.retryAfter ?? null },
+        { status: 429 }
+      );
+    }
     return NextResponse.json({ status: 'error', message: e?.message ?? String(e) }, { status: 500 });
   }
 }
