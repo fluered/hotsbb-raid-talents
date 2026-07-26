@@ -834,7 +834,7 @@ export default async function BossContent({
       unstable_cache(
         async () => ({ rankings: await getWclRankings(wclToken, bossId, className, spec, difficulty, region, metric, true), fetchedAt: Date.now() }),
         [`wcl-rankings-v3-${bossId}-${className}-${spec}-${difficulty}-${region}-${metric}`],
-        { revalidate: 21600 }
+        { revalidate: 86400 }
       )(),
     ]);
     if (!treeInfo) {
@@ -885,7 +885,7 @@ export default async function BossContent({
         unstable_cache(
           async () => getHistoricalFightTelemetry(wclToken, player.report?.code, player.report?.fightID, player.name),
           [`wcl-telemetry-${player.report?.code}-${player.report?.fightID}`],
-          { revalidate: 21600 }
+          { revalidate: 86400 }
         )()
     );
     const _profilesP = Promise.all(
@@ -903,7 +903,7 @@ export default async function BossContent({
             } catch { return null; }
           },
           [`blizzard-spec-${region}-${realm}-${name}`],
-          { revalidate: 21600 }
+          { revalidate: 86400 }
         )();
       })
     );
@@ -922,7 +922,7 @@ export default async function BossContent({
             } catch { return null; }
           },
           [`blizzard-equip-${region}-${realm}-${name}`],
-          { revalidate: 21600 }
+          { revalidate: 86400 }
         )();
       })
     );
@@ -941,7 +941,7 @@ export default async function BossContent({
             } catch { return null; }
           },
           [`blizzard-stats-${region}-${realm}-${name}`],
-          { revalidate: 21600 }
+          { revalidate: 86400 }
         )();
       })
     );
@@ -960,7 +960,7 @@ export default async function BossContent({
             } catch { return null; }
           },
           [`blizzard-media-${region}-${realm}-${name}`],
-          { revalidate: 21600 }
+          { revalidate: 86400 }
         )();
       })
     );

@@ -60,7 +60,7 @@ export async function getMetaBuild(params: {
     unstable_cache(
       async () => ({ rankings: await getWclRankings(wclToken, bossId, className, spec, difficulty, region, metric, true), fetchedAt: Date.now() }),
       [`wcl-rankings-v3-${bossId}-${className}-${spec}-${difficulty}-${region}-${metric ?? 'dps'}`],
-      { revalidate: 21600 }
+      { revalidate: 86400 }
     )(),
   ]);
   if (!treeInfo) return { status: 'spec_not_found' };
@@ -69,11 +69,7 @@ export async function getMetaBuild(params: {
   const rawRankings = rankingsResult.rankings;
   if (rawRankings.length === 0) return { status: 'no_data' };
 
-  // Lower than BossContent's live-page CONSENSUS_N (50) on purpose: this path powers the
-  // batch addon export (720 combos/run), where telemetry fan-out is the dominant source of
-  // WCL request volume. 20 samples is still a solid consensus build; it just costs far less
-  // of WCL's points budget per job than mirroring the interactive page's sample size would.
-  const CONSENSUS_N = Math.min(rawRankings.length, 20);
+  const CONSENSUS_N = Math.min(rawRankings.length, 50);
   const DISPLAY_N = Math.min(rawRankings.length, 25);
 
   const allTelemetryData = await mapConcurrent(
@@ -83,7 +79,7 @@ export async function getMetaBuild(params: {
       unstable_cache(
         async () => getHistoricalFightTelemetry(wclToken, player.report?.code, player.report?.fightID, player.name),
         [`wcl-telemetry-${player.report?.code}-${player.report?.fightID}`],
-        { revalidate: 21600 }
+        { revalidate: 86400 }
       )()
   );
   const blizzardProfiles = await mapConcurrent(
@@ -103,7 +99,7 @@ export async function getMetaBuild(params: {
           } catch { return null; }
         },
         [`blizzard-spec-${region}-${realm}-${name}`],
-        { revalidate: 21600 }
+        { revalidate: 86400 }
       )();
     }
   );

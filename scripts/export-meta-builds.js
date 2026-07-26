@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // Batch-generates addon/HotsBBTalents/Data.lua by calling /api/meta-build across
-// every class/spec x boss/dungeon combo. Run against a local `next start` (production
-// build) so it doesn't add load to the live Vercel deployment.
+// every class/spec x boss/dungeon combo. Targets the live site by default (not
+// localhost) so combos real visitors have loaded recently are served from the site's
+// own 24h data cache instead of costing a fresh WCL request.
 //
 // Usage:
-//   node scripts/export-meta-builds.js [--base http://localhost:3000] [--concurrency 6] [--limit N]
+//   node scripts/export-meta-builds.js [--base https://hotsbbtalents.io] [--concurrency 6] [--limit N]
 
 const fs = require('fs');
 const path = require('path');
@@ -13,12 +14,13 @@ function argVal(flag, fallback) {
   const i = process.argv.indexOf(flag);
   return i !== -1 ? process.argv[i + 1] : fallback;
 }
-const BASE = argVal('--base', 'http://localhost:3000');
+const BASE = argVal('--base', 'https://hotsbbtalents.io');
 const CONCURRENCY = parseInt(argVal('--concurrency', '6'));
 const LIMIT = argVal('--limit', null) ? parseInt(argVal('--limit', null)) : null;
 // A rate-limited run silently drops whole classes (WCL 429s look identical to "no
-// data" further down the pipeline). Without --force-write, a mid-run rate limit
-// aborts before touching Data.lua so a bad partial run can't clobber a good prior one.
+// data" further down the pipeline). Without --force-write, an aborted run (safety
+// ceiling hit below) refuses to touch Data.lua so a bad partial run can't clobber a
+// good prior one.
 const FORCE_WRITE = process.argv.includes('--force-write');
 
 // Mirrors lib/wow.ts SPEC_IDS
@@ -93,35 +95,63 @@ async function fetchOnce(job) {
   }
 }
 
-// Circuit breaker: once WCL starts returning 429s, every remaining job would fail
-// the same way. Rather than burning through the whole queue (and writing a Data.lua
-// that's missing entire classes but looks like a normal partial success), trip once
-// and short-circuit the rest without hitting the network.
-let circuitBroken = false;
-let circuitBreakInfo = null;
+// Pause-and-resume on rate limiting: unlike a hard circuit breaker, a rate_limited
+// response just pauses every worker until WCL's own Retry-After elapses, then the
+// affected job (and everyone else) resumes. This run has no wall-clock deadline, so
+// trading time for completeness is free. A safety ceiling still aborts the whole run
+// if the pauses pile up enough to suggest deep quota exhaustion rather than normal
+// throttling (e.g. the multi-day-recovery 429 seen from same-day batch testing).
+const MAX_WALL_CLOCK_MS = 3 * 60 * 60 * 1000; // 3h absolute ceiling on the whole run
+const MAX_CUMULATIVE_PAUSE_MS = 2 * 60 * 60 * 1000; // 2h of *requested* pause time
+const startedAt = Date.now();
+let pauseUntil = 0;
+let cumulativePauseMs = 0;
+let pauseCount = 0;
+let aborted = false;
+let abortReason = null;
 
-// Transient rate-limit/network failures are common when hammering Blizzard/WCL at
-// concurrency — retry a couple of times with backoff before giving up on a combo.
+async function respectPause() {
+  const now = Date.now();
+  if (now < pauseUntil) await sleep(pauseUntil - now);
+}
+
+function noteRateLimit(json) {
+  const retryAfterSec = parseFloat(json.retryAfter) || 30;
+  const waitMs = Math.max(1000, (retryAfterSec + 5) * 1000);
+  cumulativePauseMs += waitMs;
+  pauseCount++;
+  const target = Date.now() + waitMs;
+  if (target > pauseUntil) pauseUntil = target;
+  if (!aborted && (cumulativePauseMs > MAX_CUMULATIVE_PAUSE_MS || Date.now() - startedAt > MAX_WALL_CLOCK_MS)) {
+    aborted = true;
+    abortReason = `Exceeded safety ceiling after ${pauseCount} rate-limit pauses (${Math.round(cumulativePauseMs / 60000)} min cumulative wait requested). This looks like deep quota exhaustion, not normal throttling.`;
+  }
+  process.stdout.write(`\n⏸  WCL rate-limited (pause #${pauseCount}) — waiting ~${Math.round(waitMs / 1000)}s before resuming...\n`);
+}
+
+// Transient network failures get a couple of bounded retries. Rate limiting gets
+// unlimited retries (each one gated behind respectPause) since the job WILL succeed
+// once the pause elapses — it's not actually failing, just waiting its turn.
 async function fetchJob(job) {
-  if (circuitBroken) return { job, json: { status: 'skipped_rate_limit' } };
+  let errorAttempts = 0;
+  while (true) {
+    if (aborted) return { job, json: { status: 'aborted' } };
+    await respectPause();
+    if (aborted) return { job, json: { status: 'aborted' } };
 
-  let json = await fetchOnce(job);
-  if (json.status === 'rate_limited') {
-    if (!circuitBroken) {
-      circuitBroken = true;
-      circuitBreakInfo = json;
+    const json = await fetchOnce(job);
+
+    if (json.status === 'rate_limited') {
+      noteRateLimit(json);
+      continue;
+    }
+    if ((json.status === 'error' || json.status === 'fetch_error') && errorAttempts < 2) {
+      errorAttempts++;
+      await sleep(1500 * errorAttempts);
+      continue;
     }
     return { job, json };
   }
-  for (let attempt = 0; (json.status === 'error' || json.status === 'fetch_error') && attempt < 2 && !circuitBroken; attempt++) {
-    await sleep(1500 * (attempt + 1));
-    json = await fetchOnce(job);
-    if (json.status === 'rate_limited' && !circuitBroken) {
-      circuitBroken = true;
-      circuitBreakInfo = json;
-    }
-  }
-  return { job, json };
 }
 
 async function mapConcurrent(items, limit, fn) {
@@ -177,7 +207,7 @@ function luaNumMap(obj) {
     errors.slice(0, 10).forEach(e => console.log('  ' + e));
   }
 
-  // Full class coverage check, independent of the circuit breaker — a spec with zero
+  // Full class coverage check, independent of the abort path — a spec with zero
   // encounters (all 'no_data'/'error') is invisible in Data.lua just like one that
   // never ran, so surface it explicitly rather than letting it pass silently.
   const missingSpecs = [];
@@ -192,15 +222,18 @@ function luaNumMap(obj) {
     console.log(`\nSpecs with NO data at all (${missingSpecs.length}): ${missingSpecs.join(', ')}`);
   }
 
-  if (circuitBroken) {
-    const completed = results.filter(r => r.json.status !== 'skipped_rate_limit').length;
+  if (pauseCount > 0) {
+    console.log(`\nPaused for rate limiting ${pauseCount} time(s), ${Math.round(cumulativePauseMs / 60000)} min cumulative wait.`);
+  }
+
+  if (aborted) {
+    const completed = results.filter(r => r.json.status !== 'aborted').length;
     const skipped = results.length - completed;
-    console.log(`\n🛑 Circuit breaker tripped: WCL rate-limited this run (${circuitBreakInfo.message || 'status 429'}).`);
-    if (circuitBreakInfo.retryAfter) console.log(`   Retry-After: ${circuitBreakInfo.retryAfter}s (~${Math.round(circuitBreakInfo.retryAfter / 60)} min)`);
-    console.log(`   ${completed}/${results.length} jobs completed before the trip, ${skipped} skipped.`);
+    console.log(`\n🛑 Aborted: ${abortReason}`);
+    console.log(`   ${completed}/${results.length} jobs completed before the abort, ${skipped} skipped.`);
     if (!FORCE_WRITE) {
       console.log(`   Refusing to overwrite Data.lua with a partial/incomplete run — the existing file is untouched.`);
-      console.log(`   Wait for the rate limit to clear and re-run, or pass --force-write to write this partial data anyway.`);
+      console.log(`   Wait a while and re-run, or pass --force-write to write this partial data anyway.`);
       process.exitCode = 1;
       return;
     }
