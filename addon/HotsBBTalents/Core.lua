@@ -664,6 +664,14 @@ local function PopulateCard(card, bossName, variants)
 
   if hasPills then
     local x = 14
+    -- Denominator is the sum of *categorized* parses (those attributed to a specific
+    -- hero tree), not the overall sample — some parses never get a hero tree detected,
+    -- and dividing by the full total would make even a unanimous pick look like a
+    -- minority choice (e.g. the only listed tree reading "30%" instead of "100%").
+    local categorizedTotal = 0
+    for j = 2, #variants do
+      categorizedTotal = categorizedTotal + (variants[j].sampleSize or 0)
+    end
     for i, variant in ipairs(variants) do
       local pill = card.pills[i]
       if pill then
@@ -672,9 +680,9 @@ local function PopulateCard(card, bossName, variants)
         local label = variant.heroTreeName or "Overall"
         -- "Overall" is the blended baseline across every hero tree, so its own take
         -- rate is trivially 100% and not worth showing. Real hero-tree variants get
-        -- their share of the total sample so it's obvious which build dominates.
-        if variant.heroTreeName and variant.heroTreeName ~= "Overall" and (variants[1].sampleSize or 0) > 0 then
-          local pct = math.floor(((variant.sampleSize or 0) / variants[1].sampleSize) * 100 + 0.5)
+        -- their share of the categorized sample so it's obvious which build dominates.
+        if variant.heroTreeName and variant.heroTreeName ~= "Overall" and categorizedTotal > 0 then
+          local pct = math.floor(((variant.sampleSize or 0) / categorizedTotal) * 100 + 0.5)
           label = label .. "  " .. pct .. "%"
         end
         pill.label:SetText(label)
