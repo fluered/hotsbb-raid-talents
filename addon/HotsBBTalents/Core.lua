@@ -540,6 +540,21 @@ frame.title:SetPoint("LEFT", frame.specIcon, "RIGHT", 8, 0)
 frame.title:SetText("HotsBB Talents")
 frame.title:SetTextColor(COLOR_TEXT[1], COLOR_TEXT[2], COLOR_TEXT[3])
 
+-- Small "what am I looking at" explainer — a hover tooltip rather than a permanent
+-- line of text, so it doesn't compete with the layout for space.
+local infoBtn = CreateFlatButton(titleBar, "i", "ghost", 18, 18)
+infoBtn:SetPoint("LEFT", frame.title, "RIGHT", 6, 1)
+infoBtn.label:SetFont(select(1, infoBtn.label:GetFont()), 11, "OUTLINE")
+-- Hook rather than SetScript — CreateFlatButton already wired OnEnter/OnLeave for the
+-- hover-highlight visual, and hooking chains onto that instead of replacing it.
+infoBtn:HookScript("OnEnter", function(self)
+  GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+  GameTooltip:SetText("What builds are these?", 1, 1, 1)
+  GameTooltip:AddLine("The most common talent build among top parses on Warcraft Logs for this class/spec, boss (or dungeon), and difficulty. The % on each pill shows how many of those parses picked that hero tree.", COLOR_TEXT_MUTED[1], COLOR_TEXT_MUTED[2], COLOR_TEXT_MUTED[3], true)
+  GameTooltip:Show()
+end)
+infoBtn:HookScript("OnLeave", function() GameTooltip:Hide() end)
+
 local closeBtn = CreateFlatButton(titleBar, "x", "ghost", 30, 26)
 closeBtn:SetPoint("RIGHT", -6, 0)
 closeBtn:SetScript("OnClick", function() frame:Hide() end)
