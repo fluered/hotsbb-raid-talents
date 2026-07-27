@@ -669,7 +669,15 @@ local function PopulateCard(card, bossName, variants)
       if pill then
         pill:ClearAllPoints()
         pill:SetPoint("TOPLEFT", x, -36)
-        pill.label:SetText(variant.heroTreeName or "Overall")
+        local label = variant.heroTreeName or "Overall"
+        -- "Overall" is the blended baseline across every hero tree, so its own take
+        -- rate is trivially 100% and not worth showing. Real hero-tree variants get
+        -- their share of the total sample so it's obvious which build dominates.
+        if variant.heroTreeName and variant.heroTreeName ~= "Overall" and (variants[1].sampleSize or 0) > 0 then
+          local pct = math.floor(((variant.sampleSize or 0) / variants[1].sampleSize) * 100 + 0.5)
+          label = label .. "  " .. pct .. "%"
+        end
+        pill.label:SetText(label)
         local textWidth = pill.label:GetStringWidth() or 40
         pill:SetWidth(math.max(64, textWidth + 24))
         pill:SetScript("OnClick", function()
