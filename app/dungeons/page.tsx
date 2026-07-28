@@ -114,7 +114,7 @@ export default async function DungeonsPage(props: PageProps) {
               return r.ok ? ((await r.json()).assets?.[0]?.value ?? '') : '';
             } catch { return ''; }
           },
-          [`blizzard-class-icon-${classId}`],
+          [`blizzard-class-icon-v2-${classId}`],
           { revalidate: 604800 }
         )();
         if (iconUrl) classIconMap[className] = iconUrl;

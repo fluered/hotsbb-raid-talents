@@ -157,7 +157,7 @@ export default async function Home(props: PageProps) {
               return r.ok ? ((await r.json()).assets?.[0]?.value ?? '') : '';
             } catch { return ''; }
           },
-          [`blizzard-class-icon-${classId}`],
+          [`blizzard-class-icon-v2-${classId}`],
           { revalidate: 86400 }
         )();
         if (iconUrl) classIconMap[className] = iconUrl;
