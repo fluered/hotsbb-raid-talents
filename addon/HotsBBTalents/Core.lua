@@ -820,14 +820,28 @@ frame:SetScript("OnShow", function()
   end
 end)
 
--- ── Slash command ────────────────────────────────────────────────────────────
+-- ── Slash command & AddOn Compartment ────────────────────────────────────────
+-- Modern WoW replaced classic draggable minimap buttons with the AddOn Compartment
+-- (the small icon near the minimap that expands into a dropdown of addons), so no
+-- minimap-button library or custom art asset is needed — just register into it.
 
-SLASH_HOTSBBTALENTS1 = "/hbt"
-SLASH_HOTSBBTALENTS2 = "/hotsbbtalents"
-SlashCmdList["HOTSBBTALENTS"] = function()
+local function ToggleFrame()
   if frame:IsShown() then
     frame:Hide()
   else
     frame:Show()
   end
+end
+
+SLASH_HOTSBBTALENTS1 = "/hbt"
+SLASH_HOTSBBTALENTS2 = "/hotsbbtalents"
+SlashCmdList["HOTSBBTALENTS"] = ToggleFrame
+
+if C_AddOns and C_AddOns.RegisterAddOnCompartmentInfo then
+  C_AddOns.RegisterAddOnCompartmentInfo({
+    text = "HotsBB Talents",
+    icon = "Interface\\Icons\\INV_Misc_Book_09",
+    notCheckable = true,
+    func = ToggleFrame,
+  })
 end
