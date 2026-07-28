@@ -39,6 +39,9 @@ export async function getRaidStructure(token: string) {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ query }),
+    // Was uncached — every page load re-fetched WCL's entire zone list from scratch.
+    // Zone/encounter structure only changes on patch days, so 24h is safe.
+    next: { revalidate: 86400 },
   });
   return (await response.json()).data?.worldData?.zones || [];
 }
@@ -436,16 +439,34 @@ export const MIDNIGHT_RAIDS: Record<string, string> = {
 export const MPLUS_ZONE_ID = 47; // Midnight Season 1
 export const MPLUS_DIFFICULTY = 10; // bracket that returns high-key parses
 
-export const MIDNIGHT_DUNGEONS: Array<{ id: number; name: string; wclCdnId?: number; blizzardInstanceId?: number }> = [
-  { id: 12805,  name: 'Windrunner Spire',          blizzardInstanceId: 1299 },
-  { id: 12874,  name: 'Maisara Caverns',            wclCdnId: 12874 },
-  { id: 12915,  name: 'Nexus-Point Xenas',          wclCdnId: 12915 },
-  { id: 112526, name: "Algeth'ar Academy",           blizzardInstanceId: 1201 },
-  { id: 12811,  name: "Magisters' Terrace",          wclCdnId: 12811,  blizzardInstanceId: 1300 },
-  { id: 10658,  name: 'Pit of Saron',               wclCdnId: 10658,  blizzardInstanceId: 278 },
-  { id: 361753, name: 'Seat of the Triumvirate',    blizzardInstanceId: 945 },
-  { id: 61209,  name: 'Skyreach',                   blizzardInstanceId: 476 },
-];
+// Splash-image lookups only. Blizzard's journal-instance IDs and WCL's CDN icon IDs
+// are separate vendor ID systems with no way to derive them from a live WCL query, so
+// this is the one piece of dungeon data that still needs curating by hand each season.
+// A dungeon missing an entry here just falls back to a generic look — it never breaks
+// the actual talent-build data, which comes from getDungeonRoster below instead.
+const DUNGEON_MEDIA_OVERRIDES: Record<string, { wclCdnId?: number; blizzardInstanceId?: number }> = {
+  'Windrunner Spire':          { blizzardInstanceId: 1299 },
+  'Maisara Caverns':           { wclCdnId: 12874 },
+  'Nexus-Point Xenas':         { wclCdnId: 12915 },
+  "Algeth'ar Academy":         { blizzardInstanceId: 1201 },
+  "Magisters' Terrace":        { wclCdnId: 12811, blizzardInstanceId: 1300 },
+  'Pit of Saron':              { wclCdnId: 10658, blizzardInstanceId: 278 },
+  'Seat of the Triumvirate':   { blizzardInstanceId: 945 },
+  'Skyreach':                  { blizzardInstanceId: 476 },
+};
+
+// Discovers the current season's Mythic+ dungeon roster live from WCL instead of a
+// hand-maintained ID list — the only thing that needs updating for a new M+ season is
+// MPLUS_ZONE_ID above. Falls back to an empty roster (page renders with no dungeons
+// listed, not a crash) if the WCL query fails.
+export async function getDungeonRoster(token: string): Promise<Array<{ id: number; name: string; wclCdnId?: number; blizzardInstanceId?: number }>> {
+  const encounters = await getMplusEncounters(token, MPLUS_ZONE_ID);
+  return encounters.map((enc: any) => ({
+    id: enc.id,
+    name: enc.name,
+    ...DUNGEON_MEDIA_OVERRIDES[enc.name],
+  }));
+}
 
 export const SPEC_IDS: Record<string, Record<string, number>> = {
   'Death Knight':  { 'Blood': 250, 'Frost': 251, 'Unholy': 252 },

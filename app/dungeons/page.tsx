@@ -5,8 +5,8 @@ import { unstable_cache } from 'next/cache';
 import BossContent from '../BossContent';
 import DungeonCardImage from '../../components/DungeonCardImage';
 import {
-  getBlizzardToken,
-  POPULAR_SPECS, SPEC_IDS, CLASS_IDS, MIDNIGHT_DUNGEONS, MPLUS_DIFFICULTY, MPLUS_ZONE_ID,
+  getWclToken, getBlizzardToken, getDungeonRoster,
+  POPULAR_SPECS, SPEC_IDS, CLASS_IDS, MPLUS_DIFFICULTY, MPLUS_ZONE_ID,
 } from '../../lib/wow';
 
 // See app/page.tsx for why this is needed: BossContent's cold-cache path can exceed
@@ -72,13 +72,19 @@ export default async function DungeonsPage(props: PageProps) {
   let specIconMap: Record<string, string> = {};
   let classIconMap: Record<string, string> = {};
   let dungeonImageMap: Record<number, string> = {};
+  let dungeons: Array<{ id: number; name: string; wclCdnId?: number; blizzardInstanceId?: number }> = [];
+
+  try {
+    const wclToken = await getWclToken();
+    dungeons = await getDungeonRoster(wclToken);
+  } catch {}
 
   try {
     const blizzardToken = await getBlizzardToken();
 
     await Promise.all([
       // Dungeon images from Blizzard journal-instance media
-      ...MIDNIGHT_DUNGEONS.filter(d => d.blizzardInstanceId).map(async (dungeon) => {
+      ...dungeons.filter(d => d.blizzardInstanceId).map(async (dungeon) => {
         const imgUrl = await unstable_cache(
           async () => {
             try {
@@ -290,7 +296,7 @@ export default async function DungeonsPage(props: PageProps) {
                   <div className="space-y-2">
                     <p className="text-[10px] font-black text-zinc-600 uppercase tracking-widest">Midnight Season 1 Dungeons</p>
                     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
-                      {MIDNIGHT_DUNGEONS.map(dungeon => {
+                      {dungeons.map(dungeon => {
                         const isSelected = activeDungeonId === dungeon.id;
                         return (
                           <Link

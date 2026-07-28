@@ -7,9 +7,9 @@ import BossContent from './BossContent';
 import BossPicker from './BossPicker';
 import DungeonCardImage from '../components/DungeonCardImage';
 import {
-  getWclToken, getBlizzardToken, getRaidStructure,
+  getWclToken, getBlizzardToken, getRaidStructure, getDungeonRoster,
   POPULAR_SPECS, SPEC_IDS, MIDNIGHT_RAIDS, CLASS_IDS,
-  MIDNIGHT_DUNGEONS, MPLUS_DIFFICULTY, MPLUS_ZONE_ID, HEALER_SPECS,
+  MPLUS_DIFFICULTY, MPLUS_ZONE_ID, HEALER_SPECS,
 } from '../lib/wow';
 
 // BossContent awaits up to 50 concurrent WCL telemetry fetches + 25 Blizzard profile
@@ -100,10 +100,14 @@ export default async function Home(props: PageProps) {
 
   // Phase 1: zone structure (always needed for sidebar + boss grid)
   let zones: any[] = [];
+  let dungeons: Array<{ id: number; name: string; wclCdnId?: number; blizzardInstanceId?: number }> = [];
   let error: string | null = null;
   try {
     const wclToken = await getWclToken();
-    zones = await getRaidStructure(wclToken);
+    [zones, dungeons] = await Promise.all([
+      getRaidStructure(wclToken),
+      getDungeonRoster(wclToken),
+    ]);
   } catch (err: any) {
     error = err.message;
   }
@@ -123,7 +127,7 @@ export default async function Home(props: PageProps) {
 
     const fetches: Promise<void>[] = [
       // Dungeon images from Blizzard journal-instance media
-      Promise.all(MIDNIGHT_DUNGEONS.filter(d => d.blizzardInstanceId).map(async (dungeon) => {
+      Promise.all(dungeons.filter(d => d.blizzardInstanceId).map(async (dungeon) => {
         const imgUrl = await unstable_cache(
           async () => {
             try {
@@ -536,7 +540,7 @@ export default async function Home(props: PageProps) {
                       <div className="space-y-2">
                         <p className="text-[10px] font-black text-zinc-600 uppercase tracking-widest">Midnight Season 1 Dungeons</p>
                         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
-                          {MIDNIGHT_DUNGEONS.map(dungeon => {
+                          {dungeons.map(dungeon => {
                             const isSelected = activeDungeonId === dungeon.id;
                             return (
                               <Link
