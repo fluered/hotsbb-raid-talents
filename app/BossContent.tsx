@@ -892,19 +892,22 @@ export default async function BossContent({
       rawRankings.slice(0, DISPLAY_N).map(async (player: any) => {
         const realm = (player.server?.slug ?? player.server?.name ?? '').toLowerCase().replace(/\s+/g, '-').replace(/'/g, '');
         const name = player.name.toLowerCase();
+        // 404 (character genuinely doesn't exist under this realm/name) is a stable fact
+        // worth caching. Anything else — 5xx, network errors — is transient and must NOT
+        // be cached, or a momentary hiccup gets stuck as "no data" for a full day.
         return unstable_cache(
           async () => {
-            try {
-              const r = await fetch(
-                `https://${region}.api.blizzard.com/profile/wow/character/${realm}/${name}/specializations?namespace=profile-${region}&locale=en_US`,
-                { headers: { 'Authorization': `Bearer ${blizzardToken}` } }
-              );
-              return r.ok ? r.json() : null;
-            } catch { return null; }
+            const r = await fetch(
+              `https://${region}.api.blizzard.com/profile/wow/character/${realm}/${name}/specializations?namespace=profile-${region}&locale=en_US`,
+              { headers: { 'Authorization': `Bearer ${blizzardToken}` } }
+            );
+            if (r.status === 404) return null;
+            if (!r.ok) throw new Error(`Blizzard profile fetch failed: ${r.status}`);
+            return r.json();
           },
           [`blizzard-spec-${region}-${realm}-${name}`],
           { revalidate: 86400 }
-        )();
+        )().catch(() => null);
       })
     );
     const _equipP = Promise.all(
@@ -913,17 +916,17 @@ export default async function BossContent({
         const name = player.name.toLowerCase();
         return unstable_cache(
           async () => {
-            try {
-              const r = await fetch(
-                `https://${region}.api.blizzard.com/profile/wow/character/${realm}/${name}/equipment?namespace=profile-${region}&locale=en_US`,
-                { headers: { 'Authorization': `Bearer ${blizzardToken}` } }
-              );
-              return r.ok ? r.json() : null;
-            } catch { return null; }
+            const r = await fetch(
+              `https://${region}.api.blizzard.com/profile/wow/character/${realm}/${name}/equipment?namespace=profile-${region}&locale=en_US`,
+              { headers: { 'Authorization': `Bearer ${blizzardToken}` } }
+            );
+            if (r.status === 404) return null;
+            if (!r.ok) throw new Error(`Blizzard equipment fetch failed: ${r.status}`);
+            return r.json();
           },
           [`blizzard-equip-${region}-${realm}-${name}`],
           { revalidate: 86400 }
-        )();
+        )().catch(() => null);
       })
     );
     const _statsP = Promise.all(
@@ -932,17 +935,17 @@ export default async function BossContent({
         const name = player.name.toLowerCase();
         return unstable_cache(
           async () => {
-            try {
-              const r = await fetch(
-                `https://${region}.api.blizzard.com/profile/wow/character/${realm}/${name}/statistics?namespace=profile-${region}&locale=en_US`,
-                { headers: { 'Authorization': `Bearer ${blizzardToken}` } }
-              );
-              return r.ok ? r.json() : null;
-            } catch { return null; }
+            const r = await fetch(
+              `https://${region}.api.blizzard.com/profile/wow/character/${realm}/${name}/statistics?namespace=profile-${region}&locale=en_US`,
+              { headers: { 'Authorization': `Bearer ${blizzardToken}` } }
+            );
+            if (r.status === 404) return null;
+            if (!r.ok) throw new Error(`Blizzard statistics fetch failed: ${r.status}`);
+            return r.json();
           },
           [`blizzard-stats-${region}-${realm}-${name}`],
           { revalidate: 86400 }
-        )();
+        )().catch(() => null);
       })
     );
     const _mediaP = Promise.all(
@@ -951,17 +954,17 @@ export default async function BossContent({
         const name = player.name.toLowerCase();
         return unstable_cache(
           async () => {
-            try {
-              const r = await fetch(
-                `https://${region}.api.blizzard.com/profile/wow/character/${realm}/${name}/character-media?namespace=profile-${region}&locale=en_US`,
-                { headers: { 'Authorization': `Bearer ${blizzardToken}` } }
-              );
-              return r.ok ? r.json() : null;
-            } catch { return null; }
+            const r = await fetch(
+              `https://${region}.api.blizzard.com/profile/wow/character/${realm}/${name}/character-media?namespace=profile-${region}&locale=en_US`,
+              { headers: { 'Authorization': `Bearer ${blizzardToken}` } }
+            );
+            if (r.status === 404) return null;
+            if (!r.ok) throw new Error(`Blizzard media fetch failed: ${r.status}`);
+            return r.json();
           },
           [`blizzard-media-${region}-${realm}-${name}`],
           { revalidate: 86400 }
-        )();
+        )().catch(() => null);
       })
     );
 

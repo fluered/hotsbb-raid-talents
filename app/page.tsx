@@ -128,38 +128,38 @@ export default async function Home(props: PageProps) {
     const fetches: Promise<void>[] = [
       // Dungeon images from Blizzard journal-instance media
       Promise.all(dungeons.filter(d => d.blizzardInstanceId).map(async (dungeon) => {
+        // Only successful fetches get cached — throwing on failure instead of catching
+        // and returning null means a transient hiccup doesn't get stuck as a permanent
+        // missing image/icon for the full revalidate window.
         const imgUrl = await unstable_cache(
           async () => {
-            try {
-              const r = await fetch(
-                `https://us.api.blizzard.com/data/wow/media/journal-instance/${dungeon.blizzardInstanceId}?namespace=static-us`,
-                { headers: { 'Authorization': `Bearer ${blizzardToken}` } }
-              );
-              if (!r.ok) return null;
-              const assets: Array<{ key: string; value: string }> = (await r.json()).assets ?? [];
-              return (assets.find(a => a.key === 'tile') ?? assets[0])?.value ?? null;
-            } catch { return null; }
+            const r = await fetch(
+              `https://us.api.blizzard.com/data/wow/media/journal-instance/${dungeon.blizzardInstanceId}?namespace=static-us`,
+              { headers: { 'Authorization': `Bearer ${blizzardToken}` } }
+            );
+            if (!r.ok) throw new Error(`Blizzard dungeon image fetch failed: ${r.status}`);
+            const assets: Array<{ key: string; value: string }> = (await r.json()).assets ?? [];
+            return (assets.find(a => a.key === 'tile') ?? assets[0])?.value ?? null;
           },
           [`blizzard-dungeon-img-${dungeon.blizzardInstanceId}`],
           { revalidate: 86400 }
-        )();
+        )().catch(() => null);
         if (imgUrl) dungeonImageMap[dungeon.id] = imgUrl;
       })).then(() => {}),
       // Class icons (always load for sidebar)
       Promise.all(Object.entries(CLASS_IDS).map(async ([className, classId]) => {
         const iconUrl = await unstable_cache(
           async () => {
-            try {
-              const r = await fetch(
-                `https://us.api.blizzard.com/data/wow/media/playable-class/${classId}?namespace=static-us`,
-                { headers: { 'Authorization': `Bearer ${blizzardToken}` } }
-              );
-              return r.ok ? ((await r.json()).assets?.[0]?.value ?? '') : '';
-            } catch { return ''; }
+            const r = await fetch(
+              `https://us.api.blizzard.com/data/wow/media/playable-class/${classId}?namespace=static-us`,
+              { headers: { 'Authorization': `Bearer ${blizzardToken}` } }
+            );
+            if (!r.ok) throw new Error(`Blizzard class icon fetch failed: ${r.status}`);
+            return (await r.json()).assets?.[0]?.value ?? '';
           },
           [`blizzard-class-icon-v2-${classId}`],
           { revalidate: 86400 }
-        )();
+        )().catch(() => '');
         if (iconUrl) classIconMap[className] = iconUrl;
       })).then(() => {}),
       // Boss thumbnail images — try Blizzard journal first, fall back to WCL CDN
@@ -167,17 +167,16 @@ export default async function Home(props: PageProps) {
         const url = enc.journalID
           ? await unstable_cache(
               async () => {
-                try {
-                  const r = await fetch(
-                    `https://us.api.blizzard.com/data/wow/journal-encounter/${enc.journalID}/media?namespace=static-us`,
-                    { headers: { 'Authorization': `Bearer ${blizzardToken}` } }
-                  );
-                  return r.ok ? ((await r.json()).assets?.[0]?.value ?? null) : null;
-                } catch { return null; }
+                const r = await fetch(
+                  `https://us.api.blizzard.com/data/wow/journal-encounter/${enc.journalID}/media?namespace=static-us`,
+                  { headers: { 'Authorization': `Bearer ${blizzardToken}` } }
+                );
+                if (!r.ok) throw new Error(`Blizzard boss image fetch failed: ${r.status}`);
+                return (await r.json()).assets?.[0]?.value ?? null;
               },
               [`blizzard-boss-img-${enc.journalID}`],
               { revalidate: 86400 }
-            )()
+            )().catch(() => null)
           : null;
         bossImageMap[enc.id] = url ?? `https://assets.rpglogs.com/img/warcraft/bosses/${enc.id}-icon.jpg`;
       })).then(() => {}),
@@ -186,32 +185,30 @@ export default async function Home(props: PageProps) {
       Promise.all(raidEncounters.filter((enc: any) => enc.journalID).map(async (enc: any) => {
         const tags = await unstable_cache(
           async () => {
-            try {
-              const r = await fetch(
-                `https://us.api.blizzard.com/data/wow/journal-encounter/${enc.journalID}?namespace=static-us&locale=en_US`,
-                { headers: { 'Authorization': `Bearer ${blizzardToken}` } }
-              );
-              if (!r.ok) return [];
-              const data = await r.json();
-              const text = (data.sections ?? [])
-                .flatMap((s: any) => [
-                  s.title ?? '',
-                  s.body_text ?? '',
-                  ...((s.sections ?? []).flatMap((sub: any) => [sub.title ?? '', sub.body_text ?? ''])),
-                ])
-                .join(' ')
-                .replace(/<[^>]+>/g, ' ')
-                .toLowerCase();
-              const t: string[] = [];
-              if (/\b(adds\b|spawn|minion|horde|multiple \w+ appear|more \w+ join)/.test(text)) t.push('Adds');
-              if (/\b(spread|dodge|soak|jump|vault away|move away|avoid)/.test(text)) t.push('Movement');
-              if (/\b(vulnerabilit|intermission|stagger|exposed window)/.test(text)) t.push('Burst Windows');
-              return t.slice(0, 2);
-            } catch { return []; }
+            const r = await fetch(
+              `https://us.api.blizzard.com/data/wow/journal-encounter/${enc.journalID}?namespace=static-us&locale=en_US`,
+              { headers: { 'Authorization': `Bearer ${blizzardToken}` } }
+            );
+            if (!r.ok) throw new Error(`Blizzard boss tags fetch failed: ${r.status}`);
+            const data = await r.json();
+            const text = (data.sections ?? [])
+              .flatMap((s: any) => [
+                s.title ?? '',
+                s.body_text ?? '',
+                ...((s.sections ?? []).flatMap((sub: any) => [sub.title ?? '', sub.body_text ?? ''])),
+              ])
+              .join(' ')
+              .replace(/<[^>]+>/g, ' ')
+              .toLowerCase();
+            const t: string[] = [];
+            if (/\b(adds\b|spawn|minion|horde|multiple \w+ appear|more \w+ join)/.test(text)) t.push('Adds');
+            if (/\b(spread|dodge|soak|jump|vault away|move away|avoid)/.test(text)) t.push('Movement');
+            if (/\b(vulnerabilit|intermission|stagger|exposed window)/.test(text)) t.push('Burst Windows');
+            return t.slice(0, 2);
           },
           [`blizzard-boss-tags-${enc.journalID}`],
           { revalidate: 86400 }
-        )();
+        )().catch(() => []);
         bossTagMap[enc.id] = tags;
       })).then(() => {}),
     ];
@@ -224,17 +221,16 @@ export default async function Home(props: PageProps) {
           if (!id) return;
           const iconUrl = await unstable_cache(
             async () => {
-              try {
-                const r = await fetch(
-                  `https://us.api.blizzard.com/data/wow/media/playable-specialization/${id}?namespace=static-us`,
-                  { headers: { 'Authorization': `Bearer ${blizzardToken}` } }
-                );
-                return r.ok ? ((await r.json()).assets?.[0]?.value ?? '') : '';
-              } catch { return ''; }
+              const r = await fetch(
+                `https://us.api.blizzard.com/data/wow/media/playable-specialization/${id}?namespace=static-us`,
+                { headers: { 'Authorization': `Bearer ${blizzardToken}` } }
+              );
+              if (!r.ok) throw new Error(`Blizzard spec icon fetch failed: ${r.status}`);
+              return (await r.json()).assets?.[0]?.value ?? '';
             },
             [`blizzard-spec-icon-${id}`],
             { revalidate: 86400 }
-          )();
+          )().catch(() => '');
           if (iconUrl) specIconMap[spec] = iconUrl;
         })).then(() => {})
       );

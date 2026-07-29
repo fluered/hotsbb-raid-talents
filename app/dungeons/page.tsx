@@ -85,38 +85,38 @@ export default async function DungeonsPage(props: PageProps) {
     await Promise.all([
       // Dungeon images from Blizzard journal-instance media
       ...dungeons.filter(d => d.blizzardInstanceId).map(async (dungeon) => {
+        // Only successful fetches get cached — throwing on failure instead of catching
+        // and returning null means a transient hiccup doesn't get stuck as a permanent
+        // missing image for a full week (revalidate below).
         const imgUrl = await unstable_cache(
           async () => {
-            try {
-              const r = await fetch(
-                `https://us.api.blizzard.com/data/wow/media/journal-instance/${dungeon.blizzardInstanceId}?namespace=static-us`,
-                { headers: { Authorization: `Bearer ${blizzardToken}` } }
-              );
-              if (!r.ok) return null;
-              const assets: Array<{ key: string; value: string }> = (await r.json()).assets ?? [];
-              return (assets.find(a => a.key === 'tile') ?? assets[0])?.value ?? null;
-            } catch { return null; }
+            const r = await fetch(
+              `https://us.api.blizzard.com/data/wow/media/journal-instance/${dungeon.blizzardInstanceId}?namespace=static-us`,
+              { headers: { Authorization: `Bearer ${blizzardToken}` } }
+            );
+            if (!r.ok) throw new Error(`Blizzard dungeon image fetch failed: ${r.status}`);
+            const assets: Array<{ key: string; value: string }> = (await r.json()).assets ?? [];
+            return (assets.find(a => a.key === 'tile') ?? assets[0])?.value ?? null;
           },
           [`blizzard-dungeon-img-${dungeon.blizzardInstanceId}`],
           { revalidate: 604800 }
-        )();
+        )().catch(() => null);
         if (imgUrl) dungeonImageMap[dungeon.id] = imgUrl;
       }),
       // Class icons for sidebar
       ...Object.entries(CLASS_IDS).map(async ([className, classId]) => {
         const iconUrl = await unstable_cache(
           async () => {
-            try {
-              const r = await fetch(
-                `https://us.api.blizzard.com/data/wow/media/playable-class/${classId}?namespace=static-us`,
-                { headers: { Authorization: `Bearer ${blizzardToken}` } }
-              );
-              return r.ok ? ((await r.json()).assets?.[0]?.value ?? '') : '';
-            } catch { return ''; }
+            const r = await fetch(
+              `https://us.api.blizzard.com/data/wow/media/playable-class/${classId}?namespace=static-us`,
+              { headers: { Authorization: `Bearer ${blizzardToken}` } }
+            );
+            if (!r.ok) throw new Error(`Blizzard class icon fetch failed: ${r.status}`);
+            return (await r.json()).assets?.[0]?.value ?? '';
           },
           [`blizzard-class-icon-v2-${classId}`],
           { revalidate: 604800 }
-        )();
+        )().catch(() => '');
         if (iconUrl) classIconMap[className] = iconUrl;
       }),
       // Spec icons for selected class
@@ -126,17 +126,16 @@ export default async function DungeonsPage(props: PageProps) {
             if (!id) return;
             const iconUrl = await unstable_cache(
               async () => {
-                try {
-                  const r = await fetch(
-                    `https://us.api.blizzard.com/data/wow/media/playable-specialization/${id}?namespace=static-us`,
-                    { headers: { Authorization: `Bearer ${blizzardToken}` } }
-                  );
-                  return r.ok ? ((await r.json()).assets?.[0]?.value ?? '') : '';
-                } catch { return ''; }
+                const r = await fetch(
+                  `https://us.api.blizzard.com/data/wow/media/playable-specialization/${id}?namespace=static-us`,
+                  { headers: { Authorization: `Bearer ${blizzardToken}` } }
+                );
+                if (!r.ok) throw new Error(`Blizzard spec icon fetch failed: ${r.status}`);
+                return (await r.json()).assets?.[0]?.value ?? '';
               },
               [`blizzard-spec-icon-${id}`],
               { revalidate: 604800 }
-            )();
+            )().catch(() => '');
             if (iconUrl) specIconMap[spec] = iconUrl;
           })
         : []),
