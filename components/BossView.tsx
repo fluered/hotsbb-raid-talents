@@ -188,7 +188,11 @@ function GearSection({
                         {gear!.trinkets.map((t, i) => (
                           <div key={i} className="flex items-center gap-2.5 cursor-pointer group"
                             onClick={() => t.itemId && window.open(`https://www.wowhead.com/item=${t.itemId}`, '_blank', 'noopener,noreferrer')}
-                            onMouseEnter={(e) => setActiveTip({ name: t.name, iconUrl: t.iconUrl, description: t.description, count: t.count, pct: t.pct, playerCount: gear!.playerCount, rect: (e.currentTarget as HTMLElement).getBoundingClientRect() })}
+                            onMouseEnter={(e) => {
+                              const target = e.currentTarget as HTMLElement | null;
+                              if (!target) return;
+                              setActiveTip({ name: t.name, iconUrl: t.iconUrl, description: t.description, count: t.count, pct: t.pct, playerCount: gear!.playerCount, rect: target.getBoundingClientRect() });
+                            }}
                             onMouseLeave={() => setActiveTip(null)}
                           >
                             {t.iconUrl ? <Image src={t.iconUrl} alt="" width={32} height={32} className="w-8 h-8 rounded flex-shrink-0 border border-zinc-700 group-hover:border-zinc-500 transition-colors" /> : <div className="w-8 h-8 rounded flex-shrink-0 bg-zinc-800 border border-zinc-700" />}
@@ -216,7 +220,11 @@ function GearSection({
                         {gear!.embellishments.map((e, i) => (
                           <div key={i} className="flex items-center gap-2.5 cursor-pointer group"
                             onClick={() => e.itemId && window.open(`https://www.wowhead.com/item=${e.itemId}`, '_blank', 'noopener,noreferrer')}
-                            onMouseEnter={(ev) => setActiveTip({ name: e.name, iconUrl: e.iconUrl, description: e.description, count: e.count, pct: e.pct, playerCount: gear!.playerCount, rect: (ev.currentTarget as HTMLElement).getBoundingClientRect() })}
+                            onMouseEnter={(ev) => {
+                              const target = ev.currentTarget as HTMLElement | null;
+                              if (!target) return;
+                              setActiveTip({ name: e.name, iconUrl: e.iconUrl, description: e.description, count: e.count, pct: e.pct, playerCount: gear!.playerCount, rect: target.getBoundingClientRect() });
+                            }}
                             onMouseLeave={() => setActiveTip(null)}
                           >
                             {e.iconUrl ? <Image src={e.iconUrl} alt="" width={32} height={32} className="w-8 h-8 rounded flex-shrink-0 border border-zinc-700 group-hover:border-zinc-500 transition-colors" /> : <div className="w-8 h-8 rounded flex-shrink-0 bg-zinc-800 border border-zinc-700" />}
@@ -303,7 +311,11 @@ function GearSection({
                         return (
                           <div key={i} className="flex items-center gap-2 cursor-pointer group"
                             onClick={() => item.itemId && window.open(`https://www.wowhead.com/item=${item.itemId}`, '_blank', 'noopener,noreferrer')}
-                            onMouseEnter={(ev) => setActiveTip({ name: item.name, subtitle: item.avgIlvl ? `ilvl ${item.avgIlvl}` : undefined, iconUrl: item.iconUrl, description: item.description, count: item.count, pct: item.pct, playerCount, rect: (ev.currentTarget as HTMLElement).getBoundingClientRect() })}
+                            onMouseEnter={(ev) => {
+                              const target = ev.currentTarget as HTMLElement | null;
+                              if (!target) return;
+                              setActiveTip({ name: item.name, subtitle: item.avgIlvl ? `ilvl ${item.avgIlvl}` : undefined, iconUrl: item.iconUrl, description: item.description, count: item.count, pct: item.pct, playerCount, rect: target.getBoundingClientRect() });
+                            }}
                             onMouseLeave={() => setActiveTip(null)}
                           >
                             {item.iconUrl ? <Image src={item.iconUrl} alt="" width={28} height={28} className="w-7 h-7 rounded flex-shrink-0 border border-zinc-700/60" /> : <div className="w-7 h-7 rounded flex-shrink-0 bg-zinc-800 border border-zinc-700/60" />}
@@ -337,7 +349,11 @@ function GearSection({
                         <div className="space-y-2">
                           {gear.gems.map((g, i) => (
                             <div key={i} className="flex items-center gap-2 cursor-default"
-                              onMouseEnter={(ev) => setActiveTip({ name: g.name, iconUrl: g.iconUrl, description: g.description, count: g.count, pct: g.pct, playerCount, rect: (ev.currentTarget as HTMLElement).getBoundingClientRect() })}
+                              onMouseEnter={(ev) => {
+                                const target = ev.currentTarget as HTMLElement | null;
+                                if (!target) return;
+                                setActiveTip({ name: g.name, iconUrl: g.iconUrl, description: g.description, count: g.count, pct: g.pct, playerCount, rect: target.getBoundingClientRect() });
+                              }}
                               onMouseLeave={() => setActiveTip(null)}
                             >
                               {g.iconUrl ? <Image src={g.iconUrl} alt="" width={20} height={20} className="w-5 h-5 rounded flex-shrink-0 border border-zinc-700" /> : <div className="w-5 h-5 rounded flex-shrink-0 bg-zinc-800 border border-zinc-700" />}
@@ -372,7 +388,11 @@ function GearSection({
                             const shortName = e.name.replace(/^enchant\s+\S+\s+-\s+/i, '').trim() || e.name;
                             return (
                               <div key={i} className="flex items-center justify-between gap-2"
-                                onMouseEnter={(ev) => setActiveTip({ name: shortName, subtitle: e.slot, iconUrl: '', description: e.description || e.name, count: e.count, pct: e.pct, playerCount, rect: (ev.currentTarget as HTMLElement).getBoundingClientRect() })}
+                                onMouseEnter={(ev) => {
+                                  const target = ev.currentTarget as HTMLElement | null;
+                                  if (!target) return;
+                                  setActiveTip({ name: shortName, subtitle: e.slot, iconUrl: '', description: e.description || e.name, count: e.count, pct: e.pct, playerCount, rect: target.getBoundingClientRect() });
+                                }}
                                 onMouseLeave={() => setActiveTip(null)}
                               >
                                 <div className="flex items-center gap-2 min-w-0">

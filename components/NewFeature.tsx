@@ -431,7 +431,11 @@ export default function NewFeature({
 
   const handleMouseEnter = useCallback((e: React.MouseEvent, node: any, rank: number, showRank: boolean, freq?: number) => {
     if (!node.name) return;
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const target = e.currentTarget as HTMLElement | null;
+    // Suspense can replay a queued hover event after its target has already been
+    // unmounted (e.g. a hero-tree variant swap mid-hover) — currentTarget is null then.
+    if (!target) return;
+    const rect = target.getBoundingClientRect();
     const apexInfo = apexMaxPts > 1 && node.section === 'spec' && apexNodeIds.has(node.nodeID)
       ? { used: apexUsedPts, max: apexMaxPts, count: apexNodes.length }
       : undefined;
@@ -577,10 +581,12 @@ export default function NewFeature({
               className={colSpan > 1 ? 'flex justify-center' : undefined}
               onMouseEnter={(e) => {
                 if (isChoiceNode) {
+                  const target = e.currentTarget as HTMLElement | null;
+                  if (!target) return;
                   setChoiceHover(prev =>
                     prev?.pinned && prev.node.nodeID === node.nodeID
                       ? prev
-                      : { node, rect: (e.currentTarget as HTMLElement).getBoundingClientRect(), aChosen: !chosenIsB, pinned: false }
+                      : { node, rect: target.getBoundingClientRect(), aChosen: !chosenIsB, pinned: false }
                   );
                 } else {
                   handleMouseEnter(e, displayNode, rank, showRank, freq);
@@ -595,10 +601,12 @@ export default function NewFeature({
               }}
               onClick={(e) => {
                 if (!isChoiceNode) return;
+                const target = e.currentTarget as HTMLElement | null;
+                if (!target) return;
                 setChoiceHover(prev =>
                   prev && prev.node.nodeID === node.nodeID
                     ? null
-                    : { node, rect: (e.currentTarget as HTMLElement).getBoundingClientRect(), aChosen: !chosenIsB, pinned: true }
+                    : { node, rect: target.getBoundingClientRect(), aChosen: !chosenIsB, pinned: true }
                 );
               }}
             >
