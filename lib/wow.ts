@@ -137,21 +137,22 @@ export async function mapConcurrent<T, U>(items: T[], limit: number, fn: (item: 
   return results;
 }
 
+// A talent's spellId should always resolve to an icon — Blizzard has art for every real
+// spell — so unlike a character profile lookup, there's no legitimate "doesn't exist"
+// case here. Retries generously on anything transient (429, 5xx, network errors); only
+// a 404 (genuinely no such spell) gives up immediately.
 export async function getSpellIconUrl(spellId: number, accessToken: string): Promise<string> {
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < 5; attempt++) {
     try {
       const res = await fetch(
         `https://us.api.blizzard.com/data/wow/media/spell/${spellId}?namespace=static-us`,
         { headers: { 'Authorization': `Bearer ${accessToken}` }, next: { revalidate: 604800 } }
       );
       if (res.ok) return (await res.json()).assets?.[0]?.value ?? '';
-      if (res.status === 429) {
-        await new Promise(r => setTimeout(r, 400 * (attempt + 1)));
-        continue;
-      }
-      return '';
+      if (res.status === 404) return '';
+      await new Promise(r => setTimeout(r, 400 * (attempt + 1)));
     } catch {
-      if (attempt < 2) await new Promise(r => setTimeout(r, 200));
+      await new Promise(r => setTimeout(r, 300 * (attempt + 1)));
     }
   }
   return '';
@@ -164,17 +165,14 @@ export async function getSpellIconUrl(spellId: number, accessToken: string): Pro
 // getSpellIconUrl this does not retry on 404, only on 429/network errors.
 async function getHeroTreeIconUrl(mediaHref: string | undefined, accessToken: string): Promise<string> {
   if (!mediaHref) return '';
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < 4; attempt++) {
     try {
       const res = await fetch(mediaHref, { headers: { 'Authorization': `Bearer ${accessToken}` }, next: { revalidate: 604800 } });
       if (res.ok) return (await res.json()).assets?.[0]?.value ?? '';
-      if (res.status === 429) {
-        await new Promise(r => setTimeout(r, 400 * (attempt + 1)));
-        continue;
-      }
-      return '';
+      if (res.status === 404) return '';
+      await new Promise(r => setTimeout(r, 400 * (attempt + 1)));
     } catch {
-      if (attempt < 2) await new Promise(r => setTimeout(r, 200));
+      await new Promise(r => setTimeout(r, 300 * (attempt + 1)));
     }
   }
   return '';
@@ -340,11 +338,25 @@ export async function getTalentTreeLayout(treeId: number, specId: number, access
 }
 
 // Cached wrapper — keyed by treeId+specId so token rotation doesn't bust it.
-// 7-day TTL: talent trees only change on WoW patches (~every 6-8 weeks).
+// 7-day TTL: talent trees only change on WoW patches (~every 6-8 weeks). Each node's own
+// icon fetch already retries internally, but if a node still comes back with no icon
+// after that, retry the *whole* layout computation rather than caching an incomplete
+// result for a week — this is a one-time cost per tree, amortized over the 7-day TTL.
 export function getCachedTalentLayout(treeId: number, specId: number, accessToken: string) {
   return unstable_cache(
-    () => getTalentTreeLayout(treeId, specId, accessToken),
-    [`talent-layout-v5-${treeId}-${specId}`],
+    async () => {
+      let layout: Awaited<ReturnType<typeof getTalentTreeLayout>> | null = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        layout = await getTalentTreeLayout(treeId, specId, accessToken);
+        const missingIcon = layout.layout.some(n =>
+          (n.spellId && !n.iconUrl) || (n.choiceB?.spellId && !n.choiceB.iconUrl)
+        );
+        if (!missingIcon) return layout;
+        if (attempt < 2) await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+      }
+      return layout!;
+    },
+    [`talent-layout-v6-${treeId}-${specId}`],
     { revalidate: 604800 }
   )();
 }
