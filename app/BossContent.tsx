@@ -6,7 +6,7 @@ import {
   getWclToken, getBlizzardToken, getWclRankings, getHistoricalFightTelemetry,
   getTalentTreeId, getCachedTalentLayout,
   computeConsensus, getActiveHeroTreeId, makeTelemetry, computeFrequencyPct,
-  mapConcurrent,
+  mapConcurrent, normalizeTalentTree,
   SPEC_IDS, ENCHANT_SLOT_LABELS, ENCHANT_SLOT_ORDER,
 } from '../lib/wow';
 
@@ -23,7 +23,7 @@ function stripWowCodes(text: string): string {
 // Extracted from the inner closure so it can be shared across phases (also used by lib/metaBuild.ts)
 export function scorePlayerTree(tree: any[], cMap: Map<number, number>): number {
   const rankMap = new Map<number, number>();
-  for (const t of tree) rankMap.set(t.nodeID, Math.max(rankMap.get(t.nodeID) ?? 0, t.rank));
+  for (const t of normalizeTalentTree(tree)) rankMap.set(t.nodeID, t.rank);
   let score = 0;
   for (const [nodeID, rank] of cMap) {
     if (rankMap.get(nodeID) === rank) score++;
@@ -1066,9 +1066,24 @@ export default async function BossContent({
     }
 
     // ── Consensus computation ─────────────────────────────────────────────
-    const allFightTrees = allTelemetryData.map(t => (t?.event?.talentTree || []) as Array<{ nodeID: number; rank: number }>);
+    const allFightTrees = allTelemetryData.map(t => normalizeTalentTree(t?.event?.talentTree || []));
     const validTrees = allFightTrees.filter(t => t.length > 0);
     const totalConsensusPlayers = validTrees.length;
+
+    // A few "apex"/capstone nodes have a real max rank Blizzard's tree API doesn't
+    // expose (it reports node.ranks.length, which undercounts these specifically) —
+    // the only way to know the true max is what's actually observed in real samples.
+    // Only ever raises maxRanks, never lowers it, so normal nodes are untouched.
+    const observedMaxRanks = new Map<number, number>();
+    for (const tree of validTrees) {
+      for (const { nodeID, rank } of tree) {
+        if (rank > (observedMaxRanks.get(nodeID) ?? 0)) observedMaxRanks.set(nodeID, rank);
+      }
+    }
+    const correctedSkeletonMap = skeletonMap.map((n: any) => {
+      const observed = observedMaxRanks.get(n.nodeID);
+      return observed != null && observed > n.maxRanks ? { ...n, maxRanks: observed } : n;
+    });
 
     const usedHeroTreeIds = new Set<number>();
     for (const tel of validTrees) {
@@ -1265,7 +1280,7 @@ export default async function BossContent({
           <BossView
             variants={talentVariants}
             gearPromise={gearPromise}
-            layout={skeletonMap}
+            layout={correctedSkeletonMap}
             colors={nodeColors}
             difficulty={difficulty}
             spec={spec}
@@ -1298,7 +1313,7 @@ export default async function BossContent({
           />
           <BossView
             variants={heroVariants}
-            layout={skeletonMap}
+            layout={correctedSkeletonMap}
             colors={nodeColors}
             difficulty={difficulty}
             spec={spec}

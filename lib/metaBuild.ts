@@ -4,7 +4,7 @@ import {
   getWclToken, getBlizzardToken, getWclRankings, getHistoricalFightTelemetry,
   getTalentTreeId, getCachedTalentLayout,
   computeConsensus, getActiveHeroTreeId, makeTelemetry, computeFrequencyPct,
-  mapConcurrent,
+  mapConcurrent, normalizeTalentTree,
 } from './wow';
 
 // WCL enforces a burst rate limit independent of its overall points budget. Firing
@@ -158,7 +158,7 @@ export async function getMetaBuild(params: {
     return { ...player, telemetry: telemetryData, talentString, profileNodes };
   });
 
-  const allFightTrees = allTelemetryData.map(t => (t?.event?.talentTree || []) as Array<{ nodeID: number; rank: number }>);
+  const allFightTrees = allTelemetryData.map(t => normalizeTalentTree(t?.event?.talentTree || []));
   const validTrees = allFightTrees.filter(t => t.length > 0);
   if (validTrees.length < 3) return { status: 'insufficient_data', sampleSize: validTrees.length };
 
