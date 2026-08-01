@@ -3,10 +3,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
-// Meta builds shift with balance patches, not minute to minute — polling every 5 minutes
-// catches updates promptly without adding meaningful load. Skips polling while the tab
-// isn't visible so a backgrounded tab doesn't keep quietly hitting the API.
-const POLL_INTERVAL_MS = 5 * 60 * 1000;
+// Meta builds shift with balance patches, not minute to minute, so there's little value
+// in catching a change that happens *during* someone's few-minute visit — and a recurring
+// poll costs something for every open tab regardless. A single check shortly after load
+// still catches the one case that matters: the page was served from data that went stale
+// moments before it rendered.
+const CHECK_DELAY_MS = 5000;
 
 export default function MetaBuildFreshnessBanner({
   className,
@@ -40,8 +42,7 @@ export default function MetaBuildFreshnessBanner({
     if (fetchedAt == null) return;
 
     let cancelled = false;
-    const check = async () => {
-      if (document.visibilityState !== 'visible') return;
+    const id = setTimeout(async () => {
       try {
         const params = new URLSearchParams({
           class: className, spec, boss: String(bossId), difficulty: String(difficulty), region, metric,
@@ -53,12 +54,10 @@ export default function MetaBuildFreshnessBanner({
           setStale(true);
         }
       } catch {
-        // Transient — just try again on the next interval.
+        // Transient — not worth retrying for a one-shot check.
       }
-    };
-
-    const id = setInterval(check, POLL_INTERVAL_MS);
-    return () => { cancelled = true; clearInterval(id); };
+    }, CHECK_DELAY_MS);
+    return () => { cancelled = true; clearTimeout(id); };
   }, [className, spec, bossId, difficulty, region, metric, fetchedAt]);
 
   if (!stale) return null;
