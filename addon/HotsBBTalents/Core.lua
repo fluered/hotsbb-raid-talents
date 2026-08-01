@@ -872,7 +872,10 @@ local function AddTalentScreenButton()
   local talentsSubFrame = host.TalentsFrame or host.TalentsTab or host.ClassTalentFrame
   local showTarget = talentsSubFrame or host
 
-  btn:SetPoint("BOTTOM", showTarget, "BOTTOM", 0, 10)
+  -- Stacked above where Raider.IO's own "Talent Builds" button sits in the bottom-left
+  -- corner, per in-game feedback — can't anchor directly to that addon's frame (don't
+  -- know its global name), so this is a fixed offset estimate from the screenshot.
+  btn:SetPoint("BOTTOMLEFT", showTarget, "BOTTOMLEFT", 15, 75)
   showTarget:HookScript("OnShow", function() btn:Show() end)
   showTarget:HookScript("OnHide", function() btn:Hide() end)
   if showTarget:IsShown() then btn:Show() end
