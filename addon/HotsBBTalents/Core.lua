@@ -862,10 +862,21 @@ local function AddTalentScreenButton()
   if not host then return end
   talentScreenButtonAdded = true
 
-  local btn = CreateFlatButton(UIParent, "HotsBB Talents", "primary", 150, 26)
+  -- "flat" instead of "primary" — the solid class-colored fill read as loud/out of
+  -- place next to Raider.IO's subdued dark pill. Smaller and slimmer too, to sit
+  -- alongside it rather than dominate the corner.
+  local btn = CreateFlatButton(UIParent, "HotsBB Talents", "flat", 118, 20)
   btn:SetFrameStrata("HIGH")
   btn:Hide()
   btn:SetScript("OnClick", ToggleFrame)
+  btn.label:SetFont(select(1, btn.label:GetFont()), 10)
+
+  -- A thin class-colored underline for a touch of brand identity without the loud fill.
+  local accentLine = btn:CreateTexture(nil, "ARTWORK")
+  accentLine:SetPoint("BOTTOMLEFT", 2, 1)
+  accentLine:SetPoint("BOTTOMRIGHT", -2, 1)
+  accentLine:SetHeight(2)
+  Paint(accentLine, COLOR_ACCENT, 0.9)
 
   -- Try to find the specific Talents tab so the button doesn't also show on the
   -- Spellbook tab; fall back to the whole host frame if none of these exist.
@@ -874,8 +885,9 @@ local function AddTalentScreenButton()
 
   -- Stacked above where Raider.IO's own "Talent Builds" button sits in the bottom-left
   -- corner, per in-game feedback — can't anchor directly to that addon's frame (don't
-  -- know its global name), so this is a fixed offset estimate from the screenshot.
-  btn:SetPoint("BOTTOMLEFT", showTarget, "BOTTOMLEFT", 15, 75)
+  -- know its global name), so this is a fixed offset estimate, widened after the first
+  -- attempt visibly overlapped it.
+  btn:SetPoint("BOTTOMLEFT", showTarget, "BOTTOMLEFT", 15, 105)
   showTarget:HookScript("OnShow", function() btn:Show() end)
   showTarget:HookScript("OnHide", function() btn:Hide() end)
   if showTarget:IsShown() then btn:Show() end
