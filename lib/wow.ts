@@ -346,17 +346,17 @@ export function getCachedTalentLayout(treeId: number, specId: number, accessToke
   return unstable_cache(
     async () => {
       let layout: Awaited<ReturnType<typeof getTalentTreeLayout>> | null = null;
-      for (let attempt = 0; attempt < 3; attempt++) {
+      for (let attempt = 0; attempt < 4; attempt++) {
         layout = await getTalentTreeLayout(treeId, specId, accessToken);
         const missingIcon = layout.layout.some(n =>
           (n.spellId && !n.iconUrl) || (n.choiceB?.spellId && !n.choiceB.iconUrl)
         );
         if (!missingIcon) return layout;
-        if (attempt < 2) await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+        if (attempt < 3) await new Promise(r => setTimeout(r, 1500 * (attempt + 1)));
       }
       return layout!;
     },
-    [`talent-layout-v6-${treeId}-${specId}`],
+    [`talent-layout-v7-${treeId}-${specId}`],
     { revalidate: 604800 }
   )();
 }

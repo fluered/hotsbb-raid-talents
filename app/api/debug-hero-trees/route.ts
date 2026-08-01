@@ -29,8 +29,14 @@ export async function GET(req: Request) {
   const specMaxRow = specNodes.length > 0 ? Math.max(...specNodes.map((n: any) => n.row)) : 0;
   const bottomSpecNodes = specNodes.filter((n: any) => n.row >= specMaxRow - 2);
 
+  const missingIcons = layout
+    .filter(n => !n.iconUrl || (n.choiceB && !n.choiceB.iconUrl))
+    .map(n => ({ nodeID: n.nodeID, name: n.name, section: n.section, row: n.row, column: n.column, spellId: n.spellId, iconUrl: n.iconUrl, choiceBName: n.choiceB?.name ?? null, choiceBSpellId: n.choiceB?.spellId ?? null, choiceBIconUrl: n.choiceB?.iconUrl ?? null }));
+
   return Response.json({
     treeInfo,
+    missingIconCount: missingIcons.length,
+    missingIcons,
     heroTreeNames,
     heroNodeCount: heroNodes.length,
     heroTreeIdCounts: treeIdCounts,
