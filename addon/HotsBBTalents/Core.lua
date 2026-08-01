@@ -883,11 +883,23 @@ local function AddTalentScreenButton()
   local talentsSubFrame = host.TalentsFrame or host.TalentsTab or host.ClassTalentFrame
   local showTarget = talentsSubFrame or host
 
-  -- Stacked above where Raider.IO's own "Talent Builds" button sits in the bottom-left
-  -- corner, per in-game feedback — can't anchor directly to that addon's frame (don't
-  -- know its global name), so this is a fixed offset estimate. 105 cleared the overlap
-  -- but left more of a gap than needed; tightened slightly.
-  btn:SetPoint("BOTTOMLEFT", showTarget, "BOTTOMLEFT", 15, 95)
+  -- The "Default Loadout" dropdown is a native Blizzard element (unlike Raider.IO's
+  -- button, whose frame name is unknowable), so it's worth trying to anchor directly
+  -- to it for real center alignment that holds up regardless of UI scale — far more
+  -- reliable than a guessed pixel offset, if the field name resolves. This is safe to
+  -- attempt even if wrong: an unresolved guess is just nil, and falls through to the
+  -- fixed-offset fallback rather than erroring.
+  local loadoutDropdown = (talentsSubFrame and (talentsSubFrame.LoadoutDropDown or talentsSubFrame.LoadoutSelector))
+    or host.LoadoutDropDown or host.LoadoutSelector
+
+  if loadoutDropdown then
+    btn:SetPoint("BOTTOM", loadoutDropdown, "TOP", 0, 58)
+  else
+    -- Fallback: fixed offset, shifted right of the previous left-aligned attempt to
+    -- approximate center alignment over the (wider) dropdown rather than left-matching
+    -- Raider.IO's narrower button.
+    btn:SetPoint("BOTTOMLEFT", showTarget, "BOTTOMLEFT", 45, 95)
+  end
   showTarget:HookScript("OnShow", function() btn:Show() end)
   showTarget:HookScript("OnHide", function() btn:Hide() end)
   if showTarget:IsShown() then btn:Show() end
