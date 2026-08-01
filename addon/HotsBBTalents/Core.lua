@@ -865,7 +865,7 @@ local function AddTalentScreenButton()
   -- "flat" instead of "primary" — the solid class-colored fill read as loud/out of
   -- place next to Raider.IO's subdued dark pill. Smaller and slimmer too, to sit
   -- alongside it rather than dominate the corner.
-  local btn = CreateFlatButton(UIParent, "HotsBB Talents", "flat", 150, 20)
+  local btn = CreateFlatButton(UIParent, "HotsBB Talents", "flat", 200, 20)
   btn:SetFrameStrata("HIGH")
   btn:Hide()
   btn:SetScript("OnClick", ToggleFrame)
@@ -895,10 +895,13 @@ local function AddTalentScreenButton()
   if loadoutDropdown then
     btn:SetPoint("BOTTOM", loadoutDropdown, "TOP", 0, 58)
   else
-    -- Fallback: fixed offset, shifted right of the previous left-aligned attempt to
-    -- approximate center alignment over the (wider) dropdown rather than left-matching
-    -- Raider.IO's narrower button.
-    btn:SetPoint("BOTTOMLEFT", showTarget, "BOTTOMLEFT", 45, 95)
+    -- Confirmed via screenshot: the dropdown guess above doesn't resolve on this game
+    -- version, so this fallback is what's actually rendering. The dropdown, Raider.IO's
+    -- button, and our button all share the same left edge — so instead of guessing a
+    -- shifted offset (tried and it undershot), matching our button's *width* to the
+    -- dropdown's width achieves the same center alignment geometrically: same left edge
+    -- + same width = same center, without needing to guess a shift amount.
+    btn:SetPoint("BOTTOMLEFT", showTarget, "BOTTOMLEFT", 15, 95)
   end
   showTarget:HookScript("OnShow", function() btn:Show() end)
   showTarget:HookScript("OnHide", function() btn:Hide() end)
