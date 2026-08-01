@@ -321,6 +321,12 @@ export async function getTalentTreeLayout(treeId: number, specId: number, access
       };
     }
 
+    // Sum of default_points across ranks — the handful of nodes that are auto-granted
+    // (e.g. starting stances, hero-tree root passives) rather than purchased with a
+    // point. Needed to correctly split ranksGranted vs ranksPurchased when building
+    // C_ClassTalents.ImportLoadout entries straight from WCL telemetry.
+    const grantedRanks = (node.ranks ?? []).reduce((s: number, r: any) => s + (r.default_points || 0), 0);
+
     return {
       nodeID: node.id,
       row: node.display_row,
@@ -329,6 +335,7 @@ export async function getTalentTreeLayout(treeId: number, specId: number, access
       heroTreeId: node._heroTreeId as number | null,
       name,
       maxRanks: node.ranks?.length ?? 1,
+      grantedRanks,
       spellId: spellId ?? null,
       iconUrl,
       description: (spellTooltip?.description ?? '').replace(/\|n/gi, '\n'),
@@ -401,6 +408,53 @@ export async function getTalentTreeId(specName: string, className: string, acces
 }
 
 // ─── Consensus Helpers ────────────────────────────────────────────────────────
+
+export interface WclImportEntry {
+  nodeID: number;
+  ranksGranted: number;
+  ranksPurchased: number;
+  selectionEntryID: number;
+}
+
+// Builds C_ClassTalents.ImportLoadout-ready entries directly from one player's raw WCL
+// CombatantInfo telemetry (nodeID + entry id + rank per row), cross-referenced against
+// the spec's static tree layout for grantedRanks. Entirely independent of Blizzard's
+// character-profile API — works for any region, including ones (like CN) where that
+// API isn't reachable at all. Verified via a real in-game reconstruction test: staged
+// output matched the source player's actual build exactly.
+export function buildImportEntries(
+  raw: Array<{ nodeID: number; rank: number; id?: number }>,
+  layout: Array<{ nodeID: number; grantedRanks?: number }>
+): WclImportEntry[] {
+  const grantedByNode = new Map<number, number>();
+  for (const n of layout) grantedByNode.set(n.nodeID, n.grantedRanks ?? 0);
+
+  const byNode = new Map<number, Array<{ rank: number; id?: number }>>();
+  for (const t of raw) {
+    if (!byNode.has(t.nodeID)) byNode.set(t.nodeID, []);
+    byNode.get(t.nodeID)!.push({ rank: t.rank, id: t.id });
+  }
+
+  const entries: WclImportEntry[] = [];
+  for (const [nodeID, rows] of byNode) {
+    const distinctIds = new Set(rows.map(r => r.id));
+    if (rows.length > 1 && distinctIds.size > 1) {
+      // Apex/tiered node: one distinct entry per row, 1 point each — matches the
+      // pattern observed for every real multi-entry node checked (Tigereye Brew,
+      // Benediction, etc.), never a partial-rank-per-entry split.
+      for (const row of rows) {
+        if (row.id != null) entries.push({ nodeID, ranksGranted: 0, ranksPurchased: 1, selectionEntryID: row.id });
+      }
+      continue;
+    }
+    const achievedRank = Math.max(...rows.map(r => r.rank));
+    const granted = Math.min(achievedRank, grantedByNode.get(nodeID) ?? 0);
+    const purchased = achievedRank - granted;
+    const entryId = rows[0].id;
+    if (entryId != null) entries.push({ nodeID, ranksGranted: granted, ranksPurchased: purchased, selectionEntryID: entryId });
+  }
+  return entries;
+}
 
 export function computeConsensus(
   telemetries: Array<Array<{ nodeID: number; rank: number }>>,

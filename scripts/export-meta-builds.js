@@ -186,6 +186,16 @@ function luaNumMap(obj) {
   return '{ ' + keys.map(k => `[${k}] = ${obj[k]}`).join(', ') + ' }';
 }
 
+// Serializes wclEntries — built entirely from WCL telemetry, no Blizzard character
+// profile involved — into a Lua array ready for C_ClassTalents.ImportLoadout, skipping
+// the string encode/decode round-trip the old importString path needed.
+function luaEntries(entries) {
+  if (!entries || entries.length === 0) return 'nil';
+  return '{ ' + entries.map(e =>
+    `{nodeID=${e.nodeID},ranksGranted=${e.ranksGranted},ranksPurchased=${e.ranksPurchased},selectionEntryID=${e.selectionEntryID}}`
+  ).join(', ') + ' }';
+}
+
 (async () => {
   const results = await mapConcurrent(activeJobs, CONCURRENCY, fetchJob);
 
@@ -260,6 +270,7 @@ function luaNumMap(obj) {
         lines.push(`          importString = ${luaStr(v.talentString)},`);
         lines.push(`          frequencyPct = ${luaNumMap(v.frequencyPct)},`);
         lines.push(`          entryIds = ${luaNumMap(v.entryIds)},`);
+        lines.push(`          wclEntries = ${luaEntries(v.wclEntries)},`);
         lines.push('        },');
       }
       lines.push('      },');

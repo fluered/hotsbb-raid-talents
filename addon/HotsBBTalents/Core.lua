@@ -234,9 +234,15 @@ local function EnsureTalentFrameLoaded()
   end)
 end
 
-local function ImportBuild(importString, displayName)
-  if not importString then
-    Announce("|cffff4444HotsBB Talents:|r No import string for this build.", 1.0, 0.3, 0.3)
+-- Prefers wclEntries (built server-side straight from WCL telemetry — no Blizzard
+-- character-profile dependency, so it's available for every player regardless of
+-- region) when present, skipping the string encode/decode round-trip entirely. Falls
+-- back to decoding importString (the older path, Blizzard-profile-derived) when
+-- wclEntries isn't there — e.g. a spec/boss combo where no player's WCL data resolved
+-- cleanly enough to build entries from.
+local function ImportBuild(variant, displayName)
+  if not variant or (not variant.wclEntries and not variant.importString) then
+    Announce("|cffff4444HotsBB Talents:|r No import data for this build.", 1.0, 0.3, 0.3)
     return false
   end
   if not (C_ClassTalents and C_ClassTalents.ImportLoadout and C_ClassTalents.GetActiveConfigID) then
@@ -253,24 +259,28 @@ local function ImportBuild(importString, displayName)
     return false
   end
 
-  if not (C_Traits and C_Traits.GetConfigInfo and C_Traits.GetTreeNodes and C_Traits.GetNodeInfo) then
-    Announce("|cffff4444HotsBB Talents:|r C_Traits API not found on this client. Use Copy instead.", 1.0, 0.3, 0.3)
-    return false
-  end
-  local configInfo = C_Traits.GetConfigInfo(configID)
-  local treeID = configInfo and configInfo.treeIDs and configInfo.treeIDs[1]
-  if not treeID then
-    Announce("|cffff4444HotsBB Talents:|r Could not determine your talent tree ID. Use Copy instead.", 1.0, 0.3, 0.3)
-    return false
+  local entries, decodeErr
+  if variant.wclEntries then
+    entries = variant.wclEntries
+  else
+    if not (C_Traits and C_Traits.GetConfigInfo and C_Traits.GetTreeNodes and C_Traits.GetNodeInfo) then
+      Announce("|cffff4444HotsBB Talents:|r C_Traits API not found on this client. Use Copy instead.", 1.0, 0.3, 0.3)
+      return false
+    end
+    local configInfo = C_Traits.GetConfigInfo(configID)
+    local treeID = configInfo and configInfo.treeIDs and configInfo.treeIDs[1]
+    if not treeID then
+      Announce("|cffff4444HotsBB Talents:|r Could not determine your talent tree ID. Use Copy instead.", 1.0, 0.3, 0.3)
+      return false
+    end
+    entries, decodeErr = DecodeLoadoutString(variant.importString, configID, treeID)
+    if not entries then
+      Announce("|cffff4444HotsBB Talents:|r Decode failed: " .. tostring(decodeErr) .. ". Use Copy instead.", 1.0, 0.3, 0.3)
+      return false
+    end
   end
 
-  local entries, decodeErr = DecodeLoadoutString(importString, configID, treeID)
-  if not entries then
-    Announce("|cffff4444HotsBB Talents:|r Decode failed: " .. tostring(decodeErr) .. ". Use Copy instead.", 1.0, 0.3, 0.3)
-    return false
-  end
-
-  local ok, success, importError = pcall(C_ClassTalents.ImportLoadout, configID, entries, displayName or "HotsBB Meta Build", importString)
+  local ok, success, importError = pcall(C_ClassTalents.ImportLoadout, configID, entries, displayName or "HotsBB Meta Build", variant.importString)
   if not ok then
     Announce("|cffff4444HotsBB Talents:|r Import call errored (" .. tostring(success) .. "). Use Copy and paste manually instead.", 1.0, 0.3, 0.3)
     return false
@@ -600,7 +610,7 @@ local function RefreshCardButtons(card, variants)
     label = label .. " — " .. variant.heroTreeName
   end
   local importString = variant.importString
-  card.importBtn:SetScript("OnClick", function() ImportBuild(importString, label) end)
+  card.importBtn:SetScript("OnClick", function() ImportBuild(variant, label) end)
   card.copyBtn:SetScript("OnClick", function() ShowCopyBox(importString) end)
   for i, pill in ipairs(card.pills) do
     if pill:IsShown() then
@@ -832,86 +842,6 @@ local function ToggleFrame()
     frame:Show()
   end
 end
-
--- ── TEMPORARY research tool: entry-ID verification dump ─────────────────────
--- Not for regular use. Dumps your CURRENTLY ACTIVE build's node->entryID mapping
--- (straight from C_Traits, the same in-game API ImportBuild above uses) so it can
--- be compared against what WarcraftLogs reports for the same fight. If they match,
--- it means WCL's raw combat-log telemetry can be used to reconstruct exact import
--- strings directly — including for regions (like CN) where we can't fetch a
--- Blizzard character profile at all. Remove once this question is settled.
-local function DumpActiveEntryIDs()
-  if not (C_ClassTalents and C_ClassTalents.GetActiveConfigID and C_Traits and C_Traits.GetConfigInfo and C_Traits.GetTreeNodes and C_Traits.GetNodeInfo) then
-    Announce("|cffff4444HotsBB dump:|r Talent API not available on this client.", 1.0, 0.3, 0.3)
-    return
-  end
-  local configID = C_ClassTalents.GetActiveConfigID()
-  if not configID then
-    EnsureTalentFrameLoaded()
-    configID = C_ClassTalents.GetActiveConfigID()
-  end
-  if not configID then
-    Announce("|cffff4444HotsBB dump:|r No active config — open your Talents panel once, then try again.", 1.0, 0.3, 0.3)
-    return
-  end
-  local configInfo = C_Traits.GetConfigInfo(configID)
-  local treeID = configInfo and configInfo.treeIDs and configInfo.treeIDs[1]
-  if not treeID then
-    Announce("|cffff4444HotsBB dump:|r Could not determine your talent tree ID.", 1.0, 0.3, 0.3)
-    return
-  end
-
-  local treeNodes = C_Traits.GetTreeNodes(treeID)
-  local lines = {}
-  for _, nodeID in ipairs(treeNodes) do
-    local nodeInfo = C_Traits.GetNodeInfo(configID, nodeID)
-    if nodeInfo and nodeInfo.activeEntry and nodeInfo.activeEntry.entryID then
-      table.insert(lines, nodeID .. "=" .. nodeInfo.activeEntry.entryID)
-    end
-  end
-  Announce("|cff44ff44HotsBB dump:|r " .. #lines .. " active nodes — copy the popup and send it back.", 0.3, 1.0, 0.3)
-  ShowCopyBox(table.concat(lines, ","))
-end
-
-SLASH_HBTDUMP1 = "/hbtdump"
-SlashCmdList["HBTDUMP"] = DumpActiveEntryIDs
-
--- ── TEMPORARY research tool: end-to-end reconstruction test ─────────────────
--- Hardcoded entries computed server-side purely from your own /hbtdump earlier —
--- reconstructed via WCL-telemetry-based logic (nodeID/entryID/rank pulled from a
--- WarcraftLogs report of you playing, cross-referenced against Blizzard's static
--- tree data for which ranks are auto-granted). This should stage the EXACT same
--- build you already have. Remove once this question is settled.
-local TEST_ENTRIES = {{nodeID=101035,ranksGranted=0,ranksPurchased=2,selectionEntryID=124805},{nodeID=101036,ranksGranted=0,ranksPurchased=1,selectionEntryID=124806},{nodeID=101037,ranksGranted=0,ranksPurchased=1,selectionEntryID=124807},{nodeID=101039,ranksGranted=0,ranksPurchased=1,selectionEntryID=124810},{nodeID=101041,ranksGranted=0,ranksPurchased=1,selectionEntryID=124812},{nodeID=101046,ranksGranted=0,ranksPurchased=1,selectionEntryID=124818},{nodeID=101048,ranksGranted=0,ranksPurchased=1,selectionEntryID=124820},{nodeID=101052,ranksGranted=0,ranksPurchased=1,selectionEntryID=124824},{nodeID=101053,ranksGranted=0,ranksPurchased=1,selectionEntryID=124826},{nodeID=101054,ranksGranted=0,ranksPurchased=1,selectionEntryID=124827},{nodeID=101055,ranksGranted=0,ranksPurchased=1,selectionEntryID=124828},{nodeID=101056,ranksGranted=0,ranksPurchased=1,selectionEntryID=124829},{nodeID=101059,ranksGranted=0,ranksPurchased=1,selectionEntryID=124833},{nodeID=101060,ranksGranted=0,ranksPurchased=1,selectionEntryID=124834},{nodeID=101062,ranksGranted=0,ranksPurchased=1,selectionEntryID=124836},{nodeID=101136,ranksGranted=0,ranksPurchased=1,selectionEntryID=124926},{nodeID=101137,ranksGranted=0,ranksPurchased=1,selectionEntryID=124927},{nodeID=101140,ranksGranted=0,ranksPurchased=1,selectionEntryID=124930},{nodeID=101141,ranksGranted=0,ranksPurchased=1,selectionEntryID=124931},{nodeID=101143,ranksGranted=0,ranksPurchased=1,selectionEntryID=124933},{nodeID=101144,ranksGranted=0,ranksPurchased=1,selectionEntryID=124934},{nodeID=101146,ranksGranted=0,ranksPurchased=1,selectionEntryID=124936},{nodeID=101147,ranksGranted=0,ranksPurchased=1,selectionEntryID=124937},{nodeID=101150,ranksGranted=0,ranksPurchased=1,selectionEntryID=124941},{nodeID=101153,ranksGranted=0,ranksPurchased=1,selectionEntryID=124944},{nodeID=101159,ranksGranted=0,ranksPurchased=1,selectionEntryID=124953},{nodeID=101162,ranksGranted=0,ranksPurchased=1,selectionEntryID=124956},{nodeID=101165,ranksGranted=0,ranksPurchased=1,selectionEntryID=124960},{nodeID=101166,ranksGranted=0,ranksPurchased=2,selectionEntryID=124961},{nodeID=101167,ranksGranted=0,ranksPurchased=1,selectionEntryID=124962},{nodeID=101168,ranksGranted=0,ranksPurchased=1,selectionEntryID=124963},{nodeID=101169,ranksGranted=0,ranksPurchased=2,selectionEntryID=124964},{nodeID=101170,ranksGranted=0,ranksPurchased=1,selectionEntryID=124965},{nodeID=101173,ranksGranted=0,ranksPurchased=1,selectionEntryID=124968},{nodeID=101174,ranksGranted=0,ranksPurchased=1,selectionEntryID=124969},{nodeID=101178,ranksGranted=0,ranksPurchased=1,selectionEntryID=124975},{nodeID=101179,ranksGranted=0,ranksPurchased=2,selectionEntryID=124976},{nodeID=101183,ranksGranted=0,ranksPurchased=1,selectionEntryID=124982},{nodeID=101184,ranksGranted=0,ranksPurchased=2,selectionEntryID=124983},{nodeID=101185,ranksGranted=0,ranksPurchased=1,selectionEntryID=124984},{nodeID=101203,ranksGranted=0,ranksPurchased=1,selectionEntryID=125010},{nodeID=101205,ranksGranted=0,ranksPurchased=1,selectionEntryID=125012},{nodeID=101206,ranksGranted=0,ranksPurchased=1,selectionEntryID=125013},{nodeID=101208,ranksGranted=0,ranksPurchased=1,selectionEntryID=125015},{nodeID=101210,ranksGranted=0,ranksPurchased=1,selectionEntryID=125017},{nodeID=101213,ranksGranted=0,ranksPurchased=1,selectionEntryID=125020},{nodeID=101215,ranksGranted=0,ranksPurchased=1,selectionEntryID=125022},{nodeID=101216,ranksGranted=0,ranksPurchased=1,selectionEntryID=125023},{nodeID=101217,ranksGranted=0,ranksPurchased=1,selectionEntryID=125025},{nodeID=101218,ranksGranted=0,ranksPurchased=1,selectionEntryID=125026},{nodeID=101232,ranksGranted=0,ranksPurchased=1,selectionEntryID=125046},{nodeID=101244,ranksGranted=0,ranksPurchased=1,selectionEntryID=125063},{nodeID=101245,ranksGranted=0,ranksPurchased=1,selectionEntryID=125065},{nodeID=101246,ranksGranted=0,ranksPurchased=1,selectionEntryID=125066},{nodeID=101247,ranksGranted=0,ranksPurchased=1,selectionEntryID=125068},{nodeID=101249,ranksGranted=0,ranksPurchased=1,selectionEntryID=125070},{nodeID=101250,ranksGranted=0,ranksPurchased=1,selectionEntryID=125071},{nodeID=101251,ranksGranted=0,ranksPurchased=1,selectionEntryID=125072},{nodeID=101252,ranksGranted=0,ranksPurchased=1,selectionEntryID=125073},{nodeID=101253,ranksGranted=0,ranksPurchased=1,selectionEntryID=125074},{nodeID=101254,ranksGranted=0,ranksPurchased=1,selectionEntryID=125076},{nodeID=104128,ranksGranted=0,ranksPurchased=1,selectionEntryID=128711},{nodeID=108540,ranksGranted=0,ranksPurchased=1,selectionEntryID=134029},{nodeID=101207,ranksGranted=0,ranksPurchased=1,selectionEntryID=134452},{nodeID=101057,ranksGranted=0,ranksPurchased=1,selectionEntryID=134453},{nodeID=108946,ranksGranted=0,ranksPurchased=1,selectionEntryID=134543},{nodeID=109697,ranksGranted=0,ranksPurchased=1,selectionEntryID=135955},{nodeID=109698,ranksGranted=0,ranksPurchased=1,selectionEntryID=135956},{nodeID=109699,ranksGranted=0,ranksPurchased=1,selectionEntryID=135957},{nodeID=110020,ranksGranted=0,ranksPurchased=1,selectionEntryID=136511},{nodeID=110022,ranksGranted=0,ranksPurchased=1,selectionEntryID=136514},{nodeID=110023,ranksGranted=0,ranksPurchased=1,selectionEntryID=136515},{nodeID=110098,ranksGranted=0,ranksPurchased=1,selectionEntryID=136599},{nodeID=110436,ranksGranted=0,ranksPurchased=1,selectionEntryID=137076},{nodeID=110436,ranksGranted=0,ranksPurchased=1,selectionEntryID=137077},{nodeID=110436,ranksGranted=0,ranksPurchased=1,selectionEntryID=137078},{nodeID=101142,ranksGranted=1,ranksPurchased=0,selectionEntryID=124932},{nodeID=101186,ranksGranted=1,ranksPurchased=0,selectionEntryID=124985},{nodeID=101248,ranksGranted=1,ranksPurchased=0,selectionEntryID=125069}}
-
-local function RunEntriesTest()
-  if not (C_ClassTalents and C_ClassTalents.GetActiveConfigID and C_ClassTalents.ImportLoadout) then
-    Announce("|cffff4444HotsBB test:|r Talent API not available.", 1.0, 0.3, 0.3)
-    return
-  end
-  local configID = C_ClassTalents.GetActiveConfigID()
-  if not configID then
-    EnsureTalentFrameLoaded()
-    configID = C_ClassTalents.GetActiveConfigID()
-  end
-  if not configID then
-    Announce("|cffff4444HotsBB test:|r No active config — open your Talents panel once first.", 1.0, 0.3, 0.3)
-    return
-  end
-  local ok, success, err = pcall(C_ClassTalents.ImportLoadout, configID, TEST_ENTRIES, "HotsBB WCL-reconstruction test")
-  if not ok then
-    Announce("|cffff4444HotsBB test:|r Call errored: " .. tostring(success), 1.0, 0.3, 0.3)
-    return
-  end
-  if not success then
-    Announce("|cffff4444HotsBB test:|r Import rejected: " .. tostring(err), 1.0, 0.3, 0.3)
-    return
-  end
-  Announce("|cff44ff44HotsBB test:|r Staged " .. #TEST_ENTRIES .. " entries — check your Talents panel and compare against your actual build (don't Apply if it looks wrong).", 0.3, 1.0, 0.3)
-end
-
-SLASH_HBTTEST1 = "/hbttest"
-SlashCmdList["HBTTEST"] = RunEntriesTest
 
 SLASH_HOTSBBTALENTS1 = "/hbt"
 SLASH_HOTSBBTALENTS2 = "/hotsbbtalents"

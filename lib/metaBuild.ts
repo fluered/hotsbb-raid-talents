@@ -4,7 +4,7 @@ import {
   getWclToken, getBlizzardToken, getWclRankings, getHistoricalFightTelemetry,
   getTalentTreeId, getCachedTalentLayout,
   computeConsensus, getActiveHeroTreeId, makeTelemetry, computeFrequencyPct,
-  mapConcurrent, normalizeTalentTree,
+  mapConcurrent, normalizeTalentTree, buildImportEntries, type WclImportEntry,
 } from './wow';
 
 // WCL enforces a burst rate limit independent of its overall points budget. Firing
@@ -24,6 +24,11 @@ export interface MetaBuildVariant {
   talentString: string | null;
   frequencyPct: Record<number, number>;
   entryIds: Record<number, number>;
+  // Built straight from WCL telemetry (no Blizzard character-profile dependency), so
+  // it's available even for players/regions where talentString/entryIds can't be
+  // (e.g. CN). The addon imports from this directly via C_ClassTalents.ImportLoadout,
+  // skipping the string encode/decode round-trip entirely.
+  wclEntries: WclImportEntry[] | null;
 }
 
 export interface MetaBuildResult {
@@ -203,6 +208,25 @@ export async function getMetaBuild(params: {
     return entryIds;
   }
 
+  // Same "closest-matching real player" approach as pickTalentString, but scored
+  // against every player's raw WCL telemetry directly rather than requiring a
+  // Blizzard-profile-derived talentString — so it still works for players whose
+  // profile isn't fetchable (private, or a region Blizzard's API doesn't cover, e.g.
+  // CN). Builds entries straight from that player's telemetry once picked.
+  function pickWclEntries(pool: any[], cMap: Map<number, number>): WclImportEntry[] | null {
+    let bestScore = -1;
+    let bestPlayer: any = null;
+    for (const player of pool) {
+      const raw = player.telemetry?.event?.talentTree;
+      if (!raw?.length) continue;
+      const score = scorePlayerTree(raw, cMap);
+      if (score > bestScore) { bestScore = score; bestPlayer = player; }
+    }
+    if (!bestPlayer) return null;
+    const entries = buildImportEntries(bestPlayer.telemetry.event.talentTree, skeletonMap);
+    return entries.length > 0 ? entries : null;
+  }
+
   const metaTalentString = pickTalentString(detailedRankingsBase, consensusMap);
   const variants: MetaBuildVariant[] = [{
     id: null,
@@ -211,6 +235,7 @@ export async function getMetaBuild(params: {
     talentString: metaTalentString,
     frequencyPct: metaFrequencyPct,
     entryIds: entryIdsFor(metaTalentString, detailedRankingsBase),
+    wclEntries: pickWclEntries(detailedRankingsBase, consensusMap),
   }];
 
   const heroGroups = new Map<number, Array<Array<{ nodeID: number; rank: number }>>>();
@@ -236,6 +261,7 @@ export async function getMetaBuild(params: {
       talentString: htTalentString,
       frequencyPct: htFrequencyPct,
       entryIds: entryIdsFor(htTalentString, pool),
+      wclEntries: pickWclEntries(pool, htMap),
     });
   }
 
