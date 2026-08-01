@@ -833,6 +833,49 @@ local function ToggleFrame()
   end
 end
 
+-- ── TEMPORARY research tool: entry-ID verification dump ─────────────────────
+-- Not for regular use. Dumps your CURRENTLY ACTIVE build's node->entryID mapping
+-- (straight from C_Traits, the same in-game API ImportBuild above uses) so it can
+-- be compared against what WarcraftLogs reports for the same fight. If they match,
+-- it means WCL's raw combat-log telemetry can be used to reconstruct exact import
+-- strings directly — including for regions (like CN) where we can't fetch a
+-- Blizzard character profile at all. Remove once this question is settled.
+local function DumpActiveEntryIDs()
+  if not (C_ClassTalents and C_ClassTalents.GetActiveConfigID and C_Traits and C_Traits.GetConfigInfo and C_Traits.GetTreeNodes and C_Traits.GetNodeInfo) then
+    Announce("|cffff4444HotsBB dump:|r Talent API not available on this client.", 1.0, 0.3, 0.3)
+    return
+  end
+  local configID = C_ClassTalents.GetActiveConfigID()
+  if not configID then
+    EnsureTalentFrameLoaded()
+    configID = C_ClassTalents.GetActiveConfigID()
+  end
+  if not configID then
+    Announce("|cffff4444HotsBB dump:|r No active config — open your Talents panel once, then try again.", 1.0, 0.3, 0.3)
+    return
+  end
+  local configInfo = C_Traits.GetConfigInfo(configID)
+  local treeID = configInfo and configInfo.treeIDs and configInfo.treeIDs[1]
+  if not treeID then
+    Announce("|cffff4444HotsBB dump:|r Could not determine your talent tree ID.", 1.0, 0.3, 0.3)
+    return
+  end
+
+  local treeNodes = C_Traits.GetTreeNodes(treeID)
+  local lines = {}
+  for _, nodeID in ipairs(treeNodes) do
+    local nodeInfo = C_Traits.GetNodeInfo(configID, nodeID)
+    if nodeInfo and nodeInfo.activeEntry and nodeInfo.activeEntry.entryID then
+      table.insert(lines, nodeID .. "=" .. nodeInfo.activeEntry.entryID)
+    end
+  end
+  Announce("|cff44ff44HotsBB dump:|r " .. #lines .. " active nodes — copy the popup and send it back.", 0.3, 1.0, 0.3)
+  ShowCopyBox(table.concat(lines, ","))
+end
+
+SLASH_HBTDUMP1 = "/hbtdump"
+SlashCmdList["HBTDUMP"] = DumpActiveEntryIDs
+
 SLASH_HOTSBBTALENTS1 = "/hbt"
 SLASH_HOTSBBTALENTS2 = "/hotsbbtalents"
 SlashCmdList["HOTSBBTALENTS"] = ToggleFrame
