@@ -845,3 +845,46 @@ if C_AddOns and C_AddOns.RegisterAddOnCompartmentInfo then
     func = ToggleFrame,
   })
 end
+
+-- ── Button on Blizzard's own Talents screen ──────────────────────────────────
+-- Frame names/structure here can vary by patch (see EnsureTalentFrameLoaded above,
+-- which hit the same uncertainty) — this is written defensively and may need
+-- adjusting once actually seen in-game. PlayerSpellsFrame is the modern combined
+-- Spellbook+Talents frame; ClassTalentFrame is the older standalone one, kept as a
+-- fallback. If a dedicated Talents sub-frame can be identified, the button is tied
+-- to its own show/hide so it only appears on the Talents tab specifically; otherwise
+-- it falls back to showing whenever the host frame is open at all.
+local talentScreenButtonAdded = false
+local function AddTalentScreenButton()
+  if talentScreenButtonAdded then return end
+
+  local host = PlayerSpellsFrame or ClassTalentFrame
+  if not host then return end
+  talentScreenButtonAdded = true
+
+  local btn = CreateFlatButton(UIParent, "HotsBB Talents", "primary", 150, 26)
+  btn:SetFrameStrata("HIGH")
+  btn:Hide()
+  btn:SetScript("OnClick", ToggleFrame)
+
+  -- Try to find the specific Talents tab so the button doesn't also show on the
+  -- Spellbook tab; fall back to the whole host frame if none of these exist.
+  local talentsSubFrame = host.TalentsFrame or host.TalentsTab or host.ClassTalentFrame
+  local showTarget = talentsSubFrame or host
+
+  btn:SetPoint("TOPRIGHT", showTarget, "TOPRIGHT", -8, -8)
+  showTarget:HookScript("OnShow", function() btn:Show() end)
+  showTarget:HookScript("OnHide", function() btn:Hide() end)
+  if showTarget:IsShown() then btn:Show() end
+end
+
+local talentScreenWatcher = CreateFrame("Frame")
+talentScreenWatcher:RegisterEvent("PLAYER_LOGIN")
+talentScreenWatcher:RegisterEvent("ADDON_LOADED")
+talentScreenWatcher:SetScript("OnEvent", function(_, event, addonName)
+  if event == "ADDON_LOADED" and addonName ~= "Blizzard_PlayerSpells" and addonName ~= "Blizzard_ClassTalentUI" then
+    return
+  end
+  AddTalentScreenButton()
+  if talentScreenButtonAdded then talentScreenWatcher:UnregisterAllEvents() end
+end)
