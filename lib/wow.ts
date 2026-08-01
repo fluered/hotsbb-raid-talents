@@ -137,23 +137,29 @@ export async function mapConcurrent<T, U>(items: T[], limit: number, fn: (item: 
   return results;
 }
 
+// No fetch here previously had a timeout — an unresponsive Blizzard connection could
+// hang far longer than any backoff math would suggest, bounded only by the platform's
+// own default socket timeout. A hard per-attempt timeout guarantees a ceiling.
+async function fetchWithTimeout(url: string, headers: Record<string, string>, timeoutMs: number, revalidate: number) {
+  return fetch(url, { headers, next: { revalidate }, signal: AbortSignal.timeout(timeoutMs) });
+}
+
 // A talent's spellId should always resolve to an icon — Blizzard has art for every real
 // spell — so unlike a character profile lookup, there's no legitimate "doesn't exist"
-// case here. Retries generously on anything transient (429, 5xx, network errors); only
-// a 404 (genuinely no such spell) gives up immediately.
+// case here. But this runs concurrently (mapConcurrent) across every node in a tree, so
+// retry cost here is a multiplier on the whole page's time budget, not just this one
+// fetch — kept deliberately tight (2 attempts, short timeout) rather than generous.
 export async function getSpellIconUrl(spellId: number, accessToken: string): Promise<string> {
-  for (let attempt = 0; attempt < 5; attempt++) {
+  for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const res = await fetch(
+      const res = await fetchWithTimeout(
         `https://us.api.blizzard.com/data/wow/media/spell/${spellId}?namespace=static-us`,
-        { headers: { 'Authorization': `Bearer ${accessToken}` }, next: { revalidate: 604800 } }
+        { 'Authorization': `Bearer ${accessToken}` }, 3000, 604800
       );
       if (res.ok) return (await res.json()).assets?.[0]?.value ?? '';
       if (res.status === 404) return '';
-      await new Promise(r => setTimeout(r, 400 * (attempt + 1)));
-    } catch {
-      await new Promise(r => setTimeout(r, 300 * (attempt + 1)));
-    }
+    } catch {}
+    if (attempt === 0) await new Promise(r => setTimeout(r, 300));
   }
   return '';
 }
@@ -161,19 +167,18 @@ export async function getSpellIconUrl(spellId: number, accessToken: string): Pro
 // Hero talent tree portraits come from a dedicated Blizzard media endpoint
 // (data.hero_talent_trees[].media.key.href), same pattern as getSpellIconUrl.
 // Genuinely 404s for brand-new content until Blizzard uploads the asset —
-// that's a real "not available yet" rather than a transient error, so unlike
-// getSpellIconUrl this does not retry on 404, only on 429/network errors.
+// that's a real "not available yet" rather than a transient error. This one isn't
+// inside the per-node concurrent fan-out (one call per hero tree, not per node), so
+// it can afford to be a bit more patient than getSpellIconUrl.
 async function getHeroTreeIconUrl(mediaHref: string | undefined, accessToken: string): Promise<string> {
   if (!mediaHref) return '';
-  for (let attempt = 0; attempt < 4; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const res = await fetch(mediaHref, { headers: { 'Authorization': `Bearer ${accessToken}` }, next: { revalidate: 604800 } });
+      const res = await fetchWithTimeout(mediaHref, { 'Authorization': `Bearer ${accessToken}` }, 4000, 604800);
       if (res.ok) return (await res.json()).assets?.[0]?.value ?? '';
       if (res.status === 404) return '';
-      await new Promise(r => setTimeout(r, 400 * (attempt + 1)));
-    } catch {
-      await new Promise(r => setTimeout(r, 300 * (attempt + 1)));
-    }
+    } catch {}
+    if (attempt < 2) await new Promise(r => setTimeout(r, 400 * (attempt + 1)));
   }
   return '';
 }
@@ -284,7 +289,10 @@ export async function getTalentTreeLayout(treeId: number, specId: number, access
   }
   const allRaw = [...bestById.values()];
 
-  const mapped = await mapConcurrent(allRaw, 10, async (node: any) => {
+  // Higher concurrency than most mapConcurrent uses in this file — this fans out to
+  // Blizzard (generous per-app rate limits), not WCL (the service that actually needed
+  // throttling). Fewer sequential waves means a lower worst-case total time for the tree.
+  const mapped = await mapConcurrent(allRaw, 25, async (node: any) => {
     const firstRank = node.ranks?.[0];
     const choices: any[] = firstRank?.choice_of_tooltips ?? [];
     const isChoice = choices.length >= 2;
@@ -339,24 +347,35 @@ export async function getTalentTreeLayout(treeId: number, specId: number, access
 
 // Cached wrapper — keyed by treeId+specId so token rotation doesn't bust it.
 // 7-day TTL: talent trees only change on WoW patches (~every 6-8 weeks). Each node's own
-// icon fetch already retries internally, but if a node still comes back with no icon
-// after that, retry the *whole* layout computation rather than caching an incomplete
-// result for a week — this is a one-time cost per tree, amortized over the 7-day TTL.
+// icon fetch already retries internally; if a handful still come back with no icon after
+// that, retry just *those* nodes rather than the whole tree — a retry cost that scales
+// with the (usually tiny) straggler count instead of total tree size. Re-running the
+// entire computation on any single miss was tried and reverted: it multiplies the page's
+// worst-case time by the retry count, which risks the whole page timing out to avoid
+// what's normally a couple of blank icons.
 export function getCachedTalentLayout(treeId: number, specId: number, accessToken: string) {
   return unstable_cache(
     async () => {
-      let layout: Awaited<ReturnType<typeof getTalentTreeLayout>> | null = null;
-      for (let attempt = 0; attempt < 4; attempt++) {
-        layout = await getTalentTreeLayout(treeId, specId, accessToken);
-        const missingIcon = layout.layout.some(n =>
-          (n.spellId && !n.iconUrl) || (n.choiceB?.spellId && !n.choiceB.iconUrl)
-        );
-        if (!missingIcon) return layout;
-        if (attempt < 3) await new Promise(r => setTimeout(r, 1500 * (attempt + 1)));
-      }
-      return layout!;
+      const result = await getTalentTreeLayout(treeId, specId, accessToken);
+      const stragglers = result.layout
+        .map((n, i) => ({ n, i }))
+        .filter(({ n }) => (n.spellId && !n.iconUrl) || (n.choiceB?.spellId && !n.choiceB.iconUrl));
+      if (stragglers.length === 0) return result;
+
+      await mapConcurrent(stragglers, 10, async ({ n, i }) => {
+        if (n.spellId && !n.iconUrl) {
+          const iconUrl = await getSpellIconUrl(n.spellId, accessToken);
+          if (iconUrl) result.layout[i] = { ...result.layout[i], iconUrl };
+        }
+        const node = result.layout[i];
+        if (node.choiceB?.spellId && !node.choiceB.iconUrl) {
+          const iconUrl = await getSpellIconUrl(node.choiceB.spellId, accessToken);
+          if (iconUrl) result.layout[i] = { ...node, choiceB: { ...node.choiceB, iconUrl } };
+        }
+      });
+      return result;
     },
-    [`talent-layout-v7-${treeId}-${specId}`],
+    [`talent-layout-v8-${treeId}-${specId}`],
     { revalidate: 604800 }
   )();
 }
