@@ -2,6 +2,7 @@
 import React, { useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import Image from 'next/image';
+import { normalizeTalentTree } from '../lib/talentNormalize';
 
 function makeColMap(nodes: any[]): Map<number, number> {
   const unique = [...new Set(nodes.map((n: any) => n.column as number))].sort((a, b) => a - b);
@@ -199,7 +200,10 @@ export default function NewFeature({
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
   // pinned = opened via click/tap and stays open until an outside tap or re-click; unpinned = mouse-hover preview
   const [choiceHover, setChoiceHover] = useState<{ node: any; rect: DOMRect; aChosen: boolean; pinned: boolean } | null>(null);
-  const activeNodes = telemetry?.event?.talentTree || [];
+  // Normalizing here (not just upstream) matters specifically for individual player
+  // cards, which feed this component a player's raw WCL telemetry directly rather than
+  // the already-normalized consensus data — a no-op when the data's already clean.
+  const activeNodes = normalizeTalentTree(telemetry?.event?.talentTree || []);
   const activeNodeIds = new Set<number>(activeNodes.map((t: any) => t.nodeID));
 
   // Nodes where the #1 parser diverges from consensus: they take it but consensus doesn't (or vice versa)
