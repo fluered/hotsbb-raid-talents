@@ -872,7 +872,7 @@ local function AddTalentScreenButton()
   local talentsSubFrame = host.TalentsFrame or host.TalentsTab or host.ClassTalentFrame
   local showTarget = talentsSubFrame or host
 
-  btn:SetPoint("TOPRIGHT", showTarget, "TOPRIGHT", -8, -8)
+  btn:SetPoint("BOTTOM", showTarget, "BOTTOM", 0, 10)
   showTarget:HookScript("OnShow", function() btn:Show() end)
   showTarget:HookScript("OnHide", function() btn:Hide() end)
   if showTarget:IsShown() then btn:Show() end
