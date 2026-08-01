@@ -1,6 +1,7 @@
 import React from 'react';
 import { unstable_cache } from 'next/cache';
 import BossView, { type HeroVariant } from '../components/BossView';
+import MetaBuildFreshnessBanner from '../components/MetaBuildFreshnessBanner';
 import {
   getWclToken, getBlizzardToken, getWclRankings, getHistoricalFightTelemetry,
   getTalentTreeId, getCachedTalentLayout,
@@ -1256,19 +1257,25 @@ export default async function BossContent({
       });
 
       return (
-        <BossView
-          variants={talentVariants}
-          gearPromise={gearPromise}
-          layout={skeletonMap}
-          colors={nodeColors}
-          difficulty={difficulty}
-          spec={spec}
-          totalParses={totalAvailableParses}
-          dataFetchedAt={dataFetchedAt}
-          wclUrl={wclUrl ?? undefined}
-          wowClass={className}
-          metric={metric}
-        />
+        <>
+          <MetaBuildFreshnessBanner
+            className={className} spec={spec} bossId={bossId} difficulty={difficulty}
+            region={region} metric={metric} fetchedAt={dataFetchedAt}
+          />
+          <BossView
+            variants={talentVariants}
+            gearPromise={gearPromise}
+            layout={skeletonMap}
+            colors={nodeColors}
+            difficulty={difficulty}
+            spec={spec}
+            totalParses={totalAvailableParses}
+            dataFetchedAt={dataFetchedAt}
+            wclUrl={wclUrl ?? undefined}
+            wowClass={className}
+            metric={metric}
+          />
+        </>
       );
     }
 
@@ -1284,18 +1291,24 @@ export default async function BossContent({
         players: detailedRankingsBase,
       }];
       return (
-        <BossView
-          variants={heroVariants}
-          layout={skeletonMap}
-          colors={nodeColors}
-          difficulty={difficulty}
-          spec={spec}
-          totalParses={totalAvailableParses}
-          dataFetchedAt={dataFetchedAt}
-          wclUrl={wclUrl ?? undefined}
-          wowClass={className}
-          metric={metric}
-        />
+        <>
+          <MetaBuildFreshnessBanner
+            className={className} spec={spec} bossId={bossId} difficulty={difficulty}
+            region={region} metric={metric} fetchedAt={dataFetchedAt}
+          />
+          <BossView
+            variants={heroVariants}
+            layout={skeletonMap}
+            colors={nodeColors}
+            difficulty={difficulty}
+            spec={spec}
+            totalParses={totalAvailableParses}
+            dataFetchedAt={dataFetchedAt}
+            wclUrl={wclUrl ?? undefined}
+            wowClass={className}
+            metric={metric}
+          />
+        </>
       );
     }
 
