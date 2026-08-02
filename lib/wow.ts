@@ -439,11 +439,20 @@ export function buildImportEntries(
   for (const [nodeID, rows] of byNode) {
     const distinctIds = new Set(rows.map(r => r.id));
     if (rows.length > 1 && distinctIds.size > 1) {
-      // Apex/tiered node: one distinct entry per row, 1 point each — matches the
-      // pattern observed for every real multi-entry node checked (Tigereye Brew,
-      // Benediction, etc.), never a partial-rank-per-entry split.
+      // Apex/tiered node: each row is a separate sub-entry with its OWN independent
+      // rank counter (verified live: a real client's C_Traits.GetEntryInfo confirms a
+      // single sub-entry can itself hold more than 1 rank, e.g. Tigereye Brew's second
+      // entry maxRanks=2) — so row.rank is that specific entry's ranksPurchased, not a
+      // uniform 1 per row (which undercounts whenever an entry holds >1 point). Group
+      // by id first (max rank per id) in case the same entry appears in more than one
+      // row.
+      const maxById = new Map<number, number>();
       for (const row of rows) {
-        if (row.id != null) entries.push({ nodeID, ranksGranted: 0, ranksPurchased: 1, selectionEntryID: row.id });
+        if (row.id == null) continue;
+        maxById.set(row.id, Math.max(maxById.get(row.id) ?? 0, row.rank));
+      }
+      for (const [entryId, rank] of maxById) {
+        entries.push({ nodeID, ranksGranted: 0, ranksPurchased: rank, selectionEntryID: entryId });
       }
       continue;
     }

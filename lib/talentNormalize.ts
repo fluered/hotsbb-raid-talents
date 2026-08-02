@@ -5,14 +5,15 @@
 // Most talent nodes report as a single WCL CombatantInfo row per node, with `rank`
 // already reflecting total ranks invested — for those, Math.max (or just the one row's
 // value) is correct. But some "apex"/capstone nodes (e.g. Warrior's Tigereye Brew,
-// Priest's Benediction) report MULTIPLE rows under the same nodeID with DIFFERENT
-// entry `id`s and rank values that don't form a clean 1/2/3 sequence (observed: rows
-// like {rank:1},{rank:2},{rank:1} for a node with 3 real picks) — Math.max collapses
-// these down to a smaller, wrong number regardless of whether 2 or 3 were actually
-// taken, since the max individual rank value stays the same either way. Verified via
-// direct in-game reconstruction test and cross-referencing dozens of real players:
-// when a node has multiple distinct entry ids, the true amount invested is the COUNT
-// of distinct entries, not the max of their individual rank fields.
+// Priest's Benediction) are Tiered nodes: each rank is a SEPARATE sub-entry with its
+// OWN independent rank counter (verified live against a real player's game client:
+// C_Traits.GetEntryInfo confirms individual sub-entries can themselves hold more than
+// 1 rank, e.g. Tigereye Brew's second entry maxRanks=2) — so WCL reports one row per
+// sub-entry actually invested in, with that row's `rank` field being how many points
+// went into THAT entry specifically, not a running cumulative. The true total is the
+// SUM of each distinct entry's own rank, not just a count of how many entries appear
+// (counting undercounts whenever an entry itself holds more than 1 point — e.g. rows
+// {rank:1,id:A},{rank:2,id:B},{rank:1,id:C} is 4 total, not 3).
 export function normalizeTalentTree(
   raw: Array<{ nodeID: number; rank: number; id?: number }>
 ): Array<{ nodeID: number; rank: number }> {
@@ -27,8 +28,14 @@ export function normalizeTalentTree(
       result.push({ nodeID, rank: rows[0].rank });
       continue;
     }
-    const distinctIds = new Set(rows.map(r => r.id));
-    const effectiveRank = distinctIds.size > 1 ? distinctIds.size : Math.max(...rows.map(r => r.rank));
+    // Group by entry id first (max rank seen per id, in case the same entry shows up
+    // in more than one row) before deciding count vs. sum, so a node that legitimately
+    // reports the same single entry multiple times doesn't get double-counted.
+    const maxById = new Map<number | undefined, number>();
+    for (const r of rows) maxById.set(r.id, Math.max(maxById.get(r.id) ?? 0, r.rank));
+    const effectiveRank = maxById.size > 1
+      ? Array.from(maxById.values()).reduce((sum, r) => sum + r, 0)
+      : Math.max(...rows.map(r => r.rank));
     result.push({ nodeID, rank: effectiveRank });
   }
   return result;
