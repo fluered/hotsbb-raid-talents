@@ -115,20 +115,20 @@ local function CreateEntryFromSingleNode(results, treeNodeInfo, indexInfo)
   end
 end
 
-local function CreateEntryFromTieredNode(results, configID, treeNodeInfo, indexInfo)
-  if not treeNodeInfo or not indexInfo or not indexInfo.isNodeSelected then return end
-
-  local totalRanksPurchased = 0
-  if not indexInfo.isNodeGranted then
-    totalRanksPurchased = indexInfo.isPartiallyRanked and indexInfo.partialRanksPurchased or treeNodeInfo.maxRanks
-  end
-
+-- Shared by both import paths: distributes a total rank count across a Tiered node's
+-- sub-entries in the client's own canonical entryIDs order, capping each at that
+-- entry's real maxRanks (queried live via C_Traits, not guessed). Tiered nodes (e.g.
+-- Priest's Benediction, Warrior's Tigereye Brew) store each rank as a SEPARATE
+-- TraitNodeEntry rather than one entry with a rank counter — ImportLoadout needs one
+-- results row per sub-entry actually invested in, in the right order, or it silently
+-- drops the ones it can't place.
+local function BuildTieredNodeEntries(results, configID, treeNodeInfo, totalRanksPurchased, isNodeGranted)
   local remainingRanks = totalRanksPurchased
   for index, entryID in ipairs(treeNodeInfo.entryIDs) do
     local entryInfo = C_Traits.GetEntryInfo(configID, entryID)
     if entryInfo then
       local ranksForThisEntry = math.min(remainingRanks, entryInfo.maxRanks)
-      local isGranted = indexInfo.isNodeGranted and (index == 1)
+      local isGranted = isNodeGranted and (index == 1)
       if ranksForThisEntry > 0 or isGranted then
         table.insert(results, {
           nodeID = treeNodeInfo.ID,
@@ -140,6 +140,17 @@ local function CreateEntryFromTieredNode(results, configID, treeNodeInfo, indexI
       remainingRanks = remainingRanks - ranksForThisEntry
     end
   end
+end
+
+local function CreateEntryFromTieredNode(results, configID, treeNodeInfo, indexInfo)
+  if not treeNodeInfo or not indexInfo or not indexInfo.isNodeSelected then return end
+
+  local totalRanksPurchased = 0
+  if not indexInfo.isNodeGranted then
+    totalRanksPurchased = indexInfo.isPartiallyRanked and indexInfo.partialRanksPurchased or treeNodeInfo.maxRanks
+  end
+
+  BuildTieredNodeEntries(results, configID, treeNodeInfo, totalRanksPurchased, indexInfo.isNodeGranted)
 end
 
 local function ConvertToImportLoadoutEntryInfo(configID, treeID, loadoutContent)
@@ -234,6 +245,45 @@ local function EnsureTalentFrameLoaded()
   end)
 end
 
+-- wclEntries is built server-side from WCL telemetry, which reports Tiered nodes
+-- (Benediction, Tigereye Brew, etc.) as one row per sub-entry actually taken but with
+-- no reliable way to know this client's canonical entryIDs order or each sub-entry's
+-- real maxRanks — so a naive "1 rank per row, in whatever order WCL gave them" guess
+-- can hand ImportLoadout entries it can't place, silently dropping picks (reported:
+-- apex nodes missing 2 of their talents on import). Fix: for any nodeID that this
+-- live client reports as Tiered, discard the guessed rows and rebuild them properly
+-- via BuildTieredNodeEntries, driven only by the total rank WCL observed. Normal
+-- (non-Tiered) nodes pass through untouched.
+local function ResolveWclEntries(configID, rawEntries)
+  local order, byNode = {}, {}
+  for _, e in ipairs(rawEntries) do
+    if not byNode[e.nodeID] then
+      byNode[e.nodeID] = {}
+      table.insert(order, e.nodeID)
+    end
+    table.insert(byNode[e.nodeID], e)
+  end
+
+  local results = {}
+  for _, nodeID in ipairs(order) do
+    local rows = byNode[nodeID]
+    local treeNodeInfo = C_Traits.GetNodeInfo(configID, nodeID)
+    if treeNodeInfo and treeNodeInfo.type == Enum.TraitNodeType.Tiered and treeNodeInfo.entryIDs and #treeNodeInfo.entryIDs > 0 then
+      local totalRanksPurchased, isNodeGranted = 0, false
+      for _, row in ipairs(rows) do
+        totalRanksPurchased = totalRanksPurchased + (row.ranksPurchased or 0) + (row.ranksGranted or 0)
+        if (row.ranksGranted or 0) > 0 then isNodeGranted = true end
+      end
+      BuildTieredNodeEntries(results, configID, treeNodeInfo, totalRanksPurchased, isNodeGranted)
+    else
+      for _, row in ipairs(rows) do
+        table.insert(results, row)
+      end
+    end
+  end
+  return results
+end
+
 -- Prefers wclEntries (built server-side straight from WCL telemetry — no Blizzard
 -- character-profile dependency, so it's available for every player regardless of
 -- region) when present, skipping the string encode/decode round-trip entirely. Falls
@@ -261,7 +311,11 @@ local function ImportBuild(variant, displayName)
 
   local entries, decodeErr
   if variant.wclEntries then
-    entries = variant.wclEntries
+    if not (C_Traits and C_Traits.GetNodeInfo and C_Traits.GetEntryInfo) then
+      Announce("|cffff4444HotsBB Talents:|r C_Traits API not found on this client. Use Copy instead.", 1.0, 0.3, 0.3)
+      return false
+    end
+    entries = ResolveWclEntries(configID, variant.wclEntries)
   else
     if not (C_Traits and C_Traits.GetConfigInfo and C_Traits.GetTreeNodes and C_Traits.GetNodeInfo) then
       Announce("|cffff4444HotsBB Talents:|r C_Traits API not found on this client. Use Copy instead.", 1.0, 0.3, 0.3)
