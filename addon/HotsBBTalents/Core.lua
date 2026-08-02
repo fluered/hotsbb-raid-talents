@@ -284,6 +284,36 @@ local function ResolveWclEntries(configID, rawEntries)
   return results
 end
 
+-- wclEntries rows are built server-side in whatever order WCL's CombatantInfo happened
+-- to report each node — unrelated to the tree's actual parent/child structure. The
+-- Blizzard-string decode path (ConvertToImportLoadoutEntryInfo, "confirmed working")
+-- always emits entries via C_Traits.GetTreeNodes' order, which is a valid dependency
+-- order (a node's prerequisites always precede it). If ImportLoadout processes its
+-- entries array sequentially and needs a node's prerequisite already applied before
+-- it'll accept that node, an out-of-order entries array can silently drop nodes deep
+-- in the tree — reported: the final (deepest/capstone) node missing on import even
+-- though Copy, which always uses tree order, has it. Cheap and safe to always do: sort
+-- wclEntries into the same canonical order before importing. Stable (ties broken by
+-- original position) so BuildTieredNodeEntries' per-node entry ordering survives intact.
+local function SortEntriesByTreeOrder(entries, treeID)
+  local treeNodes = C_Traits.GetTreeNodes(treeID)
+  local orderIndex = {}
+  for i, nodeID in ipairs(treeNodes) do orderIndex[nodeID] = i end
+
+  local indexed = {}
+  for i, entry in ipairs(entries) do
+    indexed[i] = { entry = entry, order = orderIndex[entry.nodeID] or math.huge, orig = i }
+  end
+  table.sort(indexed, function(a, b)
+    if a.order ~= b.order then return a.order < b.order end
+    return a.orig < b.orig
+  end)
+
+  local sorted = {}
+  for i, item in ipairs(indexed) do sorted[i] = item.entry end
+  return sorted
+end
+
 -- Prefers wclEntries (built server-side straight from WCL telemetry — no Blizzard
 -- character-profile dependency, so it's available for every player regardless of
 -- region) when present, skipping the string encode/decode round-trip entirely. Falls
@@ -311,11 +341,16 @@ local function ImportBuild(variant, displayName)
 
   local entries, decodeErr
   if variant.wclEntries then
-    if not (C_Traits and C_Traits.GetNodeInfo and C_Traits.GetEntryInfo) then
+    if not (C_Traits and C_Traits.GetNodeInfo and C_Traits.GetEntryInfo and C_Traits.GetConfigInfo and C_Traits.GetTreeNodes) then
       Announce("|cffff4444HotsBB Talents:|r C_Traits API not found on this client. Use Copy instead.", 1.0, 0.3, 0.3)
       return false
     end
     entries = ResolveWclEntries(configID, variant.wclEntries)
+    local configInfo = C_Traits.GetConfigInfo(configID)
+    local treeID = configInfo and configInfo.treeIDs and configInfo.treeIDs[1]
+    if treeID then
+      entries = SortEntriesByTreeOrder(entries, treeID)
+    end
   else
     if not (C_Traits and C_Traits.GetConfigInfo and C_Traits.GetTreeNodes and C_Traits.GetNodeInfo) then
       Announce("|cffff4444HotsBB Talents:|r C_Traits API not found on this client. Use Copy instead.", 1.0, 0.3, 0.3)
