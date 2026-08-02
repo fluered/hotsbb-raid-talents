@@ -245,6 +245,53 @@ local function EnsureTalentFrameLoaded()
   end)
 end
 
+-- TEMPORARY: standalone copyable text box for the /hbtdebugimport dump — chat's
+-- scrollback silently drops the start of a ~150-line dump, which is exactly why the
+-- first pass looked clean (only the tail was visible). Self-contained (doesn't use
+-- CreatePanel/Paint, which are declared later in this file and so aren't in scope
+-- here yet). Remove alongside the rest of the debug tooling once resolved.
+local hbtDebugFrame
+local function ShowDebugText(text)
+  if not hbtDebugFrame then
+    local f = CreateFrame("Frame", "HBTDebugFrame", UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
+    f:SetSize(760, 520)
+    f:SetPoint("CENTER")
+    f:SetFrameStrata("DIALOG")
+    f:SetMovable(true)
+    f:EnableMouse(true)
+    f:RegisterForDrag("LeftButton")
+    f:SetScript("OnDragStart", f.StartMoving)
+    f:SetScript("OnDragStop", f.StopMovingOrSizing)
+    if f.SetBackdrop then
+      f:SetBackdrop({
+        bgFile = "Interface/Tooltips/UI-Tooltip-Background",
+        edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
+        edgeSize = 16, insets = { left = 4, right = 4, top = 4, bottom = 4 },
+      })
+      f:SetBackdropColor(0, 0, 0, 0.95)
+    end
+    local closeBtn = CreateFrame("Button", nil, f, "UIPanelCloseButton")
+    closeBtn:SetPoint("TOPRIGHT", -2, -2)
+    closeBtn:SetScript("OnClick", function() f:Hide() end)
+    local scroll = CreateFrame("ScrollFrame", nil, f, "UIPanelScrollFrameTemplate")
+    scroll:SetPoint("TOPLEFT", 12, -30)
+    scroll:SetPoint("BOTTOMRIGHT", -30, 12)
+    local edit = CreateFrame("EditBox", nil, scroll)
+    edit:SetMultiLine(true)
+    edit:SetFontObject(ChatFontNormal)
+    edit:SetWidth(710)
+    edit:SetAutoFocus(false)
+    edit:SetScript("OnEscapePressed", function() f:Hide() end)
+    scroll:SetScrollChild(edit)
+    f.editBox = edit
+    hbtDebugFrame = f
+  end
+  hbtDebugFrame.editBox:SetText(text)
+  hbtDebugFrame:Show()
+  hbtDebugFrame.editBox:SetFocus()
+  hbtDebugFrame.editBox:HighlightText()
+end
+
 -- wclEntries is built server-side from WCL telemetry, which reports Tiered nodes
 -- (Benediction, Tigereye Brew, etc.) as one row per sub-entry actually taken but with
 -- no reliable way to know this client's canonical entryIDs order or each sub-entry's
@@ -371,14 +418,17 @@ local function ImportBuild(variant, displayName)
 
   -- TEMPORARY: diagnosing a report that Import drops the deepest/final node on some
   -- specs (Windwalker Monk / Seat of the Triumvirate) while Copy — which pastes into
-  -- Blizzard's own Import dialog — has it. Prints exactly what we send and what the
-  -- client reports back per-node afterward, so the actual failure mode (bad data vs.
-  -- API rejecting something vs. UI just not refreshed) is visible instead of guessed.
-  -- Remove once resolved.
+  -- Blizzard's own Import dialog — has it. Dumps exactly what we send and what the
+  -- client reports back per-node afterward into a copyable box (chat's scrollback
+  -- silently drops the start of a long dump, which is why the first pass only showed
+  -- a clean-looking tail). Compares against each node's TOTAL rank across all its rows
+  -- (a Tiered node has several), not each row's own rank, so multi-entry nodes like
+  -- Tigereye Brew don't false-positive as mismatched. Remove once resolved.
+  local debugLines
   if variant.wclEntries and HBT_DEBUG_IMPORT then
-    print("|cff33ff99[HBT DEBUG]|r sending " .. #entries .. " entries:")
+    debugLines = { "Sending " .. #entries .. " entries:" }
     for i, e in ipairs(entries) do
-      print(string.format("  #%d nodeID=%d granted=%d purchased=%d entry=%d",
+      table.insert(debugLines, string.format("#%d nodeID=%d granted=%d purchased=%d entry=%d",
         i, e.nodeID, e.ranksGranted or 0, e.ranksPurchased or 0, e.selectionEntryID or -1))
     end
   end
@@ -393,24 +443,31 @@ local function ImportBuild(variant, displayName)
     return false
   end
 
-  if variant.wclEntries and HBT_DEBUG_IMPORT and C_Traits and C_Traits.GetNodeInfo then
-    print("|cff33ff99[HBT DEBUG]|r post-import node states:")
-    for i, e in ipairs(entries) do
-      local info = C_Traits.GetNodeInfo(configID, e.nodeID)
+  if debugLines and C_Traits and C_Traits.GetNodeInfo then
+    local nodeOrder, expectedByNode = {}, {}
+    for _, e in ipairs(entries) do
+      if not expectedByNode[e.nodeID] then
+        expectedByNode[e.nodeID] = 0
+        table.insert(nodeOrder, e.nodeID)
+      end
+      expectedByNode[e.nodeID] = expectedByNode[e.nodeID] + (e.ranksGranted or 0) + (e.ranksPurchased or 0)
+    end
+    table.insert(debugLines, "")
+    table.insert(debugLines, "Post-import node states (" .. #nodeOrder .. " nodes):")
+    for _, nodeID in ipairs(nodeOrder) do
+      local expected = expectedByNode[nodeID]
+      local info = C_Traits.GetNodeInfo(configID, nodeID)
       if not info then
-        print(string.format("  #%d nodeID=%d: GetNodeInfo returned nil", i, e.nodeID))
+        table.insert(debugLines, string.format("nodeID=%d: GetNodeInfo returned nil", nodeID))
       else
-        local activeEntryID = info.activeEntry and info.activeEntry.entryID
-        local expected = (e.ranksGranted or 0) + (e.ranksPurchased or 0)
         local actual = info.activeRank or info.ranksPurchased or info.currentRank
-        local tag = ""
-        if actual ~= expected then tag = "|cffff4444 RANK-MISMATCH|r" end
-        if e.selectionEntryID and activeEntryID and activeEntryID ~= e.selectionEntryID then tag = tag .. "|cffff4444 ENTRY-MISMATCH|r" end
-        print(string.format("  #%d nodeID=%d type=%s expectedRank=%d actualRank=%s expectedEntry=%d activeEntry=%s canPurchase=%s meetsEdge=%s isVisible=%s%s",
-          i, e.nodeID, tostring(info.type), expected, tostring(actual), e.selectionEntryID or -1, tostring(activeEntryID),
+        local tag = (actual ~= expected) and " *** MISMATCH ***" or ""
+        table.insert(debugLines, string.format("nodeID=%d type=%s expectedRank=%d actualRank=%s canPurchase=%s meetsEdge=%s isVisible=%s%s",
+          nodeID, tostring(info.type), expected, tostring(actual),
           tostring(info.canPurchaseRank), tostring(info.meetsEdgeRequirements), tostring(info.isVisible), tag))
       end
     end
+    ShowDebugText(table.concat(debugLines, "\n"))
   end
 
   Announce("|cff44ff44HotsBB Talents:|r Imported \"" .. (displayName or "build") .. "\" with " .. #entries .. " talents — review it in your Talents panel before applying.", 0.3, 1.0, 0.3)
