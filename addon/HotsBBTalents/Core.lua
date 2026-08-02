@@ -369,6 +369,20 @@ local function ImportBuild(variant, displayName)
     end
   end
 
+  -- TEMPORARY: diagnosing a report that Import drops the deepest/final node on some
+  -- specs (Windwalker Monk / Seat of the Triumvirate) while Copy — which pastes into
+  -- Blizzard's own Import dialog — has it. Prints exactly what we send and what the
+  -- client reports back per-node afterward, so the actual failure mode (bad data vs.
+  -- API rejecting something vs. UI just not refreshed) is visible instead of guessed.
+  -- Remove once resolved.
+  if variant.wclEntries and HBT_DEBUG_IMPORT then
+    print("|cff33ff99[HBT DEBUG]|r sending " .. #entries .. " entries:")
+    for i, e in ipairs(entries) do
+      print(string.format("  #%d nodeID=%d granted=%d purchased=%d entry=%d",
+        i, e.nodeID, e.ranksGranted or 0, e.ranksPurchased or 0, e.selectionEntryID or -1))
+    end
+  end
+
   local ok, success, importError = pcall(C_ClassTalents.ImportLoadout, configID, entries, displayName or "HotsBB Meta Build", variant.importString)
   if not ok then
     Announce("|cffff4444HotsBB Talents:|r Import call errored (" .. tostring(success) .. "). Use Copy and paste manually instead.", 1.0, 0.3, 0.3)
@@ -378,6 +392,27 @@ local function ImportBuild(variant, displayName)
     Announce("|cffff4444HotsBB Talents:|r Import rejected (" .. tostring(importError) .. "). Use Copy and paste manually instead.", 1.0, 0.3, 0.3)
     return false
   end
+
+  if variant.wclEntries and HBT_DEBUG_IMPORT and C_Traits and C_Traits.GetNodeInfo then
+    print("|cff33ff99[HBT DEBUG]|r post-import node states:")
+    for i, e in ipairs(entries) do
+      local info = C_Traits.GetNodeInfo(configID, e.nodeID)
+      if not info then
+        print(string.format("  #%d nodeID=%d: GetNodeInfo returned nil", i, e.nodeID))
+      else
+        local activeEntryID = info.activeEntry and info.activeEntry.entryID
+        local expected = (e.ranksGranted or 0) + (e.ranksPurchased or 0)
+        local actual = info.activeRank or info.ranksPurchased or info.currentRank
+        local tag = ""
+        if actual ~= expected then tag = "|cffff4444 RANK-MISMATCH|r" end
+        if e.selectionEntryID and activeEntryID and activeEntryID ~= e.selectionEntryID then tag = tag .. "|cffff4444 ENTRY-MISMATCH|r" end
+        print(string.format("  #%d nodeID=%d type=%s expectedRank=%d actualRank=%s expectedEntry=%d activeEntry=%s canPurchase=%s meetsEdge=%s isVisible=%s%s",
+          i, e.nodeID, tostring(info.type), expected, tostring(actual), e.selectionEntryID or -1, tostring(activeEntryID),
+          tostring(info.canPurchaseRank), tostring(info.meetsEdgeRequirements), tostring(info.isVisible), tag))
+      end
+    end
+  end
+
   Announce("|cff44ff44HotsBB Talents:|r Imported \"" .. (displayName or "build") .. "\" with " .. #entries .. " talents — review it in your Talents panel before applying.", 0.3, 1.0, 0.3)
   return true
 end
@@ -935,6 +970,14 @@ end
 SLASH_HOTSBBTALENTS1 = "/hbt"
 SLASH_HOTSBBTALENTS2 = "/hotsbbtalents"
 SlashCmdList["HOTSBBTALENTS"] = ToggleFrame
+
+-- TEMPORARY: toggles the Import diagnostic dump in ImportBuild. Remove alongside it
+-- once the missing-final-node report is resolved.
+SLASH_HBTDEBUGIMPORT1 = "/hbtdebugimport"
+SlashCmdList["HBTDEBUGIMPORT"] = function()
+  HBT_DEBUG_IMPORT = not HBT_DEBUG_IMPORT
+  print("|cff33ff99[HBT DEBUG]|r Import diagnostics " .. (HBT_DEBUG_IMPORT and "ON" or "OFF"))
+end
 
 if C_AddOns and C_AddOns.RegisterAddOnCompartmentInfo then
   C_AddOns.RegisterAddOnCompartmentInfo({
