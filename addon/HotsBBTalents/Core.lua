@@ -245,53 +245,6 @@ local function EnsureTalentFrameLoaded()
   end)
 end
 
--- TEMPORARY: standalone copyable text box for the /hbtdebugimport dump — chat's
--- scrollback silently drops the start of a ~150-line dump, which is exactly why the
--- first pass looked clean (only the tail was visible). Self-contained (doesn't use
--- CreatePanel/Paint, which are declared later in this file and so aren't in scope
--- here yet). Remove alongside the rest of the debug tooling once resolved.
-local hbtDebugFrame
-local function ShowDebugText(text)
-  if not hbtDebugFrame then
-    local f = CreateFrame("Frame", "HBTDebugFrame", UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
-    f:SetSize(760, 520)
-    f:SetPoint("CENTER")
-    f:SetFrameStrata("DIALOG")
-    f:SetMovable(true)
-    f:EnableMouse(true)
-    f:RegisterForDrag("LeftButton")
-    f:SetScript("OnDragStart", f.StartMoving)
-    f:SetScript("OnDragStop", f.StopMovingOrSizing)
-    if f.SetBackdrop then
-      f:SetBackdrop({
-        bgFile = "Interface/Tooltips/UI-Tooltip-Background",
-        edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
-        edgeSize = 16, insets = { left = 4, right = 4, top = 4, bottom = 4 },
-      })
-      f:SetBackdropColor(0, 0, 0, 0.95)
-    end
-    local closeBtn = CreateFrame("Button", nil, f, "UIPanelCloseButton")
-    closeBtn:SetPoint("TOPRIGHT", -2, -2)
-    closeBtn:SetScript("OnClick", function() f:Hide() end)
-    local scroll = CreateFrame("ScrollFrame", nil, f, "UIPanelScrollFrameTemplate")
-    scroll:SetPoint("TOPLEFT", 12, -30)
-    scroll:SetPoint("BOTTOMRIGHT", -30, 12)
-    local edit = CreateFrame("EditBox", nil, scroll)
-    edit:SetMultiLine(true)
-    edit:SetFontObject(ChatFontNormal)
-    edit:SetWidth(710)
-    edit:SetAutoFocus(false)
-    edit:SetScript("OnEscapePressed", function() f:Hide() end)
-    scroll:SetScrollChild(edit)
-    f.editBox = edit
-    hbtDebugFrame = f
-  end
-  hbtDebugFrame.editBox:SetText(text)
-  hbtDebugFrame:Show()
-  hbtDebugFrame.editBox:SetFocus()
-  hbtDebugFrame.editBox:HighlightText()
-end
-
 -- wclEntries is built server-side from WCL telemetry, which reports Tiered nodes
 -- (Benediction, Tigereye Brew, etc.) as one row per sub-entry actually taken but with
 -- no reliable way to know this client's canonical entryIDs order or each sub-entry's
@@ -416,23 +369,6 @@ local function ImportBuild(variant, displayName)
     end
   end
 
-  -- TEMPORARY: diagnosing a report that Import drops the deepest/final node on some
-  -- specs (Windwalker Monk / Seat of the Triumvirate) while Copy — which pastes into
-  -- Blizzard's own Import dialog — has it. Dumps exactly what we send and what the
-  -- client reports back per-node afterward into a copyable box (chat's scrollback
-  -- silently drops the start of a long dump, which is why the first pass only showed
-  -- a clean-looking tail). Compares against each node's TOTAL rank across all its rows
-  -- (a Tiered node has several), not each row's own rank, so multi-entry nodes like
-  -- Tigereye Brew don't false-positive as mismatched. Remove once resolved.
-  local debugLines
-  if variant.wclEntries and HBT_DEBUG_IMPORT then
-    debugLines = { "Sending " .. #entries .. " entries:" }
-    for i, e in ipairs(entries) do
-      table.insert(debugLines, string.format("#%d nodeID=%d granted=%d purchased=%d entry=%d",
-        i, e.nodeID, e.ranksGranted or 0, e.ranksPurchased or 0, e.selectionEntryID or -1))
-    end
-  end
-
   local ok, success, importError = pcall(C_ClassTalents.ImportLoadout, configID, entries, displayName or "HotsBB Meta Build", variant.importString)
   if not ok then
     Announce("|cffff4444HotsBB Talents:|r Import call errored (" .. tostring(success) .. "). Use Copy and paste manually instead.", 1.0, 0.3, 0.3)
@@ -441,33 +377,6 @@ local function ImportBuild(variant, displayName)
   if not success then
     Announce("|cffff4444HotsBB Talents:|r Import rejected (" .. tostring(importError) .. "). Use Copy and paste manually instead.", 1.0, 0.3, 0.3)
     return false
-  end
-
-  if debugLines and C_Traits and C_Traits.GetNodeInfo then
-    local nodeOrder, expectedByNode = {}, {}
-    for _, e in ipairs(entries) do
-      if not expectedByNode[e.nodeID] then
-        expectedByNode[e.nodeID] = 0
-        table.insert(nodeOrder, e.nodeID)
-      end
-      expectedByNode[e.nodeID] = expectedByNode[e.nodeID] + (e.ranksGranted or 0) + (e.ranksPurchased or 0)
-    end
-    table.insert(debugLines, "")
-    table.insert(debugLines, "Post-import node states (" .. #nodeOrder .. " nodes):")
-    for _, nodeID in ipairs(nodeOrder) do
-      local expected = expectedByNode[nodeID]
-      local info = C_Traits.GetNodeInfo(configID, nodeID)
-      if not info then
-        table.insert(debugLines, string.format("nodeID=%d: GetNodeInfo returned nil", nodeID))
-      else
-        local actual = info.activeRank or info.ranksPurchased or info.currentRank
-        local tag = (actual ~= expected) and " *** MISMATCH ***" or ""
-        table.insert(debugLines, string.format("nodeID=%d type=%s expectedRank=%d actualRank=%s canPurchase=%s meetsEdge=%s isVisible=%s%s",
-          nodeID, tostring(info.type), expected, tostring(actual),
-          tostring(info.canPurchaseRank), tostring(info.meetsEdgeRequirements), tostring(info.isVisible), tag))
-      end
-    end
-    ShowDebugText(table.concat(debugLines, "\n"))
   end
 
   Announce("|cff44ff44HotsBB Talents:|r Imported \"" .. (displayName or "build") .. "\" with " .. #entries .. " talents — review it in your Talents panel before applying.", 0.3, 1.0, 0.3)
@@ -1027,14 +936,6 @@ end
 SLASH_HOTSBBTALENTS1 = "/hbt"
 SLASH_HOTSBBTALENTS2 = "/hotsbbtalents"
 SlashCmdList["HOTSBBTALENTS"] = ToggleFrame
-
--- TEMPORARY: toggles the Import diagnostic dump in ImportBuild. Remove alongside it
--- once the missing-final-node report is resolved.
-SLASH_HBTDEBUGIMPORT1 = "/hbtdebugimport"
-SlashCmdList["HBTDEBUGIMPORT"] = function()
-  HBT_DEBUG_IMPORT = not HBT_DEBUG_IMPORT
-  print("|cff33ff99[HBT DEBUG]|r Import diagnostics " .. (HBT_DEBUG_IMPORT and "ON" or "OFF"))
-end
 
 if C_AddOns and C_AddOns.RegisterAddOnCompartmentInfo then
   C_AddOns.RegisterAddOnCompartmentInfo({
