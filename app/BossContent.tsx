@@ -1080,9 +1080,15 @@ export default async function BossContent({
         if (rank > (observedMaxRanks.get(nodeID) ?? 0)) observedMaxRanks.set(nodeID, rank);
       }
     }
+    // A node only needs this correction because it's a Tiered node — multiple separate
+    // underlying entries sharing one visual icon, each independently ranked — which is
+    // exactly the thing worth flagging distinctly in the UI so "3/4" doesn't read like
+    // an arbitrary number. isTieredApex is true only for nodes actually corrected here.
     const correctedSkeletonMap = skeletonMap.map((n: any) => {
       const observed = observedMaxRanks.get(n.nodeID);
-      return observed != null && observed > n.maxRanks ? { ...n, maxRanks: observed } : n;
+      return observed != null && observed > n.maxRanks
+        ? { ...n, maxRanks: observed, isTieredApex: true }
+        : n;
     });
 
     const usedHeroTreeIds = new Set<number>();

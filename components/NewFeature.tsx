@@ -46,6 +46,9 @@ function Tooltip({ tip, colors }: { tip: TooltipState; colors: { color: string }
           <div className={`text-sm font-black ${colors.color}`}>{node.name}</div>
           <div className="flex items-center gap-2 mt-0.5">
             {showRank && <span className="text-[10px] text-zinc-500">Rank {rank}/{node.maxRanks}</span>}
+            {node.isTieredApex && (
+              <span className="text-[10px] font-bold text-violet-400">Multi-tier talent</span>
+            )}
             {freq != null && (
               <span className={`text-[10px] font-bold ${
                 freq >= 90 ? 'text-white' : freq >= 70 ? colors.color : 'text-zinc-500'
@@ -617,7 +620,12 @@ export default function NewFeature({
               <div
                 className={`w-10 h-10 rounded-full border-2 overflow-hidden transition-all relative ${
                   isChoiceNode || displayNode.spellId ? 'cursor-pointer' : 'cursor-default'
-                } ${topPlayerTakes ? 'border-amber-400 shadow-[0_0_6px_1px_rgba(251,191,36,0.5)]' : isActive ? colors.border : 'border-zinc-700/20'}`}
+                } ${topPlayerTakes ? 'border-amber-400 shadow-[0_0_6px_1px_rgba(251,191,36,0.5)]' : isActive ? colors.border : 'border-zinc-700/20'} ${
+                  // Tiered/apex nodes (e.g. Tigereye Brew, Benediction) are multiple separate
+                  // underlying picks sharing one icon — a violet ring marks that at a glance,
+                  // independent of the border color's existing active/divergent meaning.
+                  node.isTieredApex ? 'ring-2 ring-violet-400/70' : ''
+                }`}
                 onClick={() => { if (!isChoiceNode && displayNode.spellId) window.open(`https://www.wowhead.com/spell=${displayNode.spellId}`, '_blank', 'noopener,noreferrer'); }}
               >
                 {displayNode.iconUrl ? (
@@ -636,6 +644,13 @@ export default function NewFeature({
                     <span className="absolute left-0 top-1/2 -translate-y-1/2 text-amber-300 font-black leading-none pointer-events-none select-none" style={{ fontSize: 18, textShadow: '0 0 8px rgba(251,191,36,0.95), 0 0 4px rgba(251,191,36,0.7), 0 0 2px #000' }}>‹</span>
                     <span className="absolute right-0 top-1/2 -translate-y-1/2 text-amber-300 font-black leading-none pointer-events-none select-none" style={{ fontSize: 18, textShadow: '0 0 8px rgba(251,191,36,0.95), 0 0 4px rgba(251,191,36,0.7), 0 0 2px #000' }}>›</span>
                   </>
+                )}
+                {showRank && (
+                  <div className={`absolute -top-1 -right-1 min-w-[16px] h-[14px] px-0.5 rounded-full flex items-center justify-center border ${
+                    node.isTieredApex ? 'bg-violet-500 border-violet-300' : 'bg-zinc-800 border-zinc-600'
+                  }`}>
+                    <span className="text-[8px] font-black tabular-nums leading-none text-white">{rank}/{node.maxRanks}</span>
+                  </div>
                 )}
                 {freq != null && freq > 0 && node.section !== 'hero' && (
                   <div className="absolute bottom-0 inset-x-0 bg-black/75 flex items-center justify-center py-0.5">
