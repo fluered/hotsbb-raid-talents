@@ -34,6 +34,21 @@ export async function getBlizzardToken(region = 'us') {
 
 // ─── WCL ──────────────────────────────────────────────────────────────────────
 
+// A 429 here previously fell through to `.data?...` being undefined, silently
+// resolving to an empty list — indistinguishable from "this zone genuinely has no
+// encounters." That's exactly how a WCL rate-limit window (e.g. right after a big
+// batch export) turned into a raid/dungeon page rendering with an empty, unexplained
+// list instead of a clear "temporarily unavailable" state. Throw distinguishably,
+// same pattern as getWclRankings.
+function throwIfRateLimited(response: Response) {
+  if (response.status === 429) {
+    const err: any = new Error('WCL rate limit exceeded — the API key has hit its request budget for the current window.');
+    err.isRateLimit = true;
+    err.retryAfter = response.headers.get('retry-after');
+    throw err;
+  }
+}
+
 export async function getRaidStructure(token: string) {
   const query = `query { worldData { zones { id name encounters { id name journalID } } } }`;
   const response = await fetch('https://www.warcraftlogs.com/api/v2/client', {
@@ -44,6 +59,7 @@ export async function getRaidStructure(token: string) {
     // Zone/encounter structure only changes on patch days, so 24h is safe.
     next: { revalidate: 86400 },
   });
+  throwIfRateLimited(response);
   return (await response.json()).data?.worldData?.zones || [];
 }
 
@@ -55,6 +71,7 @@ export async function getMplusEncounters(token: string, zoneId: number) {
     body: JSON.stringify({ query }),
     next: { revalidate: 86400 },
   });
+  throwIfRateLimited(response);
   return (await response.json()).data?.worldData?.zone?.encounters || [];
 }
 

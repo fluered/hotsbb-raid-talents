@@ -73,11 +73,14 @@ export default async function DungeonsPage(props: PageProps) {
   let classIconMap: Record<string, string> = {};
   let dungeonImageMap: Record<number, string> = {};
   let dungeons: Array<{ id: number; name: string; wclCdnId?: number; blizzardInstanceId?: number }> = [];
+  let dungeonsRateLimited = false;
 
   try {
     const wclToken = await getWclToken();
     dungeons = await getDungeonRoster(wclToken);
-  } catch {}
+  } catch (e: any) {
+    if (e?.isRateLimit) dungeonsRateLimited = true;
+  }
 
   try {
     const blizzardToken = await getBlizzardToken();
@@ -295,6 +298,13 @@ export default async function DungeonsPage(props: PageProps) {
                 {activeSpec && (
                   <div className="space-y-2">
                     <p className="text-[10px] font-black text-zinc-600 uppercase tracking-widest">Midnight Season 1 Dungeons</p>
+                    {dungeonsRateLimited ? (
+                      <p className="text-xs text-zinc-500">
+                        Dungeon list temporarily unavailable (WarcraftLogs rate limit) — reload in a few minutes.
+                      </p>
+                    ) : dungeons.length === 0 ? (
+                      <p className="text-xs text-zinc-500">No dungeons found.</p>
+                    ) : (
                     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
                       {dungeons.map(dungeon => {
                         const isSelected = activeDungeonId === dungeon.id;
@@ -326,6 +336,7 @@ export default async function DungeonsPage(props: PageProps) {
                         );
                       })}
                     </div>
+                    )}
                   </div>
                 )}
 
