@@ -1,6 +1,6 @@
 import { unstable_cache } from 'next/cache';
 import Link from 'next/link';
-import { getWclRankings, getBlizzardToken, POPULAR_SPECS, SPEC_IDS } from '../../lib/wow';
+import { getWclRankingsForRegionMode, getBlizzardToken, POPULAR_SPECS, SPEC_IDS } from '../../lib/wow';
 
 function fixedTierAssignments(sortedAvgDps: number[], thresholds: { S: number; A: number; B: number }): Array<'S' | 'A' | 'B' | 'C'> {
   const top = sortedAvgDps[0];
@@ -74,17 +74,16 @@ async function computeOverall(
   difficulty: number,
   metric?: string
 ) {
-  // Fetch US + EU in parallel for each spec × boss, then pool into a single top-50
+  // Global pool (every region WCL has, including CN) in one query per spec × boss —
+  // cheaper than the old US+EU merge (one request instead of two) and matches the
+  // site-wide Global-by-default decision.
   const tasks = specs.flatMap(({ class: cls, spec }) =>
     bossIds.map(bossId => async () => {
       try {
-        const [usRankings, euRankings] = await Promise.all([
-          getWclRankings(wclToken, bossId, cls, spec, difficulty, 'us', metric, true),
-          getWclRankings(wclToken, bossId, cls, spec, difficulty, 'eu', metric, true),
-        ]);
-        const combined = [...(usRankings as any[]), ...(euRankings as any[])]
-          .sort((a, b) => (b.amount ?? 0) - (a.amount ?? 0));
-        const top = combined.slice(0, 50);
+        const rankings = await getWclRankingsForRegionMode(wclToken, bossId, cls, spec, difficulty, undefined, metric, true);
+        const top = (rankings as any[])
+          .sort((a, b) => (b.amount ?? 0) - (a.amount ?? 0))
+          .slice(0, 50);
         if (top.length >= 5) {
           const avg = top.reduce((s: number, r: any) => s + (r.amount ?? 0), 0) / top.length;
           if (avg > 0) return { cls, spec, bossId, avgDps: avg };
@@ -158,7 +157,7 @@ export default async function OverallTierListContent({
   const [{ specs: rawResults, cachedAt }, specIcons] = await Promise.all([
     unstable_cache(
       async () => ({ specs: await computeOverall(wclToken, specs, bossIds, difficulty, metric), cachedAt: new Date().toISOString() }),
-      [`wcl-overall-v7-${role}-${difficulty}-combined${metric ? `-${metric}` : ''}`],
+      [`wcl-overall-v8-${role}-${difficulty}-global${metric ? `-${metric}` : ''}`],
       { revalidate: 604800 }
     )().then(r => r),
     (async () => {
@@ -258,7 +257,7 @@ export default async function OverallTierListContent({
 
               <div className="space-y-1.5">
                 {tierSpecs.map(s => {
-                  const talentUrl = `/?class=${encodeURIComponent(s.cls)}&spec=${encodeURIComponent(s.spec)}&difficulty=${difficulty}${region !== 'us' ? `&region=${region}` : ''}`;
+                  const talentUrl = `/?class=${encodeURIComponent(s.cls)}&spec=${encodeURIComponent(s.spec)}&difficulty=${difficulty}${region !== 'global' ? `&region=${region}` : ''}`;
                   return (
                     <Link
                       key={`${s.cls}:${s.spec}`}

@@ -3,8 +3,8 @@ import { unstable_cache } from 'next/cache';
 import BossView, { type HeroVariant } from '../components/BossView';
 import MetaBuildFreshnessBanner from '../components/MetaBuildFreshnessBanner';
 import {
-  getWclToken, getBlizzardToken, getWclRankings, getHistoricalFightTelemetry,
-  getTalentTreeId, getCachedTalentLayout,
+  getWclToken, getBlizzardToken, getWclRankingsForRegionMode, getHistoricalFightTelemetry,
+  getTalentTreeId, getCachedTalentLayout, playerRegion, getBlizzardTokensForRegions,
   computeConsensus, getActiveHeroTreeId, makeTelemetry, computeFrequencyPct,
   mapConcurrent, normalizeTalentTree,
   SPEC_IDS, ENCHANT_SLOT_LABELS, ENCHANT_SLOT_ORDER,
@@ -814,7 +814,7 @@ export default async function BossContent({
   spec,
   difficulty,
   nodeColors,
-  region = 'us',
+  region = 'global',
   wclZoneId,
   metric = 'dps',
 }: {
@@ -823,18 +823,20 @@ export default async function BossContent({
   spec: string;
   difficulty: number;
   nodeColors: { color: string; border: string; activeBg: string };
-  region?: string;
+  region?: string; // region MODE: 'global' (all regions pooled) | 'us-eu' (US+EU pooled)
   wclZoneId?: number | null;
   metric?: string;
 }) {
   try {
-    const [wclToken, blizzardToken] = await Promise.all([getWclToken(), getBlizzardToken(region)]);
+    // Static game data (talent tree layout) is identical across regions — a fixed 'us'
+    // token authenticates it regardless of which rankings region mode is selected.
+    const [wclToken, staticBlizzardToken] = await Promise.all([getWclToken(), getBlizzardToken('us')]);
 
     const [treeInfo, rankingsResult] = await Promise.all([
-      getTalentTreeId(spec, className, blizzardToken),
+      getTalentTreeId(spec, className, staticBlizzardToken),
       unstable_cache(
-        async () => ({ rankings: await getWclRankings(wclToken, bossId, className, spec, difficulty, region, metric, true), fetchedAt: Date.now() }),
-        [`wcl-rankings-v3-${bossId}-${className}-${spec}-${difficulty}-${region}-${metric}`],
+        async () => ({ rankings: await getWclRankingsForRegionMode(wclToken, bossId, className, spec, difficulty, region, metric, true), fetchedAt: Date.now() }),
+        [`wcl-rankings-v4-${bossId}-${className}-${spec}-${difficulty}-${region}-${metric}`],
         { revalidate: 86400 }
       )(),
     ]);
@@ -842,7 +844,7 @@ export default async function BossContent({
       return <div className="text-center py-12 text-zinc-600 text-sm">Talent tree not found for this spec.</div>;
     }
 
-    const { layout: skeletonMap, heroTreeNames: allHeroTreeNames } = await getCachedTalentLayout(treeInfo.treeId, treeInfo.specId, blizzardToken);
+    const { layout: skeletonMap, heroTreeNames: allHeroTreeNames } = await getCachedTalentLayout(treeInfo.treeId, treeInfo.specId, staticBlizzardToken);
     const rawRankings = rankingsResult.rankings;
     const dataFetchedAt = rankingsResult.fetchedAt;
     const totalAvailableParses = rawRankings.length;
@@ -874,6 +876,42 @@ export default async function BossContent({
     const CONSENSUS_N = Math.min(rawRankings.length, 50);
     const DISPLAY_N = Math.min(rawRankings.length, 25);
 
+    // A Global (or US+EU) pool can span players from several regions, each needing their
+    // own region's Blizzard token — CONSENSUS_N's slice is a superset of DISPLAY_N's, so
+    // fetching tokens for its regions covers every profile fetch below in one pass.
+    const blizzardTokensByRegion = await getBlizzardTokensForRegions(
+      rawRankings.slice(0, CONSENSUS_N).map((p: any) => playerRegion(p, 'us'))
+    );
+
+    // Shared by all four profile-endpoint fetches below: resolves the player's own
+    // region (not the site-wide region mode) and that region's token, so a Global pool's
+    // EU/KR/TW players get fetched from their actual home region's API. A player whose
+    // region has no token (CN — no Blizzard API at all, or a token fetch failure) simply
+    // yields no profile data, same as any other profile-fetch miss.
+    function blizzardProfileFetch(player: any, endpoint: string, cacheTag: string) {
+      const pRegion = playerRegion(player, 'us');
+      const token = blizzardTokensByRegion.get(pRegion);
+      const realm = (player.server?.slug ?? player.server?.name ?? '').toLowerCase().replace(/\s+/g, '-').replace(/'/g, '');
+      const name = player.name.toLowerCase();
+      if (!token) return Promise.resolve(null);
+      // 404 (character genuinely doesn't exist under this realm/name) is a stable fact
+      // worth caching. Anything else — 5xx, network errors — is transient and must NOT
+      // be cached, or a momentary hiccup gets stuck as "no data" for a full day.
+      return unstable_cache(
+        async () => {
+          const r = await fetch(
+            `https://${pRegion}.api.blizzard.com/profile/wow/character/${realm}/${name}/${endpoint}?namespace=profile-${pRegion}&locale=en_US`,
+            { headers: { 'Authorization': `Bearer ${token}` } }
+          );
+          if (r.status === 404) return null;
+          if (!r.ok) throw new Error(`Blizzard ${cacheTag} fetch failed: ${r.status}`);
+          return r.json();
+        },
+        [`blizzard-${cacheTag}-${pRegion}-${realm}-${name}`],
+        { revalidate: 86400 }
+      )().catch(() => null);
+    }
+
     // ── Start ALL fetch groups concurrently ──────────────────────────────────
     // Equipment/stats/media start immediately so they run in parallel with telemetry+profiles.
     // We only await telemetry+profiles for the fast talent-tree path.
@@ -890,83 +928,16 @@ export default async function BossContent({
         )()
     );
     const _profilesP = Promise.all(
-      rawRankings.slice(0, DISPLAY_N).map(async (player: any) => {
-        const realm = (player.server?.slug ?? player.server?.name ?? '').toLowerCase().replace(/\s+/g, '-').replace(/'/g, '');
-        const name = player.name.toLowerCase();
-        // 404 (character genuinely doesn't exist under this realm/name) is a stable fact
-        // worth caching. Anything else — 5xx, network errors — is transient and must NOT
-        // be cached, or a momentary hiccup gets stuck as "no data" for a full day.
-        return unstable_cache(
-          async () => {
-            const r = await fetch(
-              `https://${region}.api.blizzard.com/profile/wow/character/${realm}/${name}/specializations?namespace=profile-${region}&locale=en_US`,
-              { headers: { 'Authorization': `Bearer ${blizzardToken}` } }
-            );
-            if (r.status === 404) return null;
-            if (!r.ok) throw new Error(`Blizzard profile fetch failed: ${r.status}`);
-            return r.json();
-          },
-          [`blizzard-spec-${region}-${realm}-${name}`],
-          { revalidate: 86400 }
-        )().catch(() => null);
-      })
+      rawRankings.slice(0, DISPLAY_N).map((player: any) => blizzardProfileFetch(player, 'specializations', 'spec'))
     );
     const _equipP = Promise.all(
-      rawRankings.slice(0, CONSENSUS_N).map(async (player: any) => {
-        const realm = (player.server?.slug ?? player.server?.name ?? '').toLowerCase().replace(/\s+/g, '-').replace(/'/g, '');
-        const name = player.name.toLowerCase();
-        return unstable_cache(
-          async () => {
-            const r = await fetch(
-              `https://${region}.api.blizzard.com/profile/wow/character/${realm}/${name}/equipment?namespace=profile-${region}&locale=en_US`,
-              { headers: { 'Authorization': `Bearer ${blizzardToken}` } }
-            );
-            if (r.status === 404) return null;
-            if (!r.ok) throw new Error(`Blizzard equipment fetch failed: ${r.status}`);
-            return r.json();
-          },
-          [`blizzard-equip-${region}-${realm}-${name}`],
-          { revalidate: 86400 }
-        )().catch(() => null);
-      })
+      rawRankings.slice(0, CONSENSUS_N).map((player: any) => blizzardProfileFetch(player, 'equipment', 'equip'))
     );
     const _statsP = Promise.all(
-      rawRankings.slice(0, CONSENSUS_N).map(async (player: any) => {
-        const realm = (player.server?.slug ?? player.server?.name ?? '').toLowerCase().replace(/\s+/g, '-').replace(/'/g, '');
-        const name = player.name.toLowerCase();
-        return unstable_cache(
-          async () => {
-            const r = await fetch(
-              `https://${region}.api.blizzard.com/profile/wow/character/${realm}/${name}/statistics?namespace=profile-${region}&locale=en_US`,
-              { headers: { 'Authorization': `Bearer ${blizzardToken}` } }
-            );
-            if (r.status === 404) return null;
-            if (!r.ok) throw new Error(`Blizzard statistics fetch failed: ${r.status}`);
-            return r.json();
-          },
-          [`blizzard-stats-${region}-${realm}-${name}`],
-          { revalidate: 86400 }
-        )().catch(() => null);
-      })
+      rawRankings.slice(0, CONSENSUS_N).map((player: any) => blizzardProfileFetch(player, 'statistics', 'stats'))
     );
     const _mediaP = Promise.all(
-      rawRankings.slice(0, DISPLAY_N).map(async (player: any) => {
-        const realm = (player.server?.slug ?? player.server?.name ?? '').toLowerCase().replace(/\s+/g, '-').replace(/'/g, '');
-        const name = player.name.toLowerCase();
-        return unstable_cache(
-          async () => {
-            const r = await fetch(
-              `https://${region}.api.blizzard.com/profile/wow/character/${realm}/${name}/character-media?namespace=profile-${region}&locale=en_US`,
-              { headers: { 'Authorization': `Bearer ${blizzardToken}` } }
-            );
-            if (r.status === 404) return null;
-            if (!r.ok) throw new Error(`Blizzard media fetch failed: ${r.status}`);
-            return r.json();
-          },
-          [`blizzard-media-${region}-${realm}-${name}`],
-          { revalidate: 86400 }
-        )().catch(() => null);
-      })
+      rawRankings.slice(0, DISPLAY_N).map((player: any) => blizzardProfileFetch(player, 'character-media', 'media'))
     );
 
     // Await only the fast path — equip/stats/media continue in parallel
@@ -1271,7 +1242,7 @@ export default async function BossContent({
         wclItemData,
         detailedRankingsBase,
         heroTreeConsensusBase,
-        blizzardToken,
+        blizzardToken: staticBlizzardToken,
         CONSENSUS_N,
         DISPLAY_N,
         skeletonMap,

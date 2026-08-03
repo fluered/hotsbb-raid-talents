@@ -1,8 +1,8 @@
 import { unstable_cache } from 'next/cache';
 import { scorePlayerTree } from '../app/BossContent';
 import {
-  getWclToken, getBlizzardToken, getWclRankings, getHistoricalFightTelemetry,
-  getTalentTreeId, getCachedTalentLayout,
+  getWclToken, getBlizzardToken, getWclRankingsForRegionMode, getHistoricalFightTelemetry,
+  getTalentTreeId, getCachedTalentLayout, playerRegion, getBlizzardTokensForRegions,
   computeConsensus, getActiveHeroTreeId, makeTelemetry, computeFrequencyPct,
   mapConcurrent, normalizeTalentTree, buildImportEntries, type WclImportEntry,
 } from './wow';
@@ -56,26 +56,35 @@ export async function getMetaBuild(params: {
   region?: string;
   metric?: string;
 }): Promise<MetaBuildOutcome> {
-  const { bossId, className, spec, difficulty, region = 'us', metric } = params;
+  const { bossId, className, spec, difficulty, region = 'global', metric } = params;
 
-  const [wclToken, blizzardToken] = await Promise.all([getWclToken(), getBlizzardToken(region)]);
+  // Static game data (talent tree layout) is identical across regions — a fixed 'us'
+  // token authenticates it regardless of which rankings region mode is selected.
+  const [wclToken, staticBlizzardToken] = await Promise.all([getWclToken(), getBlizzardToken('us')]);
 
   const [treeInfo, rankingsResult] = await Promise.all([
-    getTalentTreeId(spec, className, blizzardToken),
+    getTalentTreeId(spec, className, staticBlizzardToken),
     unstable_cache(
-      async () => ({ rankings: await getWclRankings(wclToken, bossId, className, spec, difficulty, region, metric, true), fetchedAt: Date.now() }),
-      [`wcl-rankings-v3-${bossId}-${className}-${spec}-${difficulty}-${region}-${metric ?? 'dps'}`],
+      async () => ({ rankings: await getWclRankingsForRegionMode(wclToken, bossId, className, spec, difficulty, region, metric, true), fetchedAt: Date.now() }),
+      [`wcl-rankings-v4-${bossId}-${className}-${spec}-${difficulty}-${region}-${metric ?? 'dps'}`],
       { revalidate: 86400 }
     )(),
   ]);
   if (!treeInfo) return { status: 'spec_not_found' };
 
-  const { layout: skeletonMap, heroTreeNames: allHeroTreeNames } = await getCachedTalentLayout(treeInfo.treeId, treeInfo.specId, blizzardToken);
+  const { layout: skeletonMap, heroTreeNames: allHeroTreeNames } = await getCachedTalentLayout(treeInfo.treeId, treeInfo.specId, staticBlizzardToken);
   const rawRankings = rankingsResult.rankings;
   if (rawRankings.length === 0) return { status: 'no_data' };
 
   const CONSENSUS_N = Math.min(rawRankings.length, 50);
   const DISPLAY_N = Math.min(rawRankings.length, 25);
+
+  // A Global (or US+EU) pool can span players from several regions, each needing their
+  // own region's Blizzard token — DISPLAY_N covers every profile fetch below (this is
+  // the only one talent-only meta builds need; no equip/stats/media here).
+  const blizzardTokensByRegion = await getBlizzardTokensForRegions(
+    rawRankings.slice(0, DISPLAY_N).map((p: any) => playerRegion(p, 'us'))
+  );
 
   const allTelemetryData = await mapConcurrent(
     rawRankings.slice(0, CONSENSUS_N),
@@ -91,6 +100,9 @@ export async function getMetaBuild(params: {
     rawRankings.slice(0, DISPLAY_N),
     WCL_FANOUT_CONCURRENCY,
     async (player: any) => {
+      const pRegion = playerRegion(player, 'us');
+      const token = blizzardTokensByRegion.get(pRegion);
+      if (!token) return null;
       const realm = (player.server?.slug ?? player.server?.name ?? '').toLowerCase().replace(/\s+/g, '-').replace(/'/g, '');
       const name = player.name.toLowerCase();
       // 404 (character genuinely doesn't exist under this realm/name) is a stable fact
@@ -99,14 +111,14 @@ export async function getMetaBuild(params: {
       return unstable_cache(
         async () => {
           const r = await fetch(
-            `https://${region}.api.blizzard.com/profile/wow/character/${realm}/${name}/specializations?namespace=profile-${region}&locale=en_US`,
-            { headers: { 'Authorization': `Bearer ${blizzardToken}` } }
+            `https://${pRegion}.api.blizzard.com/profile/wow/character/${realm}/${name}/specializations?namespace=profile-${pRegion}&locale=en_US`,
+            { headers: { 'Authorization': `Bearer ${token}` } }
           );
           if (r.status === 404) return null;
           if (!r.ok) throw new Error(`Blizzard profile fetch failed: ${r.status}`);
           return r.json();
         },
-        [`blizzard-spec-${region}-${realm}-${name}`],
+        [`blizzard-spec-${pRegion}-${realm}-${name}`],
         { revalidate: 86400 }
       )().catch(() => null);
     }

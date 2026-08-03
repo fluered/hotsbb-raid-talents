@@ -15,7 +15,7 @@ export default function MetaBuildFreshnessBanner({
   spec,
   bossId,
   difficulty,
-  region = 'us',
+  region = 'global',
   metric = 'dps',
   fetchedAt,
 }: {

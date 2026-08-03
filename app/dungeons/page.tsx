@@ -67,7 +67,7 @@ export default async function DungeonsPage(props: PageProps) {
   const activeDungeonName = searchParams.dungeonName || null;
   const activeClass = searchParams.class || null;
   const activeSpec = searchParams.spec || null;
-  const activeRegion = (searchParams.region === 'eu' ? 'eu' : 'us') as 'us' | 'eu';
+  const activeRegion = (searchParams.region === 'us-eu' ? 'us-eu' : 'global') as 'global' | 'us-eu';
 
   let specIconMap: Record<string, string> = {};
   let classIconMap: Record<string, string> = {};
@@ -154,7 +154,7 @@ export default async function DungeonsPage(props: PageProps) {
     const s = overrides.spec !== undefined ? overrides.spec : activeSpec;
     const r = overrides.region !== undefined ? overrides.region : activeRegion;
     const params: string[] = [];
-    if (r !== 'us') params.push(`region=${r}`);
+    if (r !== 'global') params.push(`region=${r}`);
     if (d) params.push(`dungeon=${d}`);
     if (dn) params.push(`dungeonName=${encodeURIComponent(dn)}`);
     if (c) params.push(`class=${encodeURIComponent(c)}`);
@@ -190,19 +190,20 @@ export default async function DungeonsPage(props: PageProps) {
             <Link href="/" className="hidden sm:block text-[11px] font-bold text-zinc-500 hover:text-zinc-300 transition-colors uppercase tracking-widest px-2">
               Raid Talents
             </Link>
-            {/* Region toggle */}
+            {/* Region toggle — Global pools every region WCL has (including CN); US+EU
+                narrows to just those two for anyone who wants a Western-only view. */}
             <div className="flex items-center gap-1 bg-zinc-900 rounded-lg p-0.5 border border-zinc-800/80">
               <Link
-                href={getFilterUrl({ region: 'us' })}
-                className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${activeRegion === 'us' ? 'bg-blue-500/15 text-blue-400 border border-blue-500/30' : 'text-zinc-500 hover:text-zinc-300'}`}
+                href={getFilterUrl({ region: 'global' })}
+                className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${activeRegion === 'global' ? 'bg-blue-500/15 text-blue-400 border border-blue-500/30' : 'text-zinc-500 hover:text-zinc-300'}`}
               >
-                US
+                Global
               </Link>
               <Link
-                href={getFilterUrl({ region: 'eu' })}
-                className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${activeRegion === 'eu' ? 'bg-blue-500/15 text-blue-400 border border-blue-500/30' : 'text-zinc-500 hover:text-zinc-300'}`}
+                href={getFilterUrl({ region: 'us-eu' })}
+                className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${activeRegion === 'us-eu' ? 'bg-blue-500/15 text-blue-400 border border-blue-500/30' : 'text-zinc-500 hover:text-zinc-300'}`}
               >
-                EU
+                US+EU
               </Link>
             </div>
           </div>

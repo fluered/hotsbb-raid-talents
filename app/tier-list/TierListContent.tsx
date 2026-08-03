@@ -1,6 +1,6 @@
 import { unstable_cache } from 'next/cache';
 import Link from 'next/link';
-import { getWclRankings, getBlizzardToken, POPULAR_SPECS, SPEC_IDS } from '../../lib/wow';
+import { getWclRankingsForRegionMode, getBlizzardToken, POPULAR_SPECS, SPEC_IDS } from '../../lib/wow';
 
 function fixedTierAssignments(sortedAvgDps: number[], thresholds: { S: number; A: number; B: number }): Array<'S' | 'A' | 'B' | 'C'> {
   const top = sortedAvgDps[0];
@@ -83,8 +83,8 @@ export default async function TierListContent({
     Promise.all(
       specs.map(({ class: cls, spec }) =>
         unstable_cache(
-          () => getWclRankings(wclToken, bossId, cls, spec, difficulty, region, metric, true),
-          [`wcl-rankings-v3-${bossId}-${cls}-${spec}-${difficulty}-${region}${metric ? `-${metric}` : ''}`],
+          () => getWclRankingsForRegionMode(wclToken, bossId, cls, spec, difficulty, region, metric, true),
+          [`wcl-rankings-v4-${bossId}-${cls}-${spec}-${difficulty}-${region}${metric ? `-${metric}` : ''}`],
           { revalidate: 604800 }
         )().then(rankings => ({ cls, spec, rankings })).catch(() => ({ cls, spec, rankings: [] }))
       )
@@ -191,7 +191,7 @@ export default async function TierListContent({
               {/* Spec rows */}
               <div className="space-y-1.5">
                 {specs.map(s => {
-                  const mainPageUrl = `/?boss=${bossId}&bossName=${encodeURIComponent(bossName)}&class=${encodeURIComponent(s.cls)}&spec=${encodeURIComponent(s.spec)}&difficulty=${difficulty}${region !== 'us' ? `&region=${region}` : ''}`;
+                  const mainPageUrl = `/?boss=${bossId}&bossName=${encodeURIComponent(bossName)}&class=${encodeURIComponent(s.cls)}&spec=${encodeURIComponent(s.spec)}&difficulty=${difficulty}${region !== 'global' ? `&region=${region}` : ''}`;
                   return (
                     <Link
                       key={`${s.cls}:${s.spec}`}

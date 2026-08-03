@@ -85,7 +85,10 @@ console.log(`Total combos: ${jobs.length}. Running: ${activeJobs.length} (base=$
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 async function fetchOnce(job) {
-  const url = `${BASE}/api/meta-build?class=${encodeURIComponent(job.className)}&spec=${encodeURIComponent(job.specName)}&boss=${job.encounterId}&difficulty=${job.difficulty}`;
+  // region=global explicit rather than relying on the API's own default — the addon
+  // should always ship the Global (all-regions, including CN) build regardless of
+  // whatever the site's default happens to be.
+  const url = `${BASE}/api/meta-build?class=${encodeURIComponent(job.className)}&spec=${encodeURIComponent(job.specName)}&boss=${job.encounterId}&difficulty=${job.difficulty}&region=global`;
   try {
     const res = await fetch(url);
     const json = await res.json();

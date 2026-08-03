@@ -10,7 +10,7 @@ export async function GET(request: NextRequest) {
   const spec = searchParams.get('spec') ?? '';
   const bossId = parseInt(searchParams.get('boss') ?? '');
   const difficulty = parseInt(searchParams.get('difficulty') ?? '5');
-  const region = searchParams.get('region') === 'eu' ? 'eu' : 'us';
+  const region = searchParams.get('region') === 'us-eu' ? 'us-eu' : 'global';
   const metric = searchParams.get('metric') ?? undefined;
 
   if (!className || !SPEC_IDS[className]) {

@@ -58,15 +58,20 @@ export async function getMplusEncounters(token: string, zoneId: number) {
   return (await response.json()).data?.worldData?.zone?.encounters || [];
 }
 
-export async function getWclRankings(token: string, bossId: number, className: string, specName: string, difficulty: number, region = 'us', metric?: string, noCache = false) {
+// region omitted/undefined returns ALL regions combined in one query (confirmed live:
+// same cost as a single-region query, since WCL's serverRegion argument is a plain
+// filter — dropping it doesn't multiply the request, it just widens what one request
+// returns). That's what makes "Global" free relative to the old single-region default.
+export async function getWclRankings(token: string, bossId: number, className: string, specName: string, difficulty: number, region?: string, metric?: string, noCache = false) {
   const wclClassName = className.replace(/\s+/g, '');
   const wclSpecName = specName.replace(/\s+/g, '');
   const metricArg = metric ? `, metric: ${metric}` : '';
+  const regionArg = region ? `, serverRegion: "${region.toUpperCase()}"` : '';
   const query = `
     query {
       worldData {
         encounter(id: ${bossId}) {
-          characterRankings(className: "${wclClassName}", specName: "${wclSpecName}", difficulty: ${difficulty}, serverRegion: "${region.toUpperCase()}"${metricArg})
+          characterRankings(className: "${wclClassName}", specName: "${wclSpecName}", difficulty: ${difficulty}${regionArg}${metricArg})
         }
       }
     }
@@ -91,6 +96,48 @@ export async function getWclRankings(token: string, bossId: number, className: s
     throw err;
   }
   return (await response.json()).data?.worldData?.encounter?.characterRankings?.rankings || [];
+}
+
+// Two region modes, matching the website/addon's toggle: 'global' (default) pools every
+// region WCL has in ONE query (see getWclRankings above — dropping the filter is free,
+// not 2-5x the cost); 'us-eu' fetches US and EU separately (two distinct-region queries,
+// each still just their normal single-region cost) and merges+re-sorts by the ranking
+// metric, since WCL has no multi-region filter to ask for "just these two" in one call.
+export async function getWclRankingsForRegionMode(
+  token: string, bossId: number, className: string, specName: string, difficulty: number,
+  regionMode: string | undefined, metric?: string, noCache = false
+) {
+  if (regionMode === 'us-eu') {
+    const [us, eu] = await Promise.all([
+      getWclRankings(token, bossId, className, specName, difficulty, 'us', metric, noCache),
+      getWclRankings(token, bossId, className, specName, difficulty, 'eu', metric, noCache),
+    ]);
+    return [...(us as any[]), ...(eu as any[])].sort((a, b) => (b.amount ?? 0) - (a.amount ?? 0));
+  }
+  return getWclRankings(token, bossId, className, specName, difficulty, undefined, metric, noCache);
+}
+
+// A ranking entry's own server.region (lowercased) is the region whose Blizzard API can
+// actually serve that specific player's profile — the site-wide region MODE (global,
+// us-eu) only decides which WCL rankings get pooled, not which Blizzard endpoint a given
+// player's profile lives behind. Falls back to the provided default for the rare case a
+// ranking is missing server info.
+export function playerRegion(player: { server?: { region?: string } }, fallback = 'us'): string {
+  return (player.server?.region || fallback).toLowerCase();
+}
+
+// Blizzard's profile API (and its OAuth token) is region-locked per endpoint, with no CN
+// coverage at all — a Global pool can span US/EU/KR/TW players in one page, each needing
+// their own region's token. Fetches only the distinct regions actually present, once each,
+// in parallel. A region whose token fetch fails (or CN, which has no Blizzard API) is
+// simply absent from the returned map — callers already treat "no token for this player's
+// region" as "no profile data for this player," the same as any other profile-fetch miss.
+export async function getBlizzardTokensForRegions(regions: string[]): Promise<Map<string, string>> {
+  const unique = Array.from(new Set(regions.map(r => r.toLowerCase()).filter(r => r !== 'cn')));
+  const tokens = await Promise.all(unique.map(r => getBlizzardToken(r).catch(() => null)));
+  const map = new Map<string, string>();
+  unique.forEach((r, i) => { if (tokens[i]) map.set(r, tokens[i] as string); });
+  return map;
 }
 
 export async function getHistoricalFightTelemetry(wclToken: string, reportCode: string, fightId: number, playerName: string) {

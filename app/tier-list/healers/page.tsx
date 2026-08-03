@@ -30,7 +30,7 @@ export async function generateMetadata({ searchParams }: PageProps): Promise<Met
 export default async function HealerTierListPage({ searchParams }: PageProps) {
   const sp = await searchParams;
   const activeDifficulty = sp.difficulty ? parseInt(sp.difficulty) : 5;
-  const activeRegion = sp.region ?? 'us';
+  const activeRegion = sp.region === 'us-eu' ? 'us-eu' : 'global';
   const activeBossId = sp.boss ? parseInt(sp.boss) : null;
 
   const wclToken = await getWclToken();
@@ -48,7 +48,7 @@ export default async function HealerTierListPage({ searchParams }: PageProps) {
     const d = overrides.difficulty ?? activeDifficulty;
     const r = overrides.region ?? activeRegion;
     const p: string[] = [`difficulty=${d}`];
-    if (r !== 'us') p.push(`region=${r}`);
+    if (r !== 'global') p.push(`region=${r}`);
     if (b) p.push(`boss=${b}`);
     if (bn) p.push(`bossName=${encodeURIComponent(bn)}`);
     return `/tier-list/healers?${p.join('&')}`;
@@ -56,7 +56,7 @@ export default async function HealerTierListPage({ searchParams }: PageProps) {
 
   const switchUrl = (base: string) => {
     const p: string[] = [`difficulty=${activeDifficulty}`];
-    if (activeRegion !== 'us') p.push(`region=${activeRegion}`);
+    if (activeRegion !== 'global') p.push(`region=${activeRegion}`);
     if (selectedBoss) { p.push(`boss=${selectedBoss.id}`); p.push(`bossName=${encodeURIComponent(selectedBoss.name)}`); }
     return `${base}?${p.join('&')}`;
   };
@@ -81,7 +81,7 @@ export default async function HealerTierListPage({ searchParams }: PageProps) {
               HotsBB Talents
             </Link>
             <span className="hidden sm:inline text-zinc-700">/</span>
-            <Link href={`/tier-list/healers?difficulty=${activeDifficulty}${activeRegion !== 'us' ? `&region=${activeRegion}` : ''}`} className="hidden sm:inline text-xs font-black text-zinc-300 hover:text-zinc-100 uppercase tracking-widest transition-colors">Healer Tier List</Link>
+            <Link href={`/tier-list/healers?difficulty=${activeDifficulty}${activeRegion !== 'global' ? `&region=${activeRegion}` : ''}`} className="hidden sm:inline text-xs font-black text-zinc-300 hover:text-zinc-100 uppercase tracking-widest transition-colors">Healer Tier List</Link>
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0">

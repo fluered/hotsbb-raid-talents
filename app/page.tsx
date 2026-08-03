@@ -94,7 +94,7 @@ export default async function Home(props: PageProps) {
   const activeClass = searchParams.class || null;
   const activeSpec = searchParams.spec || null;
   const activeDifficulty = searchParams.difficulty ? parseInt(searchParams.difficulty) : 5;
-  const activeRegion = (searchParams.region === 'eu' ? 'eu' : 'us') as 'us' | 'eu';
+  const activeRegion = (searchParams.region === 'us-eu' ? 'us-eu' : 'global') as 'global' | 'us-eu';
   const isHealer = HEALER_SPECS.some(h => h.class === activeClass && h.spec === activeSpec);
   const activeMetric: 'hps' | 'dps' = searchParams.metric === 'dps' ? 'dps' : searchParams.metric === 'hps' ? 'hps' : (isHealer ? 'hps' : 'dps');
 
@@ -258,7 +258,7 @@ export default async function Home(props: PageProps) {
     // null means "clear metric from URL"; undefined means "inherit current metric"
     const m = overrides.metric !== undefined ? overrides.metric : activeMetric;
     const params: string[] = [`difficulty=${d}`];
-    if (r !== 'us') params.push(`region=${r}`);
+    if (r !== 'global') params.push(`region=${r}`);
     if (b) params.push(`boss=${b}`);
     if (bn) params.push(`bossName=${encodeURIComponent(bn)}`);
     if (c) params.push(`class=${encodeURIComponent(c)}`);
@@ -275,7 +275,7 @@ export default async function Home(props: PageProps) {
     const s = overrides.spec !== undefined ? overrides.spec : activeSpec;
     const r = overrides.region !== undefined ? overrides.region : activeRegion;
     const params: string[] = ['mode=dungeons'];
-    if (r !== 'us') params.push(`region=${r}`);
+    if (r !== 'global') params.push(`region=${r}`);
     if (d) params.push(`dungeon=${d}`);
     if (dn) params.push(`dungeonName=${encodeURIComponent(dn)}`);
     if (c) params.push(`class=${encodeURIComponent(c)}`);
@@ -316,16 +316,17 @@ export default async function Home(props: PageProps) {
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0">
-          {/* Region toggle */}
+          {/* Region toggle — Global pools every region WCL has (including CN); US+EU
+              narrows to just those two for anyone who wants a Western-only view. */}
           <div className="flex items-center gap-1 bg-zinc-900 rounded-lg p-0.5 border border-zinc-800/80">
             <Link
-              href={activeMode === 'dungeons' ? getDungeonUrl({ region: 'us' }) : getFilterUrl({ region: 'us' })}
-              className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${activeRegion === 'us' ? 'bg-blue-500/15 text-blue-400 border border-blue-500/30' : 'text-zinc-500 hover:text-zinc-300'}`}
-            >US</Link>
+              href={activeMode === 'dungeons' ? getDungeonUrl({ region: 'global' }) : getFilterUrl({ region: 'global' })}
+              className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${activeRegion === 'global' ? 'bg-blue-500/15 text-blue-400 border border-blue-500/30' : 'text-zinc-500 hover:text-zinc-300'}`}
+            >Global</Link>
             <Link
-              href={activeMode === 'dungeons' ? getDungeonUrl({ region: 'eu' }) : getFilterUrl({ region: 'eu' })}
-              className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${activeRegion === 'eu' ? 'bg-blue-500/15 text-blue-400 border border-blue-500/30' : 'text-zinc-500 hover:text-zinc-300'}`}
-            >EU</Link>
+              href={activeMode === 'dungeons' ? getDungeonUrl({ region: 'us-eu' }) : getFilterUrl({ region: 'us-eu' })}
+              className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${activeRegion === 'us-eu' ? 'bg-blue-500/15 text-blue-400 border border-blue-500/30' : 'text-zinc-500 hover:text-zinc-300'}`}
+            >US+EU</Link>
           </div>
           {/* Difficulty toggle — raid only */}
           {activeMode === 'raids' && <div className="flex items-center gap-1 bg-zinc-900 rounded-lg p-0.5 border border-zinc-800/80">

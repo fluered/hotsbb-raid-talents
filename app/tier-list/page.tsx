@@ -30,7 +30,7 @@ export async function generateMetadata({ searchParams }: PageProps): Promise<Met
 export default async function TierListPage({ searchParams }: PageProps) {
   const sp = await searchParams;
   const activeDifficulty = sp.difficulty ? parseInt(sp.difficulty) : 5;
-  const activeRegion = sp.region ?? 'us';
+  const activeRegion = sp.region === 'us-eu' ? 'us-eu' : 'global';
   const activeBossId = sp.boss ? parseInt(sp.boss) : null;
 
   const wclToken = await getWclToken();
@@ -48,7 +48,7 @@ export default async function TierListPage({ searchParams }: PageProps) {
     const d = overrides.difficulty ?? activeDifficulty;
     const r = overrides.region ?? activeRegion;
     const p: string[] = [`difficulty=${d}`];
-    if (r !== 'us') p.push(`region=${r}`);
+    if (r !== 'global') p.push(`region=${r}`);
     if (b) p.push(`boss=${b}`);
     if (bn) p.push(`bossName=${encodeURIComponent(bn)}`);
     return `/tier-list?${p.join('&')}`;
@@ -75,7 +75,7 @@ export default async function TierListPage({ searchParams }: PageProps) {
               HotsBB Talents
             </Link>
             <span className="hidden sm:inline text-zinc-700">/</span>
-            <Link href={`/tier-list?difficulty=${activeDifficulty}${activeRegion !== 'us' ? `&region=${activeRegion}` : ''}`} className="hidden sm:inline text-xs font-black text-zinc-300 hover:text-zinc-100 uppercase tracking-widest transition-colors">DPS Tier List</Link>
+            <Link href={`/tier-list?difficulty=${activeDifficulty}${activeRegion !== 'global' ? `&region=${activeRegion}` : ''}`} className="hidden sm:inline text-xs font-black text-zinc-300 hover:text-zinc-100 uppercase tracking-widest transition-colors">DPS Tier List</Link>
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0">
@@ -97,7 +97,7 @@ export default async function TierListPage({ searchParams }: PageProps) {
       <div className="max-w-screen-md mx-auto px-4 md:px-6 py-6 space-y-6">
         {/* Role tabs */}
         {(() => {
-          const qs = `difficulty=${activeDifficulty}${activeRegion !== 'us' ? `&region=${activeRegion}` : ''}${selectedBoss ? `&boss=${selectedBoss.id}&bossName=${encodeURIComponent(selectedBoss.name ?? '')}` : ''}`;
+          const qs = `difficulty=${activeDifficulty}${activeRegion !== 'global' ? `&region=${activeRegion}` : ''}${selectedBoss ? `&boss=${selectedBoss.id}&bossName=${encodeURIComponent(selectedBoss.name ?? '')}` : ''}`;
           return (
             <div className="flex items-center gap-1 bg-zinc-900/60 rounded-xl p-1 border border-zinc-800/60 self-start w-fit">
               <span className="px-5 py-1.5 rounded-lg text-sm font-bold bg-zinc-700/60 text-zinc-100">DPS</span>
