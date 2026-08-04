@@ -564,7 +564,14 @@ export default function NewFeature({
             node.section === 'class' && mappedColumn > heroOffset;
           // Bridge class nodes get span 2 (same as gateway nodes) only in single-tree view
           const colSpan = isClassBridge && heroMaxCol % 2 === 0 && effectiveHeroTreeIds.size === 1 ? 2 : getColSpan(node);
-          const freq = frequencyMap?.[node.nodeID];
+          // For a multi-rank node, "took it at all" (frequencyMap) reads ~100% even when
+          // the sample is split across ranks — e.g. Benediction stuck at "100%" whether
+          // everyone goes 4/4 or a chunk stops at 3/4 for Eternal Sanctity. Showing what
+          // share actually matches the rank on screen (rankDistributionMap) surfaces that
+          // split on the tile itself, no hover required — 78% instead of 100% is visible
+          // at a glance as "not everyone agrees here."
+          const rankFreq = node.maxRanks > 1 && isActive ? rankDistributionMap?.[node.nodeID]?.[rank] : undefined;
+          const freq = rankFreq ?? frequencyMap?.[node.nodeID];
           const isDivergent = divergentNodeIds?.has(node.nodeID) ?? false;
           // true = top player takes this but consensus doesn't; false = consensus takes it but top player skips
           const topPlayerTakes = isDivergent && (topPlayerNodeIds?.has(node.nodeID) ?? false);
