@@ -683,6 +683,13 @@ export default function NewFeature({
         </div>
       )}
 
+      {renderNodes.some((n: any) => n.isTieredApex) && (
+        <div className="flex items-center gap-1.5 mt-1.5 text-[9px] text-zinc-500">
+          <span className="w-3.5 h-3.5 rounded-full ring-2 ring-violet-400/70 flex-shrink-0" />
+          <span>Multi-tier talent — some top players take fewer points here to invest elsewhere</span>
+        </div>
+      )}
+
       {choiceHover && (
         <ChoicePopup
           node={choiceHover.node}
