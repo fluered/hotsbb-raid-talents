@@ -7,6 +7,7 @@ import {
   getTalentTreeId, getCachedTalentLayout, playerRegion, getBlizzardTokensForRegions,
   computeConsensus, getActiveHeroTreeId, makeTelemetry, computeFrequencyPct, computeRankDistribution,
   mapConcurrent, normalizeTalentTree, deriveTalentStringAndProfileNodes, blizzardCharacterProfileFetch,
+  selectPlayersWithValidTelemetry,
   SPEC_IDS, ENCHANT_SLOT_LABELS, ENCHANT_SLOT_ORDER,
 } from '../lib/wow';
 
@@ -879,47 +880,53 @@ export default async function BossContent({
     // fetches the rest on demand, up to CONSENSUS_N, only if someone actually clicks it.
     const DISPLAY_N = Math.min(rawRankings.length, 5);
 
+    // Guarantees the consensus sample actually reaches CONSENSUS_N players whenever the
+    // ranking pool is large enough to support it — backfilling past rank 50 for any
+    // individual fetch that comes back empty, rather than silently reporting "49 of 50."
+    // Bounded concurrency rather than a bare Promise.all — firing ~50 telemetry lookups
+    // at once reliably trips WCL's burst rate limit (distinct from its points budget).
+    const consensusSelection = await selectPlayersWithValidTelemetry(
+      rawRankings,
+      CONSENSUS_N,
+      (player: any) =>
+        unstable_cache(
+          async () => getHistoricalFightTelemetry(wclToken, player.report?.code, player.report?.fightID, player.name),
+          [`wcl-telemetry-${player.report?.code}-${player.report?.fightID}`],
+          { revalidate: 86400 }
+        )(),
+      5
+    );
+    const consensusRankings = consensusSelection.map(s => s.player);
+    const allTelemetryData = consensusSelection.map(s => s.telemetry);
+
     // A Global (or US+EU) pool can span players from several regions, each needing their
-    // own region's Blizzard token — CONSENSUS_N's slice is a superset of DISPLAY_N's, so
-    // fetching tokens for its regions covers every profile fetch below in one pass.
+    // own region's Blizzard token — consensusRankings (post-backfill) is a superset of
+    // DISPLAY_N's slice, so fetching tokens for its regions covers every profile fetch below.
     const blizzardTokensByRegion = await getBlizzardTokensForRegions(
-      rawRankings.slice(0, CONSENSUS_N).map((p: any) => playerRegion(p, 'us'))
+      consensusRankings.map((p: any) => playerRegion(p, 'us'))
     );
 
     function blizzardProfileFetch(player: any, endpoint: string, cacheTag: string) {
       return blizzardCharacterProfileFetch(player, blizzardTokensByRegion, endpoint, cacheTag);
     }
 
-    // ── Start ALL fetch groups concurrently ──────────────────────────────────
-    // Equipment/stats/media start immediately so they run in parallel with telemetry+profiles.
-    // We only await telemetry+profiles for the fast talent-tree path.
-    // Bounded rather than a bare Promise.all — firing all ~50 telemetry lookups at once
-    // reliably trips WCL's burst rate limit (distinct from its overall points budget).
-    const _telemetryP = mapConcurrent(
-      rawRankings.slice(0, CONSENSUS_N),
-      5,
-      (player: any) =>
-        unstable_cache(
-          async () => getHistoricalFightTelemetry(wclToken, player.report?.code, player.report?.fightID, player.name),
-          [`wcl-telemetry-${player.report?.code}-${player.report?.fightID}`],
-          { revalidate: 86400 }
-        )()
-    );
+    // ── Start remaining fetch groups concurrently ─────────────────────────────
+    // Equipment/stats/media start immediately so they run in parallel with profiles.
+    // We only await profiles for the fast talent-tree path.
     const _profilesP = Promise.all(
-      rawRankings.slice(0, DISPLAY_N).map((player: any) => blizzardProfileFetch(player, 'specializations', 'spec'))
+      consensusRankings.slice(0, DISPLAY_N).map((player: any) => blizzardProfileFetch(player, 'specializations', 'spec'))
     );
     const _equipP = Promise.all(
-      rawRankings.slice(0, CONSENSUS_N).map((player: any) => blizzardProfileFetch(player, 'equipment', 'equip'))
+      consensusRankings.map((player: any) => blizzardProfileFetch(player, 'equipment', 'equip'))
     );
     const _statsP = Promise.all(
-      rawRankings.slice(0, CONSENSUS_N).map((player: any) => blizzardProfileFetch(player, 'statistics', 'stats'))
+      consensusRankings.map((player: any) => blizzardProfileFetch(player, 'statistics', 'stats'))
     );
     const _mediaP = Promise.all(
-      rawRankings.slice(0, DISPLAY_N).map((player: any) => blizzardProfileFetch(player, 'character-media', 'media'))
+      consensusRankings.slice(0, DISPLAY_N).map((player: any) => blizzardProfileFetch(player, 'character-media', 'media'))
     );
 
-    // Await only the fast path — equip/stats/media continue in parallel
-    const [allTelemetryData, blizzardProfiles] = await Promise.all([_telemetryP, _profilesP]);
+    const blizzardProfiles = await _profilesP;
 
     // ── wclItemData from telemetry (icon pre-population) ─────────────────
     const wclItemData = new Map<number, { ilvl: number; bonusIds: number[]; icon: string }>();
@@ -936,7 +943,7 @@ export default async function BossContent({
     }
 
     // ── Build detailedRankingsBase (renderUrl = null; filled in gear phase) ─
-    const detailedRankingsBase = rawRankings.slice(0, CONSENSUS_N).map((player: any, idx: number) => {
+    const detailedRankingsBase = consensusRankings.map((player: any, idx: number) => {
       const telemetryData = allTelemetryData[idx];
       const profileData = blizzardProfiles[idx];
       const { talentString, profileNodes } = deriveTalentStringAndProfileNodes(telemetryData, profileData, treeInfo.specId);

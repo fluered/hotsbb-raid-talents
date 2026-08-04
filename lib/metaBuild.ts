@@ -5,6 +5,7 @@ import {
   getTalentTreeId, getCachedTalentLayout, playerRegion, getBlizzardTokensForRegions,
   computeConsensus, getActiveHeroTreeId, makeTelemetry, computeFrequencyPct,
   mapConcurrent, normalizeTalentTree, buildImportEntries, type WclImportEntry,
+  deriveTalentStringAndProfileNodes, blizzardCharacterProfileFetch, selectPlayersWithValidTelemetry,
 } from './wow';
 
 // WCL enforces a burst rate limit independent of its overall points budget. Firing
@@ -79,99 +80,41 @@ export async function getMetaBuild(params: {
   const CONSENSUS_N = Math.min(rawRankings.length, 50);
   const DISPLAY_N = Math.min(rawRankings.length, 25);
 
-  // A Global (or US+EU) pool can span players from several regions, each needing their
-  // own region's Blizzard token — DISPLAY_N covers every profile fetch below (this is
-  // the only one talent-only meta builds need; no equip/stats/media here).
-  const blizzardTokensByRegion = await getBlizzardTokensForRegions(
-    rawRankings.slice(0, DISPLAY_N).map((p: any) => playerRegion(p, 'us'))
-  );
-
-  const allTelemetryData = await mapConcurrent(
-    rawRankings.slice(0, CONSENSUS_N),
-    WCL_FANOUT_CONCURRENCY,
+  // Guarantees the consensus sample actually reaches CONSENSUS_N players whenever the
+  // ranking pool is large enough to support it — backfilling past rank 50 for any
+  // individual fetch that comes back empty, rather than silently reporting a smaller
+  // sample. Mirrors BossContent.tsx's website path exactly, so the two never diverge.
+  const consensusSelection = await selectPlayersWithValidTelemetry(
+    rawRankings,
+    CONSENSUS_N,
     (player: any) =>
       unstable_cache(
         async () => getHistoricalFightTelemetry(wclToken, player.report?.code, player.report?.fightID, player.name),
         [`wcl-telemetry-${player.report?.code}-${player.report?.fightID}`],
         { revalidate: 86400 }
-      )()
+      )(),
+    WCL_FANOUT_CONCURRENCY
   );
-  const blizzardProfiles = await mapConcurrent(
-    rawRankings.slice(0, DISPLAY_N),
-    WCL_FANOUT_CONCURRENCY,
-    async (player: any) => {
-      const pRegion = playerRegion(player, 'us');
-      const token = blizzardTokensByRegion.get(pRegion);
-      if (!token) return null;
-      const realm = (player.server?.slug ?? player.server?.name ?? '').toLowerCase().replace(/\s+/g, '-').replace(/'/g, '');
-      const name = player.name.toLowerCase();
-      // 404 (character genuinely doesn't exist under this realm/name) is a stable fact
-      // worth caching. Anything else — 5xx, network errors — is transient and must NOT
-      // be cached, or a momentary hiccup gets stuck as "no data" for a full day.
-      return unstable_cache(
-        async () => {
-          const r = await fetch(
-            `https://${pRegion}.api.blizzard.com/profile/wow/character/${realm}/${name}/specializations?namespace=profile-${pRegion}&locale=en_US`,
-            { headers: { 'Authorization': `Bearer ${token}` } }
-          );
-          if (r.status === 404) return null;
-          if (!r.ok) throw new Error(`Blizzard profile fetch failed: ${r.status}`);
-          return r.json();
-        },
-        [`blizzard-spec-${pRegion}-${realm}-${name}`],
-        { revalidate: 86400 }
-      )().catch(() => null);
-    }
+  const consensusRankings = consensusSelection.map(s => s.player);
+  const allTelemetryData = consensusSelection.map(s => s.telemetry);
+
+  // A Global (or US+EU) pool can span players from several regions, each needing their
+  // own region's Blizzard token — DISPLAY_N covers every profile fetch below (this is
+  // the only one talent-only meta builds need; no equip/stats/media here).
+  const blizzardTokensByRegion = await getBlizzardTokensForRegions(
+    consensusRankings.slice(0, DISPLAY_N).map((p: any) => playerRegion(p, 'us'))
   );
 
-  const detailedRankingsBase = rawRankings.slice(0, CONSENSUS_N).map((player: any, idx: number) => {
+  const blizzardProfiles = await mapConcurrent(
+    consensusRankings.slice(0, DISPLAY_N),
+    WCL_FANOUT_CONCURRENCY,
+    (player: any) => blizzardCharacterProfileFetch(player, blizzardTokensByRegion, 'specializations', 'spec')
+  );
+
+  const detailedRankingsBase = consensusRankings.map((player: any, idx: number) => {
     const telemetryData = allTelemetryData[idx];
     const profileData = blizzardProfiles[idx];
-    const fightTalents: Array<{ nodeID: number; rank: number }> = telemetryData?.event?.talentTree || [];
-    const fightMap = new Map<number, number>();
-    for (const t of fightTalents as any[]) {
-      fightMap.set(t.nodeID, Math.max(fightMap.get(t.nodeID) ?? 0, t.rank));
-    }
-
-    const fightSpec = profileData?.specializations?.find(
-      (sp: any) => sp.specialization?.id === treeInfo.specId
-    );
-
-    let talentString: string | null = null;
-    if (fightSpec) {
-      const activeLoadout = (fightSpec.loadouts ?? []).find(
-        (l: any) => l.is_active && l.talent_loadout_code
-      );
-      if (activeLoadout) {
-        talentString = activeLoadout.talent_loadout_code;
-      } else {
-        let bestScore = -1;
-        let bestIsActive = false;
-        for (const loadout of fightSpec.loadouts ?? []) {
-          if (!loadout.talent_loadout_code) continue;
-          const nodes = [
-            ...(loadout.selected_class_talents ?? []),
-            ...(loadout.selected_spec_talents ?? []),
-            ...(loadout.selected_hero_talents ?? []),
-          ];
-          let score = 0;
-          for (const node of nodes) {
-            if (fightMap.get(node.id) === node.rank) score++;
-          }
-          const isActive = !!loadout.is_active;
-          if (score > bestScore || (score === bestScore && isActive && !bestIsActive)) {
-            bestScore = score; talentString = loadout.talent_loadout_code; bestIsActive = isActive;
-          }
-        }
-      }
-    }
-    const selectedLoadout = fightSpec?.loadouts?.find((l: any) => l.talent_loadout_code === talentString) ?? null;
-    const profileNodes: any[] = selectedLoadout ? [
-      ...(selectedLoadout.selected_class_talents ?? []),
-      ...(selectedLoadout.selected_spec_talents ?? []),
-      ...(selectedLoadout.selected_hero_talents ?? []),
-    ] : [];
-
+    const { talentString, profileNodes } = deriveTalentStringAndProfileNodes(telemetryData, profileData, treeInfo.specId);
     return { ...player, telemetry: telemetryData, talentString, profileNodes };
   });
 

@@ -1,4 +1,5 @@
 import { unstable_cache } from 'next/cache';
+import { normalizeTalentTree } from './talentNormalize';
 export { normalizeTalentTree } from './talentNormalize';
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
@@ -191,24 +192,38 @@ export function blizzardCharacterProfileFetch(
   )().catch(() => null);
 }
 
+// A 429 here previously fell through to the catch-all below and returned an ordinary-
+// looking "no event" result — indistinguishable from a genuinely private/deleted
+// report. During a real WCL rate-limit window mid-export, that silently shrank
+// whatever combo was being processed at the time, with zero error signal anywhere
+// (no thrown error, no rate_limited status — just a smaller sampleSize than it should
+// have been). Now throws distinguishably, same pattern as getWclRankings, so a caller
+// (the backfill selection, the API route's rate-limit handling, the export script's
+// pause-and-retry) can actually react to it instead of quietly eating the data loss.
 export async function getHistoricalFightTelemetry(wclToken: string, reportCode: string, fightId: number, playerName: string) {
-  try {
-    const query = `
-      query {
-        reportData {
-          report(code: "${reportCode}") {
-            masterData { actors(type: "Player") { id name } }
-            events(fightIDs: [${fightId}], dataType: CombatantInfo, startTime: 0, endTime: 2147483647) { data }
-          }
+  const query = `
+    query {
+      reportData {
+        report(code: "${reportCode}") {
+          masterData { actors(type: "Player") { id name } }
+          events(fightIDs: [${fightId}], dataType: CombatantInfo, startTime: 0, endTime: 2147483647) { data }
         }
       }
-    `;
-    const response = await fetch('https://www.warcraftlogs.com/api/v2/client', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${wclToken}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query }),
-      next: { revalidate: 86400 },
-    });
+    }
+  `;
+  const response = await fetch('https://www.warcraftlogs.com/api/v2/client', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${wclToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query }),
+    next: { revalidate: 86400 },
+  });
+  if (response.status === 429) {
+    const err: any = new Error('WCL rate limit exceeded — the API key has hit its request budget for the current window.');
+    err.isRateLimit = true;
+    err.retryAfter = response.headers.get('retry-after');
+    throw err;
+  }
+  try {
     const reportData = (await response.json()).data?.reportData?.report;
     const actors = reportData?.masterData?.actors || [];
     const events = reportData?.events?.data || [];
@@ -216,6 +231,8 @@ export async function getHistoricalFightTelemetry(wclToken: string, reportCode: 
     const matchedSourceId = targetActor ? targetActor.id : null;
     return { sourceId: matchedSourceId, event: events.find((e: any) => e.sourceID === matchedSourceId) || null };
   } catch {
+    // A genuinely malformed/unexpected response body (not a rate limit) — treat as
+    // "no data for this player" same as before, not worth aborting the whole batch for.
     return { sourceId: null, event: null };
   }
 }
@@ -234,6 +251,35 @@ export async function mapConcurrent<T, U>(items: T[], limit: number, fn: (item: 
   }
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
   return results;
+}
+
+// Fetches telemetry starting from the top-ranked players and, whenever a fetch comes
+// back empty (private log, deleted report, a transient WCL hiccup), keeps going into
+// the next-ranked candidates to backfill — so the final valid sample actually reaches
+// `targetCount` whenever the ranking pool is large enough to support it, instead of
+// silently settling for "49 of 50" any time exactly one fetch fails. Returns paired
+// (player, telemetry) entries in rank order; only ever fetches as many extra candidates
+// as needed to cover the shortfall, not the whole remaining pool.
+export async function selectPlayersWithValidTelemetry<P>(
+  rankings: P[],
+  targetCount: number,
+  fetchOne: (player: P) => Promise<any>,
+  concurrency = 5
+): Promise<Array<{ player: P; telemetry: any }>> {
+  const selected: Array<{ player: P; telemetry: any }> = [];
+  let nextIdx = 0;
+  while (selected.length < targetCount && nextIdx < rankings.length) {
+    const need = targetCount - selected.length;
+    const batchEnd = Math.min(nextIdx + Math.max(need, concurrency), rankings.length);
+    const batch = rankings.slice(nextIdx, batchEnd);
+    nextIdx = batchEnd;
+    const results = await mapConcurrent(batch, concurrency, async (player) => ({ player, telemetry: await fetchOne(player) }));
+    for (const r of results) {
+      const tree = normalizeTalentTree((r.telemetry as any)?.event?.talentTree || []);
+      if (tree.length > 0) selected.push(r);
+    }
+  }
+  return selected.slice(0, targetCount);
 }
 
 // No fetch here previously had a timeout — an unresponsive Blizzard connection could
