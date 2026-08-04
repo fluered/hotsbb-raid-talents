@@ -848,7 +848,6 @@ export default async function BossContent({
     const { layout: skeletonMap, heroTreeNames: allHeroTreeNames } = await getCachedTalentLayout(treeInfo.treeId, treeInfo.specId, staticBlizzardToken);
     const rawRankings = rankingsResult.rankings;
     const dataFetchedAt = rankingsResult.fetchedAt;
-    const totalAvailableParses = rawRankings.length;
     if (rawRankings.length === 0) {
       const isRaidDifficulty = difficulty === 4 || difficulty === 5;
       const diffLabel = isRaidDifficulty ? (difficulty === 5 ? 'Mythic' : 'Heroic') : 'Mythic+';
@@ -1200,7 +1199,6 @@ export default async function BossContent({
             colors={nodeColors}
             difficulty={difficulty}
             spec={spec}
-            totalParses={totalAvailableParses}
             dataFetchedAt={dataFetchedAt}
             wclUrl={wclUrl ?? undefined}
             wowClass={className}
@@ -1236,7 +1234,6 @@ export default async function BossContent({
             colors={nodeColors}
             difficulty={difficulty}
             spec={spec}
-            totalParses={totalAvailableParses}
             dataFetchedAt={dataFetchedAt}
             wclUrl={wclUrl ?? undefined}
             wowClass={className}

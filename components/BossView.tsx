@@ -497,7 +497,6 @@ export default function BossView({
   colors,
   difficulty,
   spec,
-  totalParses,
   dataFetchedAt,
   wclUrl,
   wowClass,
@@ -512,7 +511,6 @@ export default function BossView({
   colors: { color: string; border: string; activeBg: string };
   difficulty: number;
   spec: string;
-  totalParses?: number;
   dataFetchedAt?: number;
   wclUrl?: string;
   wowClass?: string;
@@ -754,7 +752,6 @@ export default function BossView({
               <p className="text-sm text-zinc-500">
                 Consensus from top {active.totalPlayers} {difficulty === 10 ? 'Mythic+' : difficulty === 5 ? 'Mythic' : 'Heroic'} {spec} parses
                 {active.id !== null ? ` using ${active.name}` : ''}
-                {totalParses != null && totalParses > active.totalPlayers ? ` · ${totalParses} available` : ''}
                 {dataFetchedAt != null && (() => {
                   const mins = Math.round((Date.now() - dataFetchedAt) / 60000);
                   if (mins < 2) return ' · just updated';
