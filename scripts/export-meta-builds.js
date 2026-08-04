@@ -90,7 +90,9 @@ async function fetchOnce(job) {
   // whatever the site's default happens to be.
   const url = `${BASE}/api/meta-build?class=${encodeURIComponent(job.className)}&spec=${encodeURIComponent(job.specName)}&boss=${job.encounterId}&difficulty=${job.difficulty}&region=global`;
   try {
-    const res = await fetch(url);
+    // /api/meta-build now rejects any caller that isn't this script or a real page load
+    // (see route.ts) — this header is how it identifies itself.
+    const res = await fetch(url, { headers: { 'x-hbt-internal': 'hotsbb-export-script' } });
     const json = await res.json();
     return json;
   } catch (e) {
