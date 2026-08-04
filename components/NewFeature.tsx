@@ -202,6 +202,7 @@ export default function NewFeature({
   activeHeroTreeId,
   consensusEntryIds,
   choiceFreqMap,
+  metaTelemetry,
 }: {
   telemetry: any;
   layout: any[];
@@ -219,6 +220,11 @@ export default function NewFeature({
   activeHeroTreeId?: number;
   consensusEntryIds?: Record<number, number>;
   choiceFreqMap?: Record<number, { aEntryId: number; bEntryId: number; aPct: number; bPct: number }>;
+  // Only passed on individual player cards: the meta consensus build, so a talent this
+  // player picked that ISN'T part of it can be flagged — same idea as topPlayerTelemetry
+  // (which flags the reverse: a top player diverging from the shown consensus tree) but
+  // for "this specific player's build has an off-meta pick."
+  metaTelemetry?: { event: { talentTree: Array<{ nodeID: number; rank: number }> } } | null;
 }) {
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
   // pinned = opened via click/tap and stays open until an outside tap or re-click; unpinned = mouse-hover preview
@@ -235,6 +241,18 @@ export default function NewFeature({
     : null;
   const divergentNodeIds = topPlayerNodeIds
     ? new Set<number>([...activeNodeIds, ...topPlayerNodeIds].filter(id => activeNodeIds.has(id) !== topPlayerNodeIds!.has(id)))
+    : null;
+
+  // Nodes this specific player (the "active" tree here, on a player card) picked that
+  // the meta consensus build doesn't have at all — an off-meta talent choice. Only the
+  // player-has-it-but-meta-doesn't direction is flagged (not the reverse, "meta has it
+  // but this player skipped it") — mirroring topPlayerTakes' asymmetry above, since
+  // "picked something extra" is the noteworthy divergence, not "missing a pick."
+  const metaNodeIds = metaTelemetry
+    ? new Set<number>(normalizeTalentTree(metaTelemetry?.event?.talentTree || []).map((t: any) => t.nodeID))
+    : null;
+  const offMetaNodeIds = metaNodeIds
+    ? new Set<number>([...activeNodeIds].filter(id => !metaNodeIds!.has(id)))
     : null;
 
   // Determine which hero tree the player is using
@@ -580,6 +598,7 @@ export default function NewFeature({
           const isDivergent = divergentNodeIds?.has(node.nodeID) ?? false;
           // true = top player takes this but consensus doesn't; false = consensus takes it but top player skips
           const topPlayerTakes = isDivergent && (topPlayerNodeIds?.has(node.nodeID) ?? false);
+          const isOffMeta = isActive && (offMetaNodeIds?.has(node.nodeID) ?? false);
           const mappedRow = isClassBridge
             ? (node.row - classRowOffset) - heroRowShift + HERO_ROW_OFFSET
             : getMappedRow(node);
@@ -638,7 +657,7 @@ export default function NewFeature({
               <div
                 className={`w-10 h-10 rounded-full border-2 overflow-hidden transition-all relative ${
                   isChoiceNode || displayNode.spellId ? 'cursor-pointer' : 'cursor-default'
-                } ${topPlayerTakes ? 'border-amber-400 shadow-[0_0_6px_1px_rgba(251,191,36,0.5)]' : isActive ? colors.border : 'border-zinc-700/20'} ${
+                } ${(topPlayerTakes || isOffMeta) ? 'border-amber-400 shadow-[0_0_6px_1px_rgba(251,191,36,0.5)]' : isActive ? colors.border : 'border-zinc-700/20'} ${
                   // Tiered/apex nodes (e.g. Tigereye Brew, Benediction) are multiple separate
                   // underlying picks sharing one icon — a violet ring marks that at a glance,
                   // independent of the border color's existing active/divergent meaning.
@@ -692,6 +711,13 @@ export default function NewFeature({
         <div className="flex items-center gap-1.5 mt-3 text-[9px] text-zinc-500">
           <span className="w-3.5 h-3.5 rounded-full border-2 border-amber-400 flex-shrink-0" />
           <span>Picked by top players but not part of the meta consensus build</span>
+        </div>
+      )}
+
+      {offMetaNodeIds && renderNodes.some(n => offMetaNodeIds.has(n.nodeID) && activeNodeIds.has(n.nodeID)) && (
+        <div className="flex items-center gap-1.5 mt-1.5 text-[9px] text-zinc-500">
+          <span className="w-3.5 h-3.5 rounded-full border-2 border-amber-400 flex-shrink-0" />
+          <span>This player's build includes a talent not in the meta consensus</span>
         </div>
       )}
 

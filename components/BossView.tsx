@@ -449,6 +449,7 @@ function GearSection({
                 wowClass={wowClass}
                 specName={spec}
                 metric={metric}
+                metaTelemetry={active.consensus?.telemetry}
                 heroTrees={variants
                   .filter(v => v.id !== null)
                   .map(v => ({ id: v.id!, name: v.name, imageUrl: v.imageUrl }))}
@@ -808,6 +809,7 @@ export default function BossView({
                   wowClass={wowClass}
                   specName={spec}
                   metric={metric}
+                  metaTelemetry={active.consensus?.telemetry}
                   heroTrees={variants
                     .filter(v => v.id !== null)
                     .map(v => ({ id: v.id!, name: v.name, imageUrl: v.imageUrl }))}

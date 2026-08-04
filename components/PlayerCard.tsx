@@ -13,6 +13,7 @@ export default function PlayerCard({
   specName,
   heroTrees,
   metric = 'dps',
+  metaTelemetry,
 }: {
   player: any;
   layout: any[];
@@ -22,6 +23,10 @@ export default function PlayerCard({
   specName?: string;
   heroTrees?: Array<{ id: number; name: string; imageUrl?: string }>;
   metric?: string;
+  // The meta consensus build, so this player's card can flag any talent they picked
+  // that isn't part of it — the meta view already flags the inverse (top players
+  // diverging from consensus); this closes the loop the other direction.
+  metaTelemetry?: { event: { talentTree: Array<{ nodeID: number; rank: number }> } } | null;
 }) {
   const activeNodeIds = new Set<number>((player.telemetry?.event?.talentTree ?? []).map((t: any) => t.nodeID));
   const activeHeroTreeId = layout.find((n: any) => n.section === 'hero' && n.heroTreeId != null && activeNodeIds.has(n.nodeID))?.heroTreeId ?? null;
@@ -115,6 +120,7 @@ export default function PlayerCard({
           specName={specName}
           heroTreeImageUrl={heroTree?.imageUrl}
           heroTreeName={heroTree?.name}
+          metaTelemetry={metaTelemetry}
         />
       </div>
     </div>
