@@ -15,6 +15,18 @@ export async function getWclToken() {
     }),
     next: { revalidate: 3600 },
   });
+  if (response.status === 429) {
+    // Observed during a genuinely deep quota-exhaustion window: WCL's OAuth endpoint
+    // gets swept up in the same overload as the data API. Previously surfaced as a
+    // plain "Failed WCL Authentication" error, which only got 2 quick bounded retries
+    // (not the unlimited pause-and-retry that rate_limited gets) — so a run that hit
+    // this mid-exhaustion lost real combos to a hard failure instead of just waiting
+    // it out like every other rate-limited call already does.
+    const err: any = new Error('WCL OAuth rate limit exceeded — the API key has hit its request budget for the current window.');
+    err.isRateLimit = true;
+    err.retryAfter = response.headers.get('retry-after');
+    throw err;
+  }
   if (!response.ok) throw new Error('Failed WCL Authentication');
   return (await response.json()).access_token;
 }
