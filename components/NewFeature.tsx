@@ -675,7 +675,7 @@ export default function NewFeature({
                 // shape) was also clipping this badge wherever it poked past the circle's
                 // edge, cutting the text off. Positioning it here, against the outer
                 // (non-clipping) grid cell, keeps the full badge visible.
-                <div className={`absolute -top-1.5 -right-1.5 min-w-[24px] h-[18px] px-1 rounded-full flex items-center justify-center border-2 z-10 ${
+                <div className={`absolute -top-1.5 -right-1.5 h-[18px] px-1.5 rounded-full flex items-center justify-center border-2 z-10 whitespace-nowrap ${
                   isPartialApex
                     ? 'bg-amber-500 border-amber-300 shadow-[0_0_5px_1px_rgba(251,191,36,0.7)]'
                     : node.isTieredApex ? 'bg-violet-500 border-violet-300' : 'bg-zinc-800 border-zinc-600'
