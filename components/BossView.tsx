@@ -6,6 +6,7 @@ import NewFeature from './NewFeature';
 import CopyBuildButton from './CopyBuildButton';
 import PlayerCard from './PlayerCard';
 import type { GearPhaseResult } from '../app/BossContent';
+import { loadMorePlayers } from '../app/actions/loadMorePlayers';
 
 function hexFromTwColor(twColor: string): string {
   const m = twColor.match(/#[0-9A-Fa-f]{6}/);
@@ -112,6 +113,11 @@ function GearSection({
   wclUrl,
   metric,
   onReady,
+  additionalPlayers,
+  canLoadMore,
+  loadMorePoolSize,
+  loadingMore,
+  onLoadMore,
 }: {
   gearPromise: Promise<GearPhaseResult>;
   activeIdx: number;
@@ -124,6 +130,11 @@ function GearSection({
   wclUrl?: string;
   metric: string;
   onReady: () => void;
+  additionalPlayers: any[];
+  canLoadMore: boolean;
+  loadMorePoolSize?: number;
+  loadingMore: boolean;
+  onLoadMore: (alreadyShown: number) => void;
 }) {
   const { variantGear, variantPlayers } = use(gearPromise);
   const [activeTip, setActiveTip] = useState<ItemTip | null>(null);
@@ -134,7 +145,11 @@ function GearSection({
   const safeIdx = Math.min(activeIdx, variants.length - 1);
   const active = variants[safeIdx];
   const gear = variantGear[safeIdx] ?? null;
-  const players: any[] = variantPlayers[safeIdx] ?? [];
+  // additionalPlayers only ever applies to the Overall variant (see canLoadMore in the
+  // parent) — appended here rather than in variantPlayers itself, since that array is
+  // frozen inside the already-resolved gearPromise.
+  const basePlayers: any[] = variantPlayers[safeIdx] ?? [];
+  const players: any[] = active.id === null ? [...basePlayers, ...additionalPlayers] : basePlayers;
   const gearHasContent = gear && (gear.trinkets.length > 0 || gear.stats != null);
 
   const SLOT_LABELS: Record<string, string> = {
@@ -439,7 +454,7 @@ function GearSection({
             )}
           </div>
           <div className="space-y-4">
-            {players.slice(0, 10).map((player: any, idx: number) => (
+            {players.map((player: any, idx: number) => (
               <PlayerCard
                 key={`${active.id ?? 'all'}-${idx}`}
                 player={player}
@@ -456,6 +471,17 @@ function GearSection({
               />
             ))}
           </div>
+          {canLoadMore && loadMorePoolSize != null && players.length < loadMorePoolSize && (
+            <div className="flex justify-center mt-4">
+              <button
+                onClick={() => onLoadMore(players.length)}
+                disabled={loadingMore}
+                className="text-xs font-bold text-zinc-400 hover:text-zinc-200 border border-zinc-700 hover:border-zinc-600 rounded-full px-4 py-2 transition-colors disabled:opacity-50 disabled:cursor-wait"
+              >
+                {loadingMore ? 'Loading…' : `Load 5 more (${players.length}/${loadMorePoolSize})`}
+              </button>
+            </div>
+          )}
         </section>
       )}
 
@@ -476,6 +502,9 @@ export default function BossView({
   wclUrl,
   wowClass,
   metric = 'dps',
+  bossId,
+  region,
+  loadMorePoolSize,
 }: {
   variants: HeroVariant[];
   gearPromise?: Promise<GearPhaseResult>;
@@ -488,6 +517,13 @@ export default function BossView({
   wclUrl?: string;
   wowClass?: string;
   metric?: string;
+  // Only present for the full-consensus render path (gearPromise) — "Load more
+  // players" needs the same boss/spec/difficulty/region identity the initial fetch
+  // used, plus the size of the pool it can still draw from (CONSENSUS_N: everyone
+  // already has WCL telemetry fetched, just not Blizzard profile/portrait yet).
+  bossId?: number;
+  region?: string;
+  loadMorePoolSize?: number;
 }) {
   const [activeIdx, setActiveIdx] = useState(0);
   const [fading, setFading] = useState(false);
@@ -495,9 +531,17 @@ export default function BossView({
   const [pillsVisible, setPillsVisible] = useState(true);
   const [gearReady, setGearReady] = useState(false);
   const pillsRef = useRef<HTMLDivElement>(null);
+  // Only meaningful for the "Overall" (id === null) variant — hero-tree-specific
+  // variants pull from a differently-filtered player pool the on-demand action
+  // doesn't know how to reproduce, so their player list stays fixed at the initial
+  // batch. Reset whenever the active variant changes so switching tabs doesn't carry
+  // over another variant's extra-loaded players.
+  const [additionalPlayers, setAdditionalPlayers] = useState<any[]>([]);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   const switchVariant = (idx: number) => {
     if (idx === activeIdx) return;
+    setAdditionalPlayers([]);
     setFading(true);
     setTimeout(() => { setActiveIdx(idx); setFading(false); }, 120);
   };
@@ -533,6 +577,23 @@ export default function BossView({
   const active = variants[safeIdx];
   const accentHex = hexFromTwColor(colors.color);
   const hasHeroFilter = variants.length > 1;
+
+  const canLoadMore = active.id === null && bossId != null && region != null && loadMorePoolSize != null && wowClass != null;
+  const handleLoadMore = async (alreadyShown: number) => {
+    if (!canLoadMore || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const { players } = await loadMorePlayers({
+        bossId: bossId!, className: wowClass!, spec, difficulty, region: region!, metric,
+        startIdx: alreadyShown, count: 5,
+      });
+      setAdditionalPlayers(prev => [...prev, ...players]);
+    } catch {
+      // Transient failure — leave the button in place so the user can just retry.
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
 
   return (
@@ -772,6 +833,11 @@ export default function BossView({
             wclUrl={wclUrl}
             metric={metric}
             onReady={() => setGearReady(true)}
+            additionalPlayers={additionalPlayers}
+            canLoadMore={canLoadMore}
+            loadMorePoolSize={loadMorePoolSize}
+            loadingMore={loadingMore}
+            onLoadMore={handleLoadMore}
           />
         </Suspense>
       ) : (

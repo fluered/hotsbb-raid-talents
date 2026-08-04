@@ -157,6 +157,40 @@ export async function getBlizzardTokensForRegions(regions: string[]): Promise<Ma
   return map;
 }
 
+// Resolves a player's own region (not the site-wide region mode) and that region's
+// token, so a Global pool's EU/KR/TW players get fetched from their actual home
+// region's API. A player whose region has no token (CN — no Blizzard API at all, or a
+// token fetch failure) simply yields no profile data. Shared by the initial player-card
+// fetch and the on-demand "load more players" action.
+export function blizzardCharacterProfileFetch(
+  player: any,
+  tokensByRegion: Map<string, string>,
+  endpoint: string,
+  cacheTag: string
+): Promise<any> {
+  const pRegion = playerRegion(player, 'us');
+  const token = tokensByRegion.get(pRegion);
+  const realm = (player.server?.slug ?? player.server?.name ?? '').toLowerCase().replace(/\s+/g, '-').replace(/'/g, '');
+  const name = player.name.toLowerCase();
+  if (!token) return Promise.resolve(null);
+  // 404 (character genuinely doesn't exist under this realm/name) is a stable fact
+  // worth caching. Anything else — 5xx, network errors — is transient and must NOT
+  // be cached, or a momentary hiccup gets stuck as "no data" for a full day.
+  return unstable_cache(
+    async () => {
+      const r = await fetch(
+        `https://${pRegion}.api.blizzard.com/profile/wow/character/${realm}/${name}/${endpoint}?namespace=profile-${pRegion}&locale=en_US`,
+        { headers: { 'Authorization': `Bearer ${token}` } }
+      );
+      if (r.status === 404) return null;
+      if (!r.ok) throw new Error(`Blizzard ${cacheTag} fetch failed: ${r.status}`);
+      return r.json();
+    },
+    [`blizzard-${cacheTag}-${pRegion}-${realm}-${name}`],
+    { revalidate: 86400 }
+  )().catch(() => null);
+}
+
 export async function getHistoricalFightTelemetry(wclToken: string, reportCode: string, fightId: number, playerName: string) {
   try {
     const query = `
@@ -602,6 +636,67 @@ export function computeRankDistribution(
     for (const [rank, count] of byRank) result[nodeID][rank] = Math.round((count / N) * 100);
   }
   return result;
+}
+
+// Matches a player's WCL fight telemetry against their Blizzard profile's saved
+// loadouts to pick which one (if any) they were actually using during the fight, and
+// extracts that loadout's structured node list. Deliberately uses Math.max/small
+// sequential rank values here (not the apex/tiered distinct-entry-count logic used
+// elsewhere) — Blizzard's PROFILE API reports plain sequential ranks for these nodes,
+// so matching against that ground truth needs the same representation, not the WCL-
+// telemetry-specific fix. Shared by the initial player-card fetch and the on-demand
+// "load more players" action so they can never drift apart.
+export function deriveTalentStringAndProfileNodes(
+  telemetryData: any,
+  profileData: any,
+  specId: number
+): { talentString: string | null; profileNodes: any[] } {
+  const fightTalents: Array<{ nodeID: number; rank: number }> = telemetryData?.event?.talentTree || [];
+  const fightMap = new Map<number, number>();
+  for (const t of fightTalents as any[]) {
+    fightMap.set(t.nodeID, Math.max(fightMap.get(t.nodeID) ?? 0, t.rank));
+  }
+
+  const fightSpec = profileData?.specializations?.find(
+    (sp: any) => sp.specialization?.id === specId
+  );
+
+  let talentString: string | null = null;
+  if (fightSpec) {
+    const activeLoadout = (fightSpec.loadouts ?? []).find(
+      (l: any) => l.is_active && l.talent_loadout_code
+    );
+    if (activeLoadout) {
+      talentString = activeLoadout.talent_loadout_code;
+    } else {
+      let bestScore = -1;
+      let bestIsActive = false;
+      for (const loadout of fightSpec.loadouts ?? []) {
+        if (!loadout.talent_loadout_code) continue;
+        const nodes = [
+          ...(loadout.selected_class_talents ?? []),
+          ...(loadout.selected_spec_talents ?? []),
+          ...(loadout.selected_hero_talents ?? []),
+        ];
+        let score = 0;
+        for (const node of nodes) {
+          if (fightMap.get(node.id) === node.rank) score++;
+        }
+        const isActive = !!loadout.is_active;
+        if (score > bestScore || (score === bestScore && isActive && !bestIsActive)) {
+          bestScore = score; talentString = loadout.talent_loadout_code; bestIsActive = isActive;
+        }
+      }
+    }
+  }
+  const selectedLoadout = fightSpec?.loadouts?.find((l: any) => l.talent_loadout_code === talentString) ?? null;
+  const profileNodes: any[] = selectedLoadout ? [
+    ...(selectedLoadout.selected_class_talents ?? []),
+    ...(selectedLoadout.selected_spec_talents ?? []),
+    ...(selectedLoadout.selected_hero_talents ?? []),
+  ] : [];
+
+  return { talentString, profileNodes };
 }
 
 export function scoreAgainstMap(fightTalents: Array<{ nodeID: number; rank: number }>, ref: Map<number, number>): number {

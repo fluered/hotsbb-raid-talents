@@ -6,7 +6,7 @@ import {
   getWclToken, getBlizzardToken, getWclRankingsForRegionMode, getHistoricalFightTelemetry,
   getTalentTreeId, getCachedTalentLayout, playerRegion, getBlizzardTokensForRegions,
   computeConsensus, getActiveHeroTreeId, makeTelemetry, computeFrequencyPct, computeRankDistribution,
-  mapConcurrent, normalizeTalentTree,
+  mapConcurrent, normalizeTalentTree, deriveTalentStringAndProfileNodes, blizzardCharacterProfileFetch,
   SPEC_IDS, ENCHANT_SLOT_LABELS, ENCHANT_SLOT_ORDER,
 } from '../lib/wow';
 
@@ -875,7 +875,10 @@ export default async function BossContent({
     }
 
     const CONSENSUS_N = Math.min(rawRankings.length, 50);
-    const DISPLAY_N = Math.min(rawRankings.length, 25);
+    // Only the first 5 player cards get their (expensive: 2 Blizzard API calls each)
+    // talentString/renderUrl fetched upfront now — "Load more" (loadMorePlayers action)
+    // fetches the rest on demand, up to CONSENSUS_N, only if someone actually clicks it.
+    const DISPLAY_N = Math.min(rawRankings.length, 5);
 
     // A Global (or US+EU) pool can span players from several regions, each needing their
     // own region's Blizzard token — CONSENSUS_N's slice is a superset of DISPLAY_N's, so
@@ -884,33 +887,8 @@ export default async function BossContent({
       rawRankings.slice(0, CONSENSUS_N).map((p: any) => playerRegion(p, 'us'))
     );
 
-    // Shared by all four profile-endpoint fetches below: resolves the player's own
-    // region (not the site-wide region mode) and that region's token, so a Global pool's
-    // EU/KR/TW players get fetched from their actual home region's API. A player whose
-    // region has no token (CN — no Blizzard API at all, or a token fetch failure) simply
-    // yields no profile data, same as any other profile-fetch miss.
     function blizzardProfileFetch(player: any, endpoint: string, cacheTag: string) {
-      const pRegion = playerRegion(player, 'us');
-      const token = blizzardTokensByRegion.get(pRegion);
-      const realm = (player.server?.slug ?? player.server?.name ?? '').toLowerCase().replace(/\s+/g, '-').replace(/'/g, '');
-      const name = player.name.toLowerCase();
-      if (!token) return Promise.resolve(null);
-      // 404 (character genuinely doesn't exist under this realm/name) is a stable fact
-      // worth caching. Anything else — 5xx, network errors — is transient and must NOT
-      // be cached, or a momentary hiccup gets stuck as "no data" for a full day.
-      return unstable_cache(
-        async () => {
-          const r = await fetch(
-            `https://${pRegion}.api.blizzard.com/profile/wow/character/${realm}/${name}/${endpoint}?namespace=profile-${pRegion}&locale=en_US`,
-            { headers: { 'Authorization': `Bearer ${token}` } }
-          );
-          if (r.status === 404) return null;
-          if (!r.ok) throw new Error(`Blizzard ${cacheTag} fetch failed: ${r.status}`);
-          return r.json();
-        },
-        [`blizzard-${cacheTag}-${pRegion}-${realm}-${name}`],
-        { revalidate: 86400 }
-      )().catch(() => null);
+      return blizzardCharacterProfileFetch(player, blizzardTokensByRegion, endpoint, cacheTag);
     }
 
     // ── Start ALL fetch groups concurrently ──────────────────────────────────
@@ -962,51 +940,7 @@ export default async function BossContent({
     const detailedRankingsBase = rawRankings.slice(0, CONSENSUS_N).map((player: any, idx: number) => {
       const telemetryData = allTelemetryData[idx];
       const profileData = blizzardProfiles[idx];
-      const fightTalents: Array<{ nodeID: number; rank: number }> = telemetryData?.event?.talentTree || [];
-      const fightMap = new Map<number, number>();
-      for (const t of fightTalents as any[]) {
-        fightMap.set(t.nodeID, Math.max(fightMap.get(t.nodeID) ?? 0, t.rank));
-      }
-
-      const fightSpec = profileData?.specializations?.find(
-        (sp: any) => sp.specialization?.id === treeInfo.specId
-      );
-
-      let talentString: string | null = null;
-      if (fightSpec) {
-        const activeLoadout = (fightSpec.loadouts ?? []).find(
-          (l: any) => l.is_active && l.talent_loadout_code
-        );
-        if (activeLoadout) {
-          talentString = activeLoadout.talent_loadout_code;
-        } else {
-          let bestScore = -1;
-          let bestIsActive = false;
-          for (const loadout of fightSpec.loadouts ?? []) {
-            if (!loadout.talent_loadout_code) continue;
-            const nodes = [
-              ...(loadout.selected_class_talents ?? []),
-              ...(loadout.selected_spec_talents ?? []),
-              ...(loadout.selected_hero_talents ?? []),
-            ];
-            let score = 0;
-            for (const node of nodes) {
-              if (fightMap.get(node.id) === node.rank) score++;
-            }
-            const isActive = !!loadout.is_active;
-            if (score > bestScore || (score === bestScore && isActive && !bestIsActive)) {
-              bestScore = score; talentString = loadout.talent_loadout_code; bestIsActive = isActive;
-            }
-          }
-        }
-      }
-      const selectedLoadout = fightSpec?.loadouts?.find((l: any) => l.talent_loadout_code === talentString) ?? null;
-      const profileNodes: any[] = selectedLoadout ? [
-        ...(selectedLoadout.selected_class_talents ?? []),
-        ...(selectedLoadout.selected_spec_talents ?? []),
-        ...(selectedLoadout.selected_hero_talents ?? []),
-      ] : [];
-
+      const { talentString, profileNodes } = deriveTalentStringAndProfileNodes(telemetryData, profileData, treeInfo.specId);
       return { ...player, telemetry: telemetryData, talentString, renderUrl: null, profileNodes };
     });
 
@@ -1271,6 +1205,9 @@ export default async function BossContent({
             wclUrl={wclUrl ?? undefined}
             wowClass={className}
             metric={metric}
+            bossId={bossId}
+            region={region}
+            loadMorePoolSize={CONSENSUS_N}
           />
         </>
       );
