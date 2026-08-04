@@ -472,13 +472,13 @@ function GearSection({
             ))}
           </div>
           {canLoadMore && loadMorePoolSize != null && players.length < loadMorePoolSize && (
-            <div className="flex justify-center mt-4">
+            <div className="flex justify-center mt-8">
               <button
                 onClick={() => onLoadMore(players.length)}
                 disabled={loadingMore}
-                className="text-xs font-bold text-zinc-400 hover:text-zinc-200 border border-zinc-700 hover:border-zinc-600 rounded-full px-4 py-2 transition-colors disabled:opacity-50 disabled:cursor-wait"
+                className={`text-sm font-bold ${colors.color} bg-zinc-900 hover:bg-zinc-800 border-2 ${colors.border} rounded-full px-8 py-3.5 transition-colors disabled:opacity-50 disabled:cursor-wait shadow-lg`}
               >
-                {loadingMore ? 'Loading…' : `Load 5 more (${players.length}/${loadMorePoolSize})`}
+                {loadingMore ? 'Loading…' : `Load 5 more players (${players.length}/${loadMorePoolSize})`}
               </button>
             </div>
           )}
