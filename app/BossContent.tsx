@@ -5,7 +5,7 @@ import MetaBuildFreshnessBanner from '../components/MetaBuildFreshnessBanner';
 import {
   getWclToken, getBlizzardToken, getWclRankingsForRegionMode, getHistoricalFightTelemetry,
   getTalentTreeId, getCachedTalentLayout, playerRegion, getBlizzardTokensForRegions,
-  computeConsensus, getActiveHeroTreeId, makeTelemetry, computeFrequencyPct,
+  computeConsensus, getActiveHeroTreeId, makeTelemetry, computeFrequencyPct, computeRankDistribution,
   mapConcurrent, normalizeTalentTree,
   SPEC_IDS, ENCHANT_SLOT_LABELS, ENCHANT_SLOT_ORDER,
 } from '../lib/wow';
@@ -42,6 +42,7 @@ interface HeroTreeConsensusBase {
   telemetry: any;
   entryIds: Record<number, number>;
   frequencyPct: Record<number, number>;
+  rankDistribution: Record<number, Record<number, number>>;
   avgDps: number | null;
   topDps: number | null;
   avgScore: number | null;
@@ -1072,6 +1073,7 @@ export default async function BossContent({
     let consensusTelemetry: { event: { talentTree: Array<{ nodeID: number; rank: number }> } } | null = null;
     let metaTalentString: string | null = null;
     let metaFrequencyPct: Record<number, number> = {};
+    let metaRankDistribution: Record<number, Record<number, number>> = {};
     const heroTreeConsensusBase: HeroTreeConsensusBase[] = [];
     const wclUrl = wclZoneId
       ? `https://www.warcraftlogs.com/zone/rankings/${wclZoneId}#class=${encodeURIComponent(className)}&spec=${encodeURIComponent(spec)}&difficulty=${difficulty}&boss=${bossId}`
@@ -1081,6 +1083,7 @@ export default async function BossContent({
       const consensusMap = computeConsensus(validTrees, 0.5);
       consensusTelemetry = makeTelemetry(consensusMap);
       metaFrequencyPct = computeFrequencyPct(validTrees);
+      metaRankDistribution = computeRankDistribution(validTrees);
 
       let bestScore = -1;
       for (const player of detailedRankingsBase) {
@@ -1123,6 +1126,7 @@ export default async function BossContent({
         const htMap = hasData ? computeConsensus(group, 0.5) : new Map<number, number>();
         const htTelemetry = hasData ? makeTelemetry(htMap) : { event: { talentTree: [] as Array<{ nodeID: number; rank: number }> } };
         const htFrequencyPct = hasData ? computeFrequencyPct(group) : {};
+        const htRankDistribution = hasData ? computeRankDistribution(group) : {};
 
         let htStr: string | null = null;
         if (hasData) {
@@ -1187,7 +1191,7 @@ export default async function BossContent({
         heroTreeConsensusBase.push({
           id, name, imageUrl, hasData, count: treeEquipIndices.length,
           treeEquipIndices, talentString: htStr, telemetry: htTelemetry,
-          entryIds: htEntryIds, frequencyPct: htFrequencyPct,
+          entryIds: htEntryIds, frequencyPct: htFrequencyPct, rankDistribution: htRankDistribution,
           avgDps: treeDps, topDps: treeTopDps,
           avgScore: treeAvgScore, topScore: treeTopScore, avgPct: treeAvgPct,
         });
@@ -1200,7 +1204,7 @@ export default async function BossContent({
         name: 'All',
         count: totalConsensusPlayers,
         totalPlayers: totalConsensusPlayers,
-        consensus: { telemetry: consensusTelemetry, talentString: metaTalentString, frequencyPct: metaFrequencyPct, entryIds: consensusEntryIds, choiceFreq: metaChoiceFreq },
+        consensus: { telemetry: consensusTelemetry, talentString: metaTalentString, frequencyPct: metaFrequencyPct, rankDistribution: metaRankDistribution, entryIds: consensusEntryIds, choiceFreq: metaChoiceFreq },
         gear: null,
         // Include phase-1 players so topPlayerTelemetry is available for the talent tree overlay
         players: detailedRankingsBase.slice(0, DISPLAY_N),
@@ -1219,6 +1223,7 @@ export default async function BossContent({
             telemetry: htBase.telemetry,
             talentString: htBase.talentString,
             frequencyPct: htBase.frequencyPct ?? {},
+            rankDistribution: htBase.rankDistribution ?? {},
             entryIds: htBase.entryIds,
             choiceFreq: metaChoiceFreq,
           } : null,

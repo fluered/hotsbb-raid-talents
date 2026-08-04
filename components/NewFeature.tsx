@@ -15,13 +15,21 @@ interface TooltipState {
   showRank: boolean;
   rect: DOMRect;
   freq?: number;
-  apexInfo?: { used: number; max: number; count: number };
+  rankDist?: Record<number, number>;
 }
 
 function Tooltip({ tip, colors }: { tip: TooltipState; colors: { color: string } }) {
   const TOOLTIP_W = 256;
   const MARGIN = 10;
-  const { node, rank, showRank, rect, freq, apexInfo } = tip;
+  const { node, rank, showRank, rect, freq, rankDist } = tip;
+  // Sorted descending (max rank first) so "4/4: 78%" reads before "3/4: 22%" — the
+  // partial-investment ranks are what explain a talent that isn't uniformly maxed.
+  const rankRows = rankDist
+    ? Object.entries(rankDist)
+        .map(([r, pct]) => ({ r: Number(r), pct }))
+        .filter(row => row.pct > 0)
+        .sort((a, b) => b.r - a.r)
+    : [];
 
   // Horizontal: prefer left-aligned to node, clamp to viewport
   let left = rect.left;
@@ -44,22 +52,32 @@ function Tooltip({ tip, colors }: { tip: TooltipState; colors: { color: string }
         )}
         <div>
           <div className={`text-sm font-black ${colors.color}`}>{node.name}</div>
-          <div className="flex items-center gap-2 mt-0.5">
-            {showRank && <span className="text-[10px] text-zinc-500">Rank {rank}/{node.maxRanks}</span>}
+          <div className="flex items-center gap-2 mt-0.5 flex-wrap">
             {node.isTieredApex && (
               <span className="text-[10px] font-bold text-violet-400">Multi-tier talent</span>
             )}
-            {freq != null && (
-              <span className={`text-[10px] font-bold ${
-                freq >= 90 ? 'text-white' : freq >= 70 ? colors.color : 'text-zinc-500'
-              }`}>
-                {freq}% of top players
-              </span>
-            )}
-            {apexInfo && (
-              <span className="text-[10px] text-zinc-400">
-                {apexInfo.used}/{apexInfo.max} pts used across {apexInfo.count} apex nodes
-              </span>
+            {rankRows.length > 0 ? (
+              rankRows.map(row => (
+                <span
+                  key={row.r}
+                  className={`text-[10px] font-bold ${
+                    row.r === node.maxRanks ? (row.pct >= 70 ? colors.color : 'text-zinc-400') : 'text-zinc-500'
+                  }`}
+                >
+                  {row.r}/{node.maxRanks}: {row.pct}%
+                </span>
+              ))
+            ) : (
+              <>
+                {showRank && <span className="text-[10px] text-zinc-500">Rank {rank}/{node.maxRanks}</span>}
+                {freq != null && (
+                  <span className={`text-[10px] font-bold ${
+                    freq >= 90 ? 'text-white' : freq >= 70 ? colors.color : 'text-zinc-500'
+                  }`}>
+                    {freq}% of top players
+                  </span>
+                )}
+              </>
             )}
           </div>
         </div>
@@ -172,6 +190,7 @@ export default function NewFeature({
   layout,
   colors,
   frequencyMap,
+  rankDistributionMap,
   heroOnly = false,
   heroTreeImageUrl,
   heroTreeName,
@@ -188,6 +207,7 @@ export default function NewFeature({
   layout: any[];
   colors: { color: string; border: string; activeBg: string };
   frequencyMap?: Record<number, number>;
+  rankDistributionMap?: Record<number, Record<number, number>>;
   heroOnly?: boolean;
   heroTreeImageUrl?: string;
   heroTreeName?: string;
@@ -420,22 +440,6 @@ export default function NewFeature({
     return 1;
   }
 
-  // Apex cluster: if specMaxRow has exactly one node (e.g. Spiritfont), that node sits at
-  // the bottom of a vertical "spine" — all spec nodes in the same column in the last 3 rows
-  // form the cluster (e.g. Secret Infusion 0/2 + Dance of Chi-Ji 0/1 + Spiritfont 0/1 = 4 pts).
-  // If specMaxRow has multiple nodes, all of them are the apex tier.
-  const specMaxRow = specSectionNodes.length > 0 ? Math.max(...specSectionNodes.map((n: any) => n.row as number)) : 0;
-  const specMaxRowNodes = specSectionNodes.filter((n: any) => n.row === specMaxRow);
-  const apexNodes: any[] = specMaxRowNodes.length === 1
-    ? specSectionNodes.filter((n: any) =>
-        (n.column as number) === (specMaxRowNodes[0].column as number) &&
-        (n.row as number) >= specMaxRow - 2
-      )
-    : specMaxRowNodes;
-  const apexNodeIds = new Set<number>(apexNodes.map((n: any) => n.nodeID as number));
-  const apexMaxPts = apexNodes.reduce((s: number, n: any) => s + (n.maxRanks as number), 0);
-  const apexUsedPts = activeNodes.filter((t: any) => apexNodeIds.has(t.nodeID)).reduce((s: number, t: any) => s + (t.rank as number), 0);
-
   const handleMouseEnter = useCallback((e: React.MouseEvent, node: any, rank: number, showRank: boolean, freq?: number) => {
     if (!node.name) return;
     const target = e.currentTarget as HTMLElement | null;
@@ -443,11 +447,13 @@ export default function NewFeature({
     // unmounted (e.g. a hero-tree variant swap mid-hover) — currentTarget is null then.
     if (!target) return;
     const rect = target.getBoundingClientRect();
-    const apexInfo = apexMaxPts > 1 && node.section === 'spec' && apexNodeIds.has(node.nodeID)
-      ? { used: apexUsedPts, max: apexMaxPts, count: apexNodes.length }
-      : undefined;
-    setTooltip({ node, rank, showRank, rect, freq, apexInfo });
-  }, [apexNodes.length, apexNodeIds, apexUsedPts, apexMaxPts]);
+    // For multi-rank nodes, the sample's rank split is more useful than "X% took it at
+    // all" — e.g. distinguishing "78% went 4/4" from "22% stopped at 3/4" (often because
+    // those points went to a different talent entirely) is exactly what a flat presence
+    // percentage can't show.
+    const rankDist = node.maxRanks > 1 ? rankDistributionMap?.[node.nodeID] : undefined;
+    setTooltip({ node, rank, showRank, rect, freq, rankDist });
+  }, [rankDistributionMap]);
 
   const handleMouseLeave = useCallback(() => setTooltip(null), []);
 

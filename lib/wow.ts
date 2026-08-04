@@ -580,6 +580,30 @@ export function computeFrequencyPct(telemetries: Array<Array<{ nodeID: number; r
   return result;
 }
 
+// computeFrequencyPct only answers "did they take this node at all" — for a multi-rank
+// node that collapses "everyone went 4/4" and "half stopped at 3/4 to afford something
+// else" into the same 100%. This answers the more useful question for those nodes: what
+// share of the sample landed on each specific rank.
+export function computeRankDistribution(
+  telemetries: Array<Array<{ nodeID: number; rank: number }>>
+): Record<number, Record<number, number>> {
+  const counts = new Map<number, Map<number, number>>();
+  const N = telemetries.length;
+  for (const tel of telemetries) {
+    for (const { nodeID, rank } of tel) {
+      if (!counts.has(nodeID)) counts.set(nodeID, new Map());
+      const byRank = counts.get(nodeID)!;
+      byRank.set(rank, (byRank.get(rank) ?? 0) + 1);
+    }
+  }
+  const result: Record<number, Record<number, number>> = {};
+  for (const [nodeID, byRank] of counts) {
+    result[nodeID] = {};
+    for (const [rank, count] of byRank) result[nodeID][rank] = Math.round((count / N) * 100);
+  }
+  return result;
+}
+
 export function scoreAgainstMap(fightTalents: Array<{ nodeID: number; rank: number }>, ref: Map<number, number>): number {
   let score = 0;
   for (const { nodeID, rank } of fightTalents) {

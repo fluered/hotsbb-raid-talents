@@ -22,6 +22,7 @@ export interface HeroVariant {
     telemetry: { event: { talentTree: Array<{ nodeID: number; rank: number }> } };
     talentString: string | null;
     frequencyPct: Record<number, number>;
+    rankDistribution?: Record<number, Record<number, number>>;
     entryIds?: Record<number, number>;
     choiceFreq?: Record<number, { aEntryId: number; bEntryId: number; aPct: number; bPct: number }>;
   } | null;
@@ -718,6 +719,7 @@ export default function BossView({
               layout={layout}
               colors={colors}
               frequencyMap={active.consensus.frequencyPct}
+              rankDistributionMap={active.consensus.rankDistribution}
               heroTreeImageUrl={active.id !== null ? active.imageUrl : undefined}
               heroTreeName={active.id !== null ? active.name : undefined}
               heroTrees={active.id === null
