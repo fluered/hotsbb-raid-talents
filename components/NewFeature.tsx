@@ -603,7 +603,7 @@ export default function NewFeature({
                 gridRow: mappedRow,
                 gridColumn: colSpan > 1 ? `${mappedColumn} / span ${colSpan}` : mappedColumn,
               }}
-              className={colSpan > 1 ? 'flex justify-center' : undefined}
+              className={`relative ${colSpan > 1 ? 'flex justify-center' : ''}`}
               onMouseEnter={(e) => {
                 if (isChoiceNode) {
                   const target = e.currentTarget as HTMLElement | null;
@@ -663,21 +663,26 @@ export default function NewFeature({
                     <span className="absolute right-0 top-1/2 -translate-y-1/2 text-amber-300 font-black leading-none pointer-events-none select-none" style={{ fontSize: 18, textShadow: '0 0 8px rgba(251,191,36,0.95), 0 0 4px rgba(251,191,36,0.7), 0 0 2px #000' }}>›</span>
                   </>
                 )}
-                {showRank && (
-                  <div className={`absolute -top-1.5 -right-1.5 min-w-[24px] h-[18px] px-1 rounded-full flex items-center justify-center border-2 z-10 ${
-                    isPartialApex
-                      ? 'bg-amber-500 border-amber-300 shadow-[0_0_5px_1px_rgba(251,191,36,0.7)]'
-                      : node.isTieredApex ? 'bg-violet-500 border-violet-300' : 'bg-zinc-800 border-zinc-600'
-                  }`}>
-                    <span className="text-[11px] font-black tabular-nums leading-none text-white">{rank}/{node.maxRanks}</span>
-                  </div>
-                )}
                 {freq != null && freq > 0 && node.section !== 'hero' && (
                   <div className="absolute bottom-0 inset-x-0 bg-black/75 flex items-center justify-center py-0.5">
                     <span className={`text-[8px] font-bold tabular-nums leading-none ${isActive ? 'text-white' : 'text-zinc-400'}`}>{freq}%</span>
                   </div>
                 )}
               </div>
+              {showRank && (
+                // Sibling of the icon circle, not a child of it — the circle's
+                // overflow-hidden (needed to clip the icon image/freq band to the round
+                // shape) was also clipping this badge wherever it poked past the circle's
+                // edge, cutting the text off. Positioning it here, against the outer
+                // (non-clipping) grid cell, keeps the full badge visible.
+                <div className={`absolute -top-1.5 -right-1.5 min-w-[24px] h-[18px] px-1 rounded-full flex items-center justify-center border-2 z-10 ${
+                  isPartialApex
+                    ? 'bg-amber-500 border-amber-300 shadow-[0_0_5px_1px_rgba(251,191,36,0.7)]'
+                    : node.isTieredApex ? 'bg-violet-500 border-violet-300' : 'bg-zinc-800 border-zinc-600'
+                }`}>
+                  <span className="text-[11px] font-black tabular-nums leading-none text-white">{rank}/{node.maxRanks}</span>
+                </div>
+              )}
             </div>
           );
         })}
