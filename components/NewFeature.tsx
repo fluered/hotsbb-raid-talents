@@ -572,6 +572,11 @@ export default function NewFeature({
           // at a glance as "not everyone agrees here."
           const rankFreq = node.maxRanks > 1 && isActive ? rankDistributionMap?.[node.nodeID]?.[rank] : undefined;
           const freq = rankFreq ?? frequencyMap?.[node.nodeID];
+          // On an individual player card, a partially-invested apex node still renders at
+          // full icon opacity like a maxed one — the small rank badge was the only
+          // difference, easy to miss ("looks like he took all 4"). Flagging it amber
+          // instead of violet makes "this player stopped short of max" visible at a glance.
+          const isPartialApex = node.isTieredApex && isActive && rank < node.maxRanks;
           const isDivergent = divergentNodeIds?.has(node.nodeID) ?? false;
           // true = top player takes this but consensus doesn't; false = consensus takes it but top player skips
           const topPlayerTakes = isDivergent && (topPlayerNodeIds?.has(node.nodeID) ?? false);
@@ -660,7 +665,9 @@ export default function NewFeature({
                 )}
                 {showRank && (
                   <div className={`absolute -top-1 -right-1 min-w-[16px] h-[14px] px-0.5 rounded-full flex items-center justify-center border ${
-                    node.isTieredApex ? 'bg-violet-500 border-violet-300' : 'bg-zinc-800 border-zinc-600'
+                    isPartialApex
+                      ? 'bg-amber-500 border-amber-300 shadow-[0_0_4px_1px_rgba(251,191,36,0.6)]'
+                      : node.isTieredApex ? 'bg-violet-500 border-violet-300' : 'bg-zinc-800 border-zinc-600'
                   }`}>
                     <span className="text-[8px] font-black tabular-nums leading-none text-white">{rank}/{node.maxRanks}</span>
                   </div>
