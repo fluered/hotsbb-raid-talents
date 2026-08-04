@@ -664,12 +664,12 @@ export default function NewFeature({
                   </>
                 )}
                 {showRank && (
-                  <div className={`absolute -top-1 -right-1 min-w-[16px] h-[14px] px-0.5 rounded-full flex items-center justify-center border ${
+                  <div className={`absolute -top-1.5 -right-1.5 min-w-[24px] h-[18px] px-1 rounded-full flex items-center justify-center border-2 z-10 ${
                     isPartialApex
-                      ? 'bg-amber-500 border-amber-300 shadow-[0_0_4px_1px_rgba(251,191,36,0.6)]'
+                      ? 'bg-amber-500 border-amber-300 shadow-[0_0_5px_1px_rgba(251,191,36,0.7)]'
                       : node.isTieredApex ? 'bg-violet-500 border-violet-300' : 'bg-zinc-800 border-zinc-600'
                   }`}>
-                    <span className="text-[8px] font-black tabular-nums leading-none text-white">{rank}/{node.maxRanks}</span>
+                    <span className="text-[11px] font-black tabular-nums leading-none text-white">{rank}/{node.maxRanks}</span>
                   </div>
                 )}
                 {freq != null && freq > 0 && node.section !== 'hero' && (
