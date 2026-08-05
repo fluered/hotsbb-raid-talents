@@ -106,8 +106,14 @@ async function fetchOnce(job) {
 // trading time for completeness is free. A safety ceiling still aborts the whole run
 // if the pauses pile up enough to suggest deep quota exhaustion rather than normal
 // throttling (e.g. the multi-day-recovery 429 seen from same-day batch testing).
-const MAX_WALL_CLOCK_MS = 3 * 60 * 60 * 1000; // 3h absolute ceiling on the whole run
-const MAX_CUMULATIVE_PAUSE_MS = 2 * 60 * 60 * 1000; // 2h of *requested* pause time
+// Raised from 3h/2h after three consecutive runs died from hitting this ceiling at
+// ~95-99% completion, not from any real problem with the data — the backfill fix
+// (guaranteeing each combo's consensus sample reaches its target size) makes every
+// run inherently more rate-limit-prone than before, so pauses legitimately pile up
+// higher now. Trading more wall-clock time for not having to restart from scratch
+// repeatedly is worth it here.
+const MAX_WALL_CLOCK_MS = 6 * 60 * 60 * 1000; // 6h absolute ceiling on the whole run
+const MAX_CUMULATIVE_PAUSE_MS = 4 * 60 * 60 * 1000; // 4h of *requested* pause time
 const startedAt = Date.now();
 let pauseUntil = 0;
 let cumulativePauseMs = 0;
