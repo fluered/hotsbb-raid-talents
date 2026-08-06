@@ -7,7 +7,7 @@ import {
   getTalentTreeId, getCachedTalentLayout, playerRegion, getBlizzardTokensForRegions,
   computeConsensus, getActiveHeroTreeId, makeTelemetry, computeFrequencyPct, computeRankDistribution,
   mapConcurrent, normalizeTalentTree, deriveTalentStringAndProfileNodes, blizzardCharacterProfileFetch,
-  selectPlayersWithValidTelemetry,
+  selectPlayersWithValidTelemetry, resolveMetaBuildPick,
   SPEC_IDS, ENCHANT_SLOT_LABELS, ENCHANT_SLOT_ORDER,
 } from '../lib/wow';
 
@@ -19,17 +19,6 @@ function stripWowCodes(text: string): string {
     .replace(/\|c[0-9A-Fa-f]{8}/gi, '')
     .replace(/\|r/gi, '')
     .trim();
-}
-
-// Extracted from the inner closure so it can be shared across phases (also used by lib/metaBuild.ts)
-export function scorePlayerTree(tree: any[], cMap: Map<number, number>): number {
-  const rankMap = new Map<number, number>();
-  for (const t of normalizeTalentTree(tree)) rankMap.set(t.nodeID, t.rank);
-  let score = 0;
-  for (const [nodeID, rank] of cMap) {
-    if (rankMap.get(nodeID) === rank) score++;
-  }
-  return score;
 }
 
 interface HeroTreeConsensusBase {
@@ -950,6 +939,15 @@ export default async function BossContent({
       return { ...player, telemetry: telemetryData, talentString, renderUrl: null, profileNodes };
     });
 
+    // Separate from detailedRankingsBase (which only carries a derived talentString for
+    // the DISPLAY_N players whose profile was eagerly fetched) — this pairs every
+    // consensus player with their raw profileData (possibly undefined) so
+    // resolveMetaBuildPick can score the FULL sample and fetch on demand for whichever
+    // real player actually wins, not just whoever happened to be in the eager batch.
+    const pickPool = consensusRankings.map((player: any, idx: number) => ({
+      player, telemetry: allTelemetryData[idx], profileData: blizzardProfiles[idx],
+    }));
+
     // ── Choice node frequency (phase-1 only) ─────────────────────────────
     const choiceFreqRaw: Record<number, { aEntryId: number; bEntryId: number; aCount: number; bCount: number }> = {};
     for (const n of skeletonMap) {
@@ -1025,31 +1023,13 @@ export default async function BossContent({
       metaFrequencyPct = computeFrequencyPct(validTrees);
       metaRankDistribution = computeRankDistribution(validTrees);
 
-      let bestScore = -1;
-      for (const player of detailedRankingsBase) {
-        if (!player.talentString) continue;
-        const score = scorePlayerTree(player.telemetry?.event?.talentTree || [], consensusMap);
-        if (score > bestScore) bestScore = score;
-      }
-      const metaStrFreq = new Map<string, number>();
-      for (const player of detailedRankingsBase) {
-        if (!player.talentString) continue;
-        if (scorePlayerTree(player.telemetry?.event?.talentTree || [], consensusMap) === bestScore) {
-          metaStrFreq.set(player.talentString, (metaStrFreq.get(player.talentString) ?? 0) + 1);
-        }
-      }
-      for (const [str, freq] of metaStrFreq) {
-        if (freq > (metaStrFreq.get(metaTalentString ?? '') ?? 0)) metaTalentString = str;
-      }
-
-      const metaPlayer = detailedRankingsBase.find(
-        (p: any) => p.talentString === metaTalentString && (p as any).profileNodes?.length > 0
-      );
-      const consensusEntryIds: Record<number, number> = {};
-      for (const node of (metaPlayer as any)?.profileNodes ?? []) {
-        const entryId = node.tooltip?.talent?.id;
-        if (entryId != null) consensusEntryIds[node.id] = entryId;
-      }
+      // Scores every player in the FULL consensus sample by raw WCL telemetry (not just
+      // the DISPLAY_N players whose profile happened to be eagerly fetched) so the real
+      // closest-to-consensus player is never passed over just because their profile
+      // wasn't in the initial batch — resolveMetaBuildPick fetches it on demand instead.
+      const overallPick = await resolveMetaBuildPick(pickPool, consensusMap, skeletonMap, treeInfo.specId, blizzardTokensByRegion);
+      metaTalentString = overallPick?.talentString ?? null;
+      const consensusEntryIds: Record<number, number> = overallPick?.entryIds ?? {};
 
       const heroGroups = new Map<number, Array<Array<{ nodeID: number; rank: number }>>>();
       for (const tel of validTrees) {
@@ -1069,35 +1049,14 @@ export default async function BossContent({
         const htRankDistribution = hasData ? computeRankDistribution(group) : {};
 
         let htStr: string | null = null;
+        let htEntryIds: Record<number, number> = {};
         if (hasData) {
-          let htBest = -1;
-          for (const player of detailedRankingsBase) {
-            if (!player.talentString) continue;
-            if (getActiveHeroTreeId(player.telemetry?.event?.talentTree || [], skeletonMap) !== id) continue;
-            const score = scorePlayerTree(player.telemetry?.event?.talentTree || [], htMap);
-            if (score > htBest) htBest = score;
-          }
-          const htStrFreq = new Map<string, number>();
-          for (const player of detailedRankingsBase) {
-            if (!player.talentString) continue;
-            if (getActiveHeroTreeId(player.telemetry?.event?.talentTree || [], skeletonMap) !== id) continue;
-            if (scorePlayerTree(player.telemetry?.event?.talentTree || [], htMap) === htBest) {
-              htStrFreq.set(player.talentString, (htStrFreq.get(player.talentString) ?? 0) + 1);
-            }
-          }
-          for (const [str, freq] of htStrFreq) {
-            if (freq > (htStrFreq.get(htStr ?? '') ?? 0)) htStr = str;
-          }
-        }
-
-        const htMetaPlayer = detailedRankingsBase.find(
-          (p: any) => p.talentString === htStr && (p as any).profileNodes?.length > 0
-            && getActiveHeroTreeId(p.telemetry?.event?.talentTree || [], skeletonMap) === id
-        );
-        const htEntryIds: Record<number, number> = {};
-        for (const node of (htMetaPlayer as any)?.profileNodes ?? []) {
-          const entryId = node.tooltip?.talent?.id;
-          if (entryId != null) htEntryIds[node.id] = entryId;
+          const htPool = pickPool.filter((p) =>
+            getActiveHeroTreeId(p.telemetry?.event?.talentTree || [], skeletonMap) === id
+          );
+          const htPick = await resolveMetaBuildPick(htPool, htMap, skeletonMap, treeInfo.specId, blizzardTokensByRegion);
+          htStr = htPick?.talentString ?? null;
+          htEntryIds = htPick?.entryIds ?? {};
         }
 
         // Which player indices (into blizzardEquipment/allTelemetryData) use this hero tree

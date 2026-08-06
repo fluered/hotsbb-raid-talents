@@ -755,12 +755,73 @@ export function deriveTalentStringAndProfileNodes(
   return { talentString, profileNodes };
 }
 
-export function scoreAgainstMap(fightTalents: Array<{ nodeID: number; rank: number }>, ref: Map<number, number>): number {
+// How closely one player's fight matches the node-level majority consensus — counts
+// nodes where the player's actual pick+rank agrees with cMap. Used to find the single
+// real player whose build is the best stand-in for "the meta build."
+export function scorePlayerTree(tree: any[], cMap: Map<number, number>): number {
+  const rankMap = new Map<number, number>();
+  for (const t of normalizeTalentTree(tree)) rankMap.set(t.nodeID, t.rank);
   let score = 0;
-  for (const { nodeID, rank } of fightTalents) {
-    if (ref.get(nodeID) === rank) score++;
+  for (const [nodeID, rank] of cMap) {
+    if (rankMap.get(nodeID) === rank) score++;
   }
   return score;
+}
+
+export interface MetaBuildPick {
+  player: any;
+  telemetry: any;
+  wclEntries: WclImportEntry[] | null;
+  entryIds: Record<number, number>;
+  talentString: string | null;
+}
+
+// Finds the single real player — across the FULL consensus pool, not just whichever
+// slice happened to get an eager Blizzard-profile fetch — whose raw WCL telemetry is
+// closest to cMap, and derives the "meta build" entirely from that player's actual
+// fight data. entryIds/wclEntries come straight from buildImportEntries (already
+// proven accurate) and cost nothing extra. talentString is a best-effort convenience
+// string for the Copy button / addon fallback: reused from the winning player's
+// already-fetched profile if present, otherwise fetched on demand for just that one
+// player, so the shareable string always describes the SAME build as entryIds rather
+// than whichever other player happened to have a profile fetched (see the DISPLAY_N
+// slice bug this replaces — restricting talentString candidates to an eagerly-fetched
+// subset could pick a real but poorly-matching player over the true best match).
+export async function resolveMetaBuildPick(
+  pool: Array<{ player: any; telemetry: any; profileData?: any }>,
+  cMap: Map<number, number>,
+  skeletonMap: Array<{ nodeID: number; grantedRanks?: number }>,
+  specId: number,
+  blizzardTokensByRegion: Map<string, string>
+): Promise<MetaBuildPick | null> {
+  let bestScore = -1;
+  let best: (typeof pool)[number] | null = null;
+  for (const entry of pool) {
+    const raw = entry.telemetry?.event?.talentTree;
+    if (!raw?.length) continue;
+    const score = scorePlayerTree(raw, cMap);
+    if (score > bestScore) { bestScore = score; best = entry; }
+  }
+  if (!best) return null;
+
+  const rawTree = best.telemetry.event.talentTree;
+  const wclEntries = buildImportEntries(rawTree, skeletonMap);
+  const entryIds: Record<number, number> = {};
+  for (const e of wclEntries) entryIds[e.nodeID] = e.selectionEntryID;
+
+  let profileData = best.profileData;
+  if (!profileData) {
+    profileData = await blizzardCharacterProfileFetch(best.player, blizzardTokensByRegion, 'specializations', 'spec');
+  }
+  const { talentString } = deriveTalentStringAndProfileNodes(best.telemetry, profileData, specId);
+
+  return {
+    player: best.player,
+    telemetry: best.telemetry,
+    wclEntries: wclEntries.length > 0 ? wclEntries : null,
+    entryIds,
+    talentString,
+  };
 }
 
 // ─── Static Data ──────────────────────────────────────────────────────────────

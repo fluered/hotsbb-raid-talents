@@ -1,11 +1,11 @@
 import { unstable_cache } from 'next/cache';
-import { scorePlayerTree } from '../app/BossContent';
 import {
   getWclToken, getBlizzardToken, getWclRankingsForRegionMode, getHistoricalFightTelemetry,
   getTalentTreeId, getCachedTalentLayout, playerRegion, getBlizzardTokensForRegions,
-  computeConsensus, getActiveHeroTreeId, makeTelemetry, computeFrequencyPct,
-  mapConcurrent, normalizeTalentTree, buildImportEntries, type WclImportEntry,
-  deriveTalentStringAndProfileNodes, blizzardCharacterProfileFetch, selectPlayersWithValidTelemetry,
+  computeConsensus, getActiveHeroTreeId, computeFrequencyPct,
+  mapConcurrent, normalizeTalentTree, type WclImportEntry,
+  blizzardCharacterProfileFetch, selectPlayersWithValidTelemetry,
+  resolveMetaBuildPick,
 } from './wow';
 
 // WCL enforces a burst rate limit independent of its overall points budget. Firing
@@ -99,10 +99,12 @@ export async function getMetaBuild(params: {
   const allTelemetryData = consensusSelection.map(s => s.telemetry);
 
   // A Global (or US+EU) pool can span players from several regions, each needing their
-  // own region's Blizzard token — DISPLAY_N covers every profile fetch below (this is
-  // the only one talent-only meta builds need; no equip/stats/media here).
+  // own region's Blizzard token. Covers the full consensus sample, not just the eagerly-
+  // profiled DISPLAY_N slice below, so resolveMetaBuildPick can always fetch on demand
+  // for whichever real player actually wins the "closest to consensus" match — even
+  // when that's someone outside the eager batch.
   const blizzardTokensByRegion = await getBlizzardTokensForRegions(
-    consensusRankings.slice(0, DISPLAY_N).map((p: any) => playerRegion(p, 'us'))
+    consensusRankings.map((p: any) => playerRegion(p, 'us'))
   );
 
   const blizzardProfiles = await mapConcurrent(
@@ -111,12 +113,11 @@ export async function getMetaBuild(params: {
     (player: any) => blizzardCharacterProfileFetch(player, blizzardTokensByRegion, 'specializations', 'spec')
   );
 
-  const detailedRankingsBase = consensusRankings.map((player: any, idx: number) => {
-    const telemetryData = allTelemetryData[idx];
-    const profileData = blizzardProfiles[idx];
-    const { talentString, profileNodes } = deriveTalentStringAndProfileNodes(telemetryData, profileData, treeInfo.specId);
-    return { ...player, telemetry: telemetryData, talentString, profileNodes };
-  });
+  const pickPool = consensusRankings.map((player: any, idx: number) => ({
+    player,
+    telemetry: allTelemetryData[idx],
+    profileData: blizzardProfiles[idx],
+  }));
 
   const allFightTrees = allTelemetryData.map(t => normalizeTalentTree(t?.event?.talentTree || []));
   const validTrees = allFightTrees.filter(t => t.length > 0);
@@ -132,65 +133,15 @@ export async function getMetaBuild(params: {
   const consensusMap = computeConsensus(validTrees, 0.5);
   const metaFrequencyPct = computeFrequencyPct(validTrees);
 
-  function pickTalentString(pool: any[], cMap: Map<number, number>): string | null {
-    let bestScore = -1;
-    for (const player of pool) {
-      if (!player.talentString) continue;
-      const score = scorePlayerTree(player.telemetry?.event?.talentTree || [], cMap);
-      if (score > bestScore) bestScore = score;
-    }
-    const freq = new Map<string, number>();
-    for (const player of pool) {
-      if (!player.talentString) continue;
-      if (scorePlayerTree(player.telemetry?.event?.talentTree || [], cMap) === bestScore) {
-        freq.set(player.talentString, (freq.get(player.talentString) ?? 0) + 1);
-      }
-    }
-    let best: string | null = null;
-    for (const [str, count] of freq) {
-      if (count > (freq.get(best ?? '') ?? 0)) best = str;
-    }
-    return best;
-  }
-
-  function entryIdsFor(talentString: string | null, pool: any[]): Record<number, number> {
-    const metaPlayer = pool.find((p: any) => p.talentString === talentString && p.profileNodes?.length > 0);
-    const entryIds: Record<number, number> = {};
-    for (const node of metaPlayer?.profileNodes ?? []) {
-      const entryId = node.tooltip?.talent?.id;
-      if (entryId != null) entryIds[node.id] = entryId;
-    }
-    return entryIds;
-  }
-
-  // Same "closest-matching real player" approach as pickTalentString, but scored
-  // against every player's raw WCL telemetry directly rather than requiring a
-  // Blizzard-profile-derived talentString — so it still works for players whose
-  // profile isn't fetchable (private, or a region Blizzard's API doesn't cover, e.g.
-  // CN). Builds entries straight from that player's telemetry once picked.
-  function pickWclEntries(pool: any[], cMap: Map<number, number>): WclImportEntry[] | null {
-    let bestScore = -1;
-    let bestPlayer: any = null;
-    for (const player of pool) {
-      const raw = player.telemetry?.event?.talentTree;
-      if (!raw?.length) continue;
-      const score = scorePlayerTree(raw, cMap);
-      if (score > bestScore) { bestScore = score; bestPlayer = player; }
-    }
-    if (!bestPlayer) return null;
-    const entries = buildImportEntries(bestPlayer.telemetry.event.talentTree, skeletonMap);
-    return entries.length > 0 ? entries : null;
-  }
-
-  const metaTalentString = pickTalentString(detailedRankingsBase, consensusMap);
+  const overallPick = await resolveMetaBuildPick(pickPool, consensusMap, skeletonMap, treeInfo.specId, blizzardTokensByRegion);
   const variants: MetaBuildVariant[] = [{
     id: null,
     name: 'Overall',
     count: validTrees.length,
-    talentString: metaTalentString,
+    talentString: overallPick?.talentString ?? null,
     frequencyPct: metaFrequencyPct,
-    entryIds: entryIdsFor(metaTalentString, detailedRankingsBase),
-    wclEntries: pickWclEntries(detailedRankingsBase, consensusMap),
+    entryIds: overallPick?.entryIds ?? {},
+    wclEntries: overallPick?.wclEntries ?? null,
   }];
 
   const heroGroups = new Map<number, Array<Array<{ nodeID: number; rank: number }>>>();
@@ -207,16 +158,16 @@ export async function getMetaBuild(params: {
     if (group.length < 2) continue;
     const htMap = computeConsensus(group, 0.5);
     const htFrequencyPct = computeFrequencyPct(group);
-    const pool = detailedRankingsBase.filter((p: any) =>
+    const pool = pickPool.filter((p) =>
       getActiveHeroTreeId(p.telemetry?.event?.talentTree || [], skeletonMap) === id
     );
-    const htTalentString = pickTalentString(pool, htMap);
+    const htPick = await resolveMetaBuildPick(pool, htMap, skeletonMap, treeInfo.specId, blizzardTokensByRegion);
     variants.push({
       id, name, count: pool.length,
-      talentString: htTalentString,
+      talentString: htPick?.talentString ?? null,
       frequencyPct: htFrequencyPct,
-      entryIds: entryIdsFor(htTalentString, pool),
-      wclEntries: pickWclEntries(pool, htMap),
+      entryIds: htPick?.entryIds ?? {},
+      wclEntries: htPick?.wclEntries ?? null,
     });
   }
 
