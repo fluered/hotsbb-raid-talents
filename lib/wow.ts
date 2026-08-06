@@ -721,29 +721,27 @@ export function deriveTalentStringAndProfileNodes(
 
   let talentString: string | null = null;
   if (fightSpec) {
-    const activeLoadout = (fightSpec.loadouts ?? []).find(
-      (l: any) => l.is_active && l.talent_loadout_code
-    );
-    if (activeLoadout) {
-      talentString = activeLoadout.talent_loadout_code;
-    } else {
-      let bestScore = -1;
-      let bestIsActive = false;
-      for (const loadout of fightSpec.loadouts ?? []) {
-        if (!loadout.talent_loadout_code) continue;
-        const nodes = [
-          ...(loadout.selected_class_talents ?? []),
-          ...(loadout.selected_spec_talents ?? []),
-          ...(loadout.selected_hero_talents ?? []),
-        ];
-        let score = 0;
-        for (const node of nodes) {
-          if (fightMap.get(node.id) === node.rank) score++;
-        }
-        const isActive = !!loadout.is_active;
-        if (score > bestScore || (score === bestScore && isActive && !bestIsActive)) {
-          bestScore = score; talentString = loadout.talent_loadout_code; bestIsActive = isActive;
-        }
+    // A profile's "active" loadout reflects whatever the player has selected right
+    // now, at fetch time — not necessarily what they had equipped during this fight,
+    // which may be old and long since respecced away from. Always score every saved
+    // loadout against the fight's actual telemetry and take the best match; `is_active`
+    // only breaks ties between equally-good matches, never bypasses scoring outright.
+    let bestScore = -1;
+    let bestIsActive = false;
+    for (const loadout of fightSpec.loadouts ?? []) {
+      if (!loadout.talent_loadout_code) continue;
+      const nodes = [
+        ...(loadout.selected_class_talents ?? []),
+        ...(loadout.selected_spec_talents ?? []),
+        ...(loadout.selected_hero_talents ?? []),
+      ];
+      let score = 0;
+      for (const node of nodes) {
+        if (fightMap.get(node.id) === node.rank) score++;
+      }
+      const isActive = !!loadout.is_active;
+      if (score > bestScore || (score === bestScore && isActive && !bestIsActive)) {
+        bestScore = score; talentString = loadout.talent_loadout_code; bestIsActive = isActive;
       }
     }
   }
