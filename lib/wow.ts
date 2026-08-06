@@ -776,17 +776,27 @@ export interface MetaBuildPick {
   talentString: string | null;
 }
 
+// How many lower-scoring candidates resolveMetaBuildPick will try (beyond the single
+// best match) for a shareable talentString before giving up. Bounds the extra on-demand
+// Blizzard profile fetches a request can trigger — private profiles, deleted characters,
+// and transient API errors are common enough that always stopping at exactly rank #1
+// left the Copy button missing far more often than the old (less accurate) behavior did.
+const TALENT_STRING_FALLBACK_ATTEMPTS = 5;
+
 // Finds the single real player — across the FULL consensus pool, not just whichever
 // slice happened to get an eager Blizzard-profile fetch — whose raw WCL telemetry is
 // closest to cMap, and derives the "meta build" entirely from that player's actual
 // fight data. entryIds/wclEntries come straight from buildImportEntries (already
-// proven accurate) and cost nothing extra. talentString is a best-effort convenience
-// string for the Copy button / addon fallback: reused from the winning player's
-// already-fetched profile if present, otherwise fetched on demand for just that one
-// player, so the shareable string always describes the SAME build as entryIds rather
-// than whichever other player happened to have a profile fetched (see the DISPLAY_N
-// slice bug this replaces — restricting talentString candidates to an eagerly-fetched
-// subset could pick a real but poorly-matching player over the true best match).
+// proven accurate) and cost nothing extra, always anchored to this single best match.
+// talentString is a best-effort convenience string for the Copy button / addon
+// fallback: since a fair share of profiles are unfetchable (private, deleted/renamed
+// character, transient Blizzard API errors), resolving it against ONLY the single best
+// match left the Copy button missing far more often than it needs to. Instead it walks
+// down the score-ranked candidates (reusing already-fetched profileData where present,
+// otherwise fetching on demand) until one actually resolves a loadout, capped at
+// TALENT_STRING_FALLBACK_ATTEMPTS — still always a genuinely close match, just not
+// necessarily rank #1, and never the "any player with a talentString" free-for-all the
+// old DISPLAY_N-restricted logic used.
 export async function resolveMetaBuildPick(
   pool: Array<{ player: any; telemetry: any; profileData?: any }>,
   cMap: Map<number, number>,
@@ -794,26 +804,30 @@ export async function resolveMetaBuildPick(
   specId: number,
   blizzardTokensByRegion: Map<string, string>
 ): Promise<MetaBuildPick | null> {
-  let bestScore = -1;
-  let best: (typeof pool)[number] | null = null;
+  const scored: Array<{ entry: (typeof pool)[number]; score: number }> = [];
   for (const entry of pool) {
     const raw = entry.telemetry?.event?.talentTree;
     if (!raw?.length) continue;
-    const score = scorePlayerTree(raw, cMap);
-    if (score > bestScore) { bestScore = score; best = entry; }
+    scored.push({ entry, score: scorePlayerTree(raw, cMap) });
   }
-  if (!best) return null;
+  if (scored.length === 0) return null;
+  scored.sort((a, b) => b.score - a.score);
 
+  const best = scored[0].entry;
   const rawTree = best.telemetry.event.talentTree;
   const wclEntries = buildImportEntries(rawTree, skeletonMap);
   const entryIds: Record<number, number> = {};
   for (const e of wclEntries) entryIds[e.nodeID] = e.selectionEntryID;
 
-  let profileData = best.profileData;
-  if (!profileData) {
-    profileData = await blizzardCharacterProfileFetch(best.player, blizzardTokensByRegion, 'specializations', 'spec');
+  let talentString: string | null = null;
+  for (const { entry } of scored.slice(0, TALENT_STRING_FALLBACK_ATTEMPTS)) {
+    let profileData = entry.profileData;
+    if (!profileData) {
+      profileData = await blizzardCharacterProfileFetch(entry.player, blizzardTokensByRegion, 'specializations', 'spec');
+    }
+    const resolved = deriveTalentStringAndProfileNodes(entry.telemetry, profileData, specId);
+    if (resolved.talentString) { talentString = resolved.talentString; break; }
   }
-  const { talentString } = deriveTalentStringAndProfileNodes(best.telemetry, profileData, specId);
 
   return {
     player: best.player,
