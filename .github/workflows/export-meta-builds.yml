@@ -14,8 +14,11 @@ name: Regenerate addon Data.lua
 # per-job cap on hosted runners, not the primary safety mechanism.
 on:
   schedule:
-    - cron: '0 9 * * 0' # Sundays 09:00 UTC — adjust to taste
-  workflow_dispatch: {} # manual "Run workflow" button in the Actions tab
+    # Tuesdays 22:00 UTC = 6pm ET during Daylight Time (drifts to 5pm ET during
+    # Standard Time, Nov-Mar — cron has no DST awareness). Timed after WoW's
+    # weekly Tuesday patch/reset so the crawl picks up whatever changed.
+    - cron: '0 22 * * 2'
+  workflow_dispatch: {} # manual "Run workflow" button in the Actions tab, for off-cycle refreshes
 
 permissions:
   contents: write
