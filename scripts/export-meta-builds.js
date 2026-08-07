@@ -40,47 +40,40 @@ const SPEC_IDS = {
   'Warrior':       { 'Arms': 71, 'Fury': 72, 'Protection': 73 },
 };
 
-// Midnight Season 1 raid bosses (difficulty 5 = Mythic), pulled from /api/debug-boss-data
-const RAID_BOSSES = [
-  { id: 3159, name: 'Rotmire' },
-  { id: 3176, name: 'Imperator Averzian' },
-  { id: 3177, name: 'Vorasius' },
-  { id: 3179, name: "Fallen-King Salhadaar" },
-  { id: 3178, name: 'Vaelgor & Ezzorak' },
-  { id: 3180, name: 'Lightblinded Vanguard' },
-  { id: 3181, name: 'Crown of the Cosmos' },
-  { id: 3306, name: 'Chimaerus, the Undreamt God' },
-  { id: 3182, name: "Belo'ren, Child of Al'ar" },
-  { id: 3183, name: 'Midnight Falls' },
-];
+// Difficulty enum values are WCL-wide constants, not season-specific — these don't
+// need updating when the season's content pool rotates.
 const RAID_DIFFICULTY = 5;
-
-// Mirrors lib/wow.ts MIDNIGHT_DUNGEONS (difficulty 10 = high M+ bracket)
-const DUNGEONS = [
-  { id: 12805,  name: 'Windrunner Spire' },
-  { id: 12874,  name: 'Maisara Caverns' },
-  { id: 12915,  name: 'Nexus-Point Xenas' },
-  { id: 112526, name: "Algeth'ar Academy" },
-  { id: 12811,  name: "Magisters' Terrace" },
-  { id: 10658,  name: 'Pit of Saron' },
-  { id: 361753, name: 'Seat of the Triumvirate' },
-  { id: 61209,  name: 'Skyreach' },
-];
 const MPLUS_DIFFICULTY = 10;
 
-const jobs = [];
-for (const [className, specs] of Object.entries(SPEC_IDS)) {
-  for (const [specName, specID] of Object.entries(specs)) {
-    for (const boss of RAID_BOSSES) {
-      jobs.push({ className, specName, specID, encounterId: boss.id, encounterName: boss.name, difficulty: RAID_DIFFICULTY });
-    }
-    for (const dungeon of DUNGEONS) {
-      jobs.push({ className, specName, specID, encounterId: dungeon.id, encounterName: dungeon.name, difficulty: MPLUS_DIFFICULTY });
+// Raid bosses and dungeons used to be hardcoded here, snapshotted by hand each season
+// from /api/debug-boss-data — which meant every new season silently broke this script
+// until someone noticed and manually re-typed a new encounter ID list. Fetched live
+// from /api/season-content instead (same getDungeonRoster/getRaidStructure calls the
+// website's own pages use), so a new season only needs MPLUS_ZONE_ID/MIDNIGHT_RAIDS
+// updated in lib/wow.ts — this script picks up the new content pool automatically.
+async function fetchSeasonContent() {
+  const res = await fetch(`${BASE}/api/season-content`, { headers: { 'x-hbt-internal': 'hotsbb-export-script' } });
+  const json = await res.json();
+  if (json.status !== 'ok') throw new Error(`Failed to fetch season content: ${json.message ?? JSON.stringify(json)}`);
+  return json;
+}
+
+async function buildJobs() {
+  const { dungeons, raidBosses } = await fetchSeasonContent();
+  const jobs = [];
+  for (const [className, specs] of Object.entries(SPEC_IDS)) {
+    for (const [specName, specID] of Object.entries(specs)) {
+      for (const boss of raidBosses) {
+        jobs.push({ className, specName, specID, encounterId: boss.id, encounterName: boss.name, difficulty: RAID_DIFFICULTY });
+      }
+      for (const dungeon of dungeons) {
+        jobs.push({ className, specName, specID, encounterId: dungeon.id, encounterName: dungeon.name, difficulty: MPLUS_DIFFICULTY });
+      }
     }
   }
+  console.log(`Season content: ${raidBosses.length} raid bosses, ${dungeons.length} dungeons.`);
+  return jobs;
 }
-const activeJobs = LIMIT ? jobs.slice(0, LIMIT) : jobs;
-console.log(`Total combos: ${jobs.length}. Running: ${activeJobs.length} (base=${BASE}, concurrency=${CONCURRENCY})`);
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -220,6 +213,10 @@ function luaEntries(entries) {
 }
 
 (async () => {
+  const jobs = await buildJobs();
+  const activeJobs = LIMIT ? jobs.slice(0, LIMIT) : jobs;
+  console.log(`Total combos: ${jobs.length}. Running: ${activeJobs.length} (base=${BASE}, concurrency=${CONCURRENCY})`);
+
   const results = await mapConcurrent(activeJobs, CONCURRENCY, fetchJob);
 
   const statusCounts = {};

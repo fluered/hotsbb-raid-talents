@@ -1,32 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getMetaBuild } from '../../../lib/metaBuild';
 import { SPEC_IDS } from '../../../lib/wow';
+import { isAuthorizedInternalCaller } from '../../../lib/internalAuth';
 
 export const dynamic = 'force-dynamic';
 
-// This route is meant for two callers only: our own batch export script (which the
-// addon's Data.lua is built from) and the site's own client-side freshness check —
-// both known internal uses, never a public data API. Discovered live (2026-08-03) that
-// something was hitting it directly and repeatedly with varying params, burning through
-// WCL's entire hourly quota (28k live calls in 12h against only 835 cache hits) and
-// breaking real pages that share the same budget. No secret/env var needed: a real
-// browser loading an actual page always sends a Referer for a same-origin fetch; our
-// export script is the only other legitimate caller and identifies itself with a fixed
-// header. Anything else is rejected before it costs anything.
-const INTERNAL_SCRIPT_HEADER = 'hotsbb-export-script';
-function isAuthorizedCaller(request: NextRequest): boolean {
-  if (request.headers.get('x-hbt-internal') === INTERNAL_SCRIPT_HEADER) return true;
-  const referer = request.headers.get('referer') || request.headers.get('origin') || '';
-  try {
-    const host = new URL(referer).hostname;
-    return host === 'hotsbbtalents.io' || host.endsWith('.vercel.app') || host === 'localhost';
-  } catch {
-    return false;
-  }
-}
-
+// Discovered live (2026-08-03) that something was hitting this route directly and
+// repeatedly with varying params, burning through WCL's entire hourly quota (28k live
+// calls in 12h against only 835 cache hits) and breaking real pages that share the same
+// budget. isAuthorizedInternalCaller rejects anything else before it costs anything.
 export async function GET(request: NextRequest) {
-  if (!isAuthorizedCaller(request)) {
+  if (!isAuthorizedInternalCaller(request)) {
     return NextResponse.json({ status: 'error', message: 'Not found' }, { status: 404 });
   }
 
