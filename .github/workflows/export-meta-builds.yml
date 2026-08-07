@@ -1,4 +1,4 @@
-name: Regenerate addon Data.lua
+name: Regenerate addon Data.lua and publish a release
 
 # Runs the same batch export we used to run manually — hitting the live site's
 # /api/meta-build across every class/spec x boss/dungeon combo and baking the
@@ -9,9 +9,14 @@ name: Regenerate addon Data.lua
 # several hours. The export script has its own safety ceiling (currently 12h
 # wall-clock / 9h cumulative rate-limit wait) and refuses to write a partial
 # result if it's exceeded — so a run that gets throttled hard just fails
-# cleanly and leaves the existing Data.lua untouched, same as a manual run.
-# The 350-minute job timeout below is a backstop for GitHub's own hard 6-hour
+# cleanly and leaves Data.lua untouched, same as a manual run. The
+# 350-minute job timeout below is a backstop for GitHub's own hard 6-hour
 # per-job cap on hosted runners, not the primary safety mechanism.
+#
+# When Data.lua does change, also cuts a GitHub Release with a zipped addon
+# folder attached — this is what WowUp (or any GitHub-release-tracking addon
+# manager) picks up to auto-update guild members. No release goes out on a
+# no-op or failed run, so players never get an update with stale/partial data.
 on:
   schedule:
     # Tuesdays 22:00 UTC = 6pm ET during Daylight Time (drifts to 5pm ET during
@@ -37,14 +42,45 @@ jobs:
       - name: Run export
         run: node scripts/export-meta-builds.js
 
-      - name: Commit and push if Data.lua changed
+      - name: Check for changes
+        id: check
         run: |
           if git diff --quiet -- addon/HotsBBTalents/Data.lua; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "No changes to Data.lua — export produced identical data or made no progress."
-            exit 0
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Set addon version
+        if: steps.check.outputs.changed == 'true'
+        id: version
+        run: |
+          version="$(date -u +%Y.%m.%d)-${{ github.run_number }}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          sed -i "s/^## Version:.*/## Version: $version/" addon/HotsBBTalents/HotsBBTalents.toc
+
+      - name: Commit and push
+        if: steps.check.outputs.changed == 'true'
+        run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add addon/HotsBBTalents/Data.lua
-          git commit -m "Scheduled regeneration of addon Data.lua"
+          git add addon/HotsBBTalents/Data.lua addon/HotsBBTalents/HotsBBTalents.toc
+          git commit -m "Regenerate addon Data.lua (v${{ steps.version.outputs.version }})"
           git push
+
+      - name: Package addon zip
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          cd addon
+          zip -r "../HotsBBTalents.zip" HotsBBTalents -x "*.git*"
+
+      - name: Publish release
+        if: steps.check.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ steps.version.outputs.version }}" \
+            HotsBBTalents.zip \
+            --title "HotsBB Talents v${{ steps.version.outputs.version }}" \
+            --notes "Automated meta-build data refresh."
