@@ -42,3 +42,6 @@ dev-server.log
 next-env.d.ts
 
 .vercel
+
+# addon release build artifact — packaged on demand, never committed
+HotsBBTalents.zip
