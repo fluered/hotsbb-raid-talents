@@ -106,14 +106,17 @@ async function fetchOnce(job) {
 // trading time for completeness is free. A safety ceiling still aborts the whole run
 // if the pauses pile up enough to suggest deep quota exhaustion rather than normal
 // throttling (e.g. the multi-day-recovery 429 seen from same-day batch testing).
-// Raised from 3h/2h after three consecutive runs died from hitting this ceiling at
-// ~95-99% completion, not from any real problem with the data — the backfill fix
-// (guaranteeing each combo's consensus sample reaches its target size) makes every
-// run inherently more rate-limit-prone than before, so pauses legitimately pile up
-// higher now. Trading more wall-clock time for not having to restart from scratch
-// repeatedly is worth it here.
-const MAX_WALL_CLOCK_MS = 6 * 60 * 60 * 1000; // 6h absolute ceiling on the whole run
-const MAX_CUMULATIVE_PAUSE_MS = 4 * 60 * 60 * 1000; // 4h of *requested* pause time
+// Raised from 3h/2h, then again from 6h/4h after back-to-back runs still died at this
+// ceiling despite fixing a real double-counting bug in cumulativePauseMs (concurrent
+// workers hitting the same rate-limit window each counted its full duration instead of
+// the actual overlapping wall-clock delay once) — WCL's throttling that night was
+// simply severe enough that even the deduplicated total exceeded 4h. Restarting from
+// scratch on every abort has real overhead (re-walking hundreds of already-cached
+// combos before reaching new ground), so a single run waiting longer beats repeated
+// full restarts whenever the option exists — unattended runs (e.g. overnight) should
+// favor this.
+const MAX_WALL_CLOCK_MS = 12 * 60 * 60 * 1000; // 12h absolute ceiling on the whole run
+const MAX_CUMULATIVE_PAUSE_MS = 9 * 60 * 60 * 1000; // 9h of *requested* pause time
 const startedAt = Date.now();
 let pauseUntil = 0;
 let cumulativePauseMs = 0;
@@ -129,9 +132,18 @@ async function respectPause() {
 function noteRateLimit(json) {
   const retryAfterSec = parseFloat(json.retryAfter) || 30;
   const waitMs = Math.max(1000, (retryAfterSec + 5) * 1000);
-  cumulativePauseMs += waitMs;
   pauseCount++;
-  const target = Date.now() + waitMs;
+  const now = Date.now();
+  const target = now + waitMs;
+  // cumulativePauseMs is meant to approximate real wall-clock time lost to rate
+  // limiting. With concurrency > 1, several workers can hit the same rate-limit
+  // window within milliseconds of each other and each call this — summing every
+  // report's full waitMs double/triple/N-counts one overlapping delay (5 workers
+  // reporting the same ~54min pause inflated that into ~4.5h "cumulative", enough
+  // to trip the abort ceiling despite the real delay being nowhere close). Only the
+  // portion of this pause that extends *beyond* whatever's already pending counts.
+  const effectiveStart = Math.max(now, pauseUntil);
+  cumulativePauseMs += Math.max(0, target - effectiveStart);
   if (target > pauseUntil) pauseUntil = target;
   if (!aborted && (cumulativePauseMs > MAX_CUMULATIVE_PAUSE_MS || Date.now() - startedAt > MAX_WALL_CLOCK_MS)) {
     aborted = true;
