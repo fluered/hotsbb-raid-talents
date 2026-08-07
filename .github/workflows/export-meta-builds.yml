@@ -1,0 +1,47 @@
+name: Regenerate addon Data.lua
+
+# Runs the same batch export we used to run manually — hitting the live site's
+# /api/meta-build across every class/spec x boss/dungeon combo and baking the
+# result into addon/HotsBBTalents/Data.lua. Needs no secrets: WCL/Blizzard
+# credentials already live server-side in Vercel and never touch this workflow.
+#
+# WCL's rate limiting can make a full run take anywhere from ~20 minutes to
+# several hours. The export script has its own safety ceiling (currently 12h
+# wall-clock / 9h cumulative rate-limit wait) and refuses to write a partial
+# result if it's exceeded — so a run that gets throttled hard just fails
+# cleanly and leaves the existing Data.lua untouched, same as a manual run.
+# The 350-minute job timeout below is a backstop for GitHub's own hard 6-hour
+# per-job cap on hosted runners, not the primary safety mechanism.
+on:
+  schedule:
+    - cron: '0 9 * * 0' # Sundays 09:00 UTC — adjust to taste
+  workflow_dispatch: {} # manual "Run workflow" button in the Actions tab
+
+permissions:
+  contents: write
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run export
+        run: node scripts/export-meta-builds.js
+
+      - name: Commit and push if Data.lua changed
+        run: |
+          if git diff --quiet -- addon/HotsBBTalents/Data.lua; then
+            echo "No changes to Data.lua — export produced identical data or made no progress."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add addon/HotsBBTalents/Data.lua
+          git commit -m "Scheduled regeneration of addon Data.lua"
+          git push
