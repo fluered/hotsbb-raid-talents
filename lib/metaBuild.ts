@@ -70,16 +70,24 @@ export async function getMetaBuild(params: {
   metric?: string;
 }): Promise<MetaBuildOutcome> {
   const comboLabel = `${params.className}/${params.spec} vs ${params.bossId} (${params.difficulty})`;
+  let debugBeforeErr: string | null = null;
   const wclToken = await getWclToken();
-  const pointsBefore = await getWclPointsSpent(wclToken).catch(() => null);
+  const pointsBefore = await getWclPointsSpent(wclToken).catch((e) => { debugBeforeErr = String(e); return null; });
 
   try {
-    return await getMetaBuildInner(params, wclToken);
+    const result = await getMetaBuildInner(params, wclToken);
+    (result as any)._debugPoints = { pointsBefore, debugBeforeErr };
+    return result;
   } finally {
     if (pointsBefore != null) {
-      const pointsAfter = await getWclPointsSpent(wclToken).catch(() => null);
+      let debugAfterErr: string | null = null;
+      let debugLogErr: string | null = null;
+      const pointsAfter = await getWclPointsSpent(wclToken).catch((e) => { debugAfterErr = String(e); return null; });
       const delta = pointsAfter != null && pointsAfter >= pointsBefore ? pointsAfter - pointsBefore : null;
-      await logPointsUsage({ combo: comboLabel, points: delta, ts: Date.now() });
+      await logPointsUsage({ combo: comboLabel, points: delta, ts: Date.now() }).catch((e) => { debugLogErr = String(e); });
+      console.error('POINTS_DEBUG', JSON.stringify({ comboLabel, pointsBefore, pointsAfter, delta, debugAfterErr, debugLogErr }));
+    } else {
+      console.error('POINTS_DEBUG_SKIPPED', JSON.stringify({ comboLabel, debugBeforeErr }));
     }
   }
 }
