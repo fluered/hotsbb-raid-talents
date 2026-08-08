@@ -1,15 +1,15 @@
 import React from 'react';
+import { unstable_cache } from 'next/cache';
 import BossView, { type HeroVariant } from '../components/BossView';
 import MetaBuildFreshnessBanner from '../components/MetaBuildFreshnessBanner';
 import {
-  getWclToken, getBlizzardToken, getWclRankingsForRegionMode, fetchTelemetryBatchCached,
+  getWclToken, getBlizzardToken, getWclRankingsForRegionMode, fetchTelemetryBatchCachedUnstable,
   getTalentTreeId, getCachedTalentLayout, playerRegion, getBlizzardTokensForRegions,
   computeConsensus, getActiveHeroTreeId, makeTelemetry, computeFrequencyPct, computeRankDistribution,
   mapConcurrent, normalizeTalentTree, deriveTalentStringAndProfileNodes, blizzardCharacterProfileFetch,
   selectPlayersWithValidTelemetry, resolveMetaBuildPick,
   SPEC_IDS, ENCHANT_SLOT_LABELS, ENCHANT_SLOT_ORDER,
 } from '../lib/wow';
-import { getOrSetPersistent } from '../lib/persistentCache';
 
 function stripWowCodes(text: string): string {
   return text
@@ -825,11 +825,11 @@ export default async function BossContent({
 
     const [treeInfo, rankingsResult] = await Promise.all([
       getTalentTreeId(spec, className, staticBlizzardToken),
-      getOrSetPersistent(
-        `wcl-rankings-v4-${bossId}-${className}-${spec}-${difficulty}-${region}-${metric}`,
-        86400,
-        async () => ({ rankings: await getWclRankingsForRegionMode(wclToken, bossId, className, spec, difficulty, region, metric, true), fetchedAt: Date.now() })
-      ),
+      unstable_cache(
+        async () => ({ rankings: await getWclRankingsForRegionMode(wclToken, bossId, className, spec, difficulty, region, metric, true), fetchedAt: Date.now() }),
+        [`wcl-rankings-v4-${bossId}-${className}-${spec}-${difficulty}-${region}-${metric}`],
+        { revalidate: 86400 }
+      )(),
     ]);
     if (!treeInfo) {
       return <div className="text-center py-12 text-zinc-600 text-sm">Talent tree not found for this spec.</div>;
@@ -873,12 +873,15 @@ export default async function BossContent({
     // ranking pool is large enough to support it — backfilling past rank 50 for any
     // individual fetch that comes back empty, rather than silently reporting "49 of 50."
     // Fetches happen in batches of 10 (one aliased WCL request per batch, not one per
-    // player) — see fetchTelemetryBatchCached — since firing ~50 individual telemetry
-    // requests reliably trips WCL's burst rate limit (distinct from its points budget).
+    // player) — see fetchTelemetryBatchCachedUnstable — since firing ~50 individual
+    // telemetry requests reliably trips WCL's burst rate limit (distinct from its
+    // points budget). Uses the unstable_cache-backed variant, not Redis — see that
+    // function's comment for why the website's own rendering stays off the crawl's
+    // persistent cache.
     const consensusSelection = await selectPlayersWithValidTelemetry(
       rawRankings,
       CONSENSUS_N,
-      (players: any[]) => fetchTelemetryBatchCached(wclToken, players),
+      (players: any[]) => fetchTelemetryBatchCachedUnstable(wclToken, players),
       { batchSize: 10, concurrency: 5 }
     );
     const consensusRankings = consensusSelection.map(s => s.player);

@@ -360,8 +360,12 @@ async function getHistoricalFightTelemetryBatch(
 // cold crawl still only costs one request per batch instead of one per player.
 //
 // Persisted in Redis (not unstable_cache) specifically because this is the expensive,
-// WCL-rate-limited data — it needs to actually survive 24h regardless of how many
-// deploys happen in between, not just nominally.
+// WCL-rate-limited data the addon export crawl depends on — it needs to actually
+// survive 24h regardless of how many deploys happen in between, not just nominally.
+// Deliberately NOT used by the website's own live page rendering (see
+// fetchTelemetryBatchCachedUnstable below) — Redis is a small, fixed-size store meant
+// for the crawl's structured, bounded set of combos, not the much larger and more
+// varied key space organic site traffic would generate.
 export function fetchTelemetryBatchCached(wclToken: string, players: any[]): Promise<any[]> {
   const requests = players.map(p => ({
     reportCode: p.report?.code as string,
@@ -374,6 +378,25 @@ export function fetchTelemetryBatchCached(wclToken: string, players: any[]): Pro
     86400,
     () => getHistoricalFightTelemetryBatch(wclToken, requests)
   );
+}
+
+// Same batching, cached via unstable_cache instead of Redis — for the website's own
+// live page rendering. Redis is intentionally reserved for the addon export crawl (see
+// fetchTelemetryBatchCached above); organic site traffic can span far more distinct
+// combos than the crawl's fixed 720, and sharing the same small Redis instance between
+// both is exactly what filled it to its memory ceiling in practice.
+export function fetchTelemetryBatchCachedUnstable(wclToken: string, players: any[]): Promise<any[]> {
+  const requests = players.map(p => ({
+    reportCode: p.report?.code as string,
+    fightId: p.report?.fightID as number,
+    playerName: p.name as string,
+  }));
+  const cacheKey = requests.map(r => `${r.reportCode}:${r.fightId}`).join(',');
+  return unstable_cache(
+    () => getHistoricalFightTelemetryBatch(wclToken, requests),
+    [`wcl-telemetry-batch-${cacheKey}`],
+    { revalidate: 86400 }
+  )();
 }
 
 // ─── Blizzard ─────────────────────────────────────────────────────────────────
