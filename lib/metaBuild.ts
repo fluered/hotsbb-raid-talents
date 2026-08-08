@@ -1,12 +1,12 @@
 import {
   getWclToken, getBlizzardToken, getWclRankingsForRegionMode, fetchTelemetryBatchCached,
   getTalentTreeId, getCachedTalentLayout, playerRegion, getBlizzardTokensForRegions,
-  computeConsensus, getActiveHeroTreeId, computeFrequencyPct,
+  computeConsensus, getActiveHeroTreeId, computeFrequencyPct, getWclPointsSpent,
   mapConcurrent, normalizeTalentTree, type WclImportEntry,
   blizzardCharacterProfileFetch, selectPlayersWithValidTelemetry,
   resolveMetaBuildPick,
 } from './wow';
-import { getOrSetPersistent } from './persistentCache';
+import { getOrSetPersistent, logPointsUsage } from './persistentCache';
 
 // WCL enforces a burst rate limit independent of its overall points budget. Firing
 // all of a job's telemetry/profile lookups at once (up to 50+25 requests) reliably
@@ -52,6 +52,13 @@ export type MetaBuildOutcome =
   | { status: 'no_data' }
   | { status: 'insufficient_data'; sampleSize: number };
 
+// Diagnostic wrapper: measures real WCL points cost around a single combo's work
+// (points-before vs points-after, via the cheap rateLimitData query) and logs it —
+// see logPointsUsage. Temporary instrumentation to get real numbers instead of
+// reasoning from indirect signals like pause counts; safe to remove once we have
+// enough data from a crawl or two. Adds one awaited WCL request per combo (the
+// "before" check) plus one fire-and-forget request after — small compared to the
+// ~6+ requests the real work already makes.
 export async function getMetaBuild(params: {
   bossId: number;
   className: string;
@@ -60,11 +67,40 @@ export async function getMetaBuild(params: {
   region?: string;
   metric?: string;
 }): Promise<MetaBuildOutcome> {
+  const comboLabel = `${params.className}/${params.spec} vs ${params.bossId} (${params.difficulty})`;
+  const wclToken = await getWclToken();
+  const pointsBefore = await getWclPointsSpent(wclToken).catch(() => null);
+
+  try {
+    return await getMetaBuildInner(params, wclToken);
+  } finally {
+    if (pointsBefore != null) {
+      getWclPointsSpent(wclToken)
+        .then(pointsAfter => {
+          const delta = pointsAfter != null && pointsAfter >= pointsBefore ? pointsAfter - pointsBefore : null;
+          logPointsUsage({ combo: comboLabel, points: delta, ts: Date.now() });
+        })
+        .catch(() => {});
+    }
+  }
+}
+
+async function getMetaBuildInner(
+  params: {
+    bossId: number;
+    className: string;
+    spec: string;
+    difficulty: number;
+    region?: string;
+    metric?: string;
+  },
+  wclToken: string
+): Promise<MetaBuildOutcome> {
   const { bossId, className, spec, difficulty, region = 'global', metric } = params;
 
   // Static game data (talent tree layout) is identical across regions — a fixed 'us'
   // token authenticates it regardless of which rankings region mode is selected.
-  const [wclToken, staticBlizzardToken] = await Promise.all([getWclToken(), getBlizzardToken('us')]);
+  const staticBlizzardToken = await getBlizzardToken('us');
 
   const [treeInfo, rankingsResult] = await Promise.all([
     getTalentTreeId(spec, className, staticBlizzardToken),

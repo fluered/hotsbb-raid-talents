@@ -75,3 +75,45 @@ export async function getOrSetPersistent<T>(
     return compute();
   }
 }
+
+// ─── WCL points usage log ───────────────────────────────────────────────────────
+
+// Diagnostic-only: how many WCL points a single combo's rankings+telemetry work
+// actually costs, measured directly (points-before vs points-after) rather than
+// guessed at. Written during crawls so real numbers are available afterward instead
+// of reasoning from indirect signals (pause counts, request counts) like before.
+// Bounded list — trimmed to the most recent entries so it can't grow unbounded across
+// many crawls.
+const POINTS_LOG_KEY = 'wcl-points-usage-log';
+const POINTS_LOG_MAX_ENTRIES = 5000;
+
+export interface PointsUsageEntry {
+  combo: string;
+  points: number | null; // null when it couldn't be measured (e.g. the hourly window rolled over mid-combo)
+  ts: number;
+}
+
+export function logPointsUsage(entry: PointsUsageEntry): void {
+  // Fire-and-forget — this is diagnostic instrumentation, never worth delaying or
+  // failing a real response over.
+  (async () => {
+    try {
+      const redis = await getClient();
+      await withTimeout(redis.rPush(POINTS_LOG_KEY, JSON.stringify(entry)), CACHE_TIMEOUT_MS, 'Redis rPush');
+      redis.lTrim(POINTS_LOG_KEY, -POINTS_LOG_MAX_ENTRIES, -1).catch(() => {});
+    } catch (err) {
+      console.error('Points usage log write failed:', err);
+    }
+  })();
+}
+
+export async function getPointsUsageLog(limit = POINTS_LOG_MAX_ENTRIES): Promise<PointsUsageEntry[]> {
+  const redis = await getClient();
+  const raw = await withTimeout(redis.lRange(POINTS_LOG_KEY, -limit, -1), CACHE_TIMEOUT_MS, 'Redis lRange');
+  return raw.map(r => JSON.parse(r));
+}
+
+export async function clearPointsUsageLog(): Promise<void> {
+  const redis = await getClient();
+  await redis.del(POINTS_LOG_KEY);
+}

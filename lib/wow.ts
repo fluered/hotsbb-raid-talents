@@ -94,6 +94,26 @@ function throwIfRateLimited(response: Response) {
   }
 }
 
+// Cheap diagnostic query (just one number back, no ranking/telemetry payload) used to
+// measure real points cost around a combo's WCL work — see logPointsUsage in
+// lib/metaBuild.ts. Not itself expected to meaningfully add to points/burst cost, but
+// still goes through the same paced wclFetch as everything else, just in case.
+export async function getWclPointsSpent(token: string): Promise<number | null> {
+  const query = `query { rateLimitData { pointsSpentThisHour } }`;
+  const response = await wclFetch('https://www.warcraftlogs.com/api/v2/client', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query }),
+    cache: 'no-store',
+  });
+  if (!response.ok) return null;
+  try {
+    return (await response.json()).data?.rateLimitData?.pointsSpentThisHour ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export async function getRaidStructure(token: string) {
   const query = `query { worldData { zones { id name encounters { id name journalID } } } }`;
   const response = await wclFetch('https://www.warcraftlogs.com/api/v2/client', {
