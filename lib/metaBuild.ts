@@ -56,9 +56,11 @@ export type MetaBuildOutcome =
 // (points-before vs points-after, via the cheap rateLimitData query) and logs it —
 // see logPointsUsage. Temporary instrumentation to get real numbers instead of
 // reasoning from indirect signals like pause counts; safe to remove once we have
-// enough data from a crawl or two. Adds one awaited WCL request per combo (the
-// "before" check) plus one fire-and-forget request after — small compared to the
-// ~6+ requests the real work already makes.
+// enough data from a crawl or two. Both points checks are awaited (not fire-and-
+// forget) deliberately: Vercel can freeze/tear down a serverless function immediately
+// after it returns a response, so unawaited background work after the real return has
+// no guarantee of ever actually running — confirmed live, the first version of this
+// logged zero entries despite requests succeeding normally.
 export async function getMetaBuild(params: {
   bossId: number;
   className: string;
@@ -75,12 +77,9 @@ export async function getMetaBuild(params: {
     return await getMetaBuildInner(params, wclToken);
   } finally {
     if (pointsBefore != null) {
-      getWclPointsSpent(wclToken)
-        .then(pointsAfter => {
-          const delta = pointsAfter != null && pointsAfter >= pointsBefore ? pointsAfter - pointsBefore : null;
-          logPointsUsage({ combo: comboLabel, points: delta, ts: Date.now() });
-        })
-        .catch(() => {});
+      const pointsAfter = await getWclPointsSpent(wclToken).catch(() => null);
+      const delta = pointsAfter != null && pointsAfter >= pointsBefore ? pointsAfter - pointsBefore : null;
+      await logPointsUsage({ combo: comboLabel, points: delta, ts: Date.now() });
     }
   }
 }
