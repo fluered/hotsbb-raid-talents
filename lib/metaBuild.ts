@@ -56,12 +56,16 @@ export type MetaBuildOutcome =
 // (points-before vs points-after, via the cheap rateLimitData query) and logs it —
 // see logPointsUsage. Temporary instrumentation to get real numbers instead of
 // reasoning from indirect signals like pause counts; safe to remove once we have
-// enough data from a crawl or two. Deliberately linear (not try/finally) and every
-// step awaited: Vercel can freeze/tear down a serverless function immediately after it
-// returns a response, so anything unawaited after the real work — including inside a
-// finally block racing the return — has no guarantee of ever actually running.
-// Confirmed live: both a fire-and-forget version and a try/finally version of this
-// logged zero entries despite requests succeeding normally.
+// enough data from a crawl or two. Deliberately linear and every step awaited:
+// Vercel can freeze/tear down a serverless function immediately after it returns a
+// response, so anything unawaited after the real work has no guarantee of ever
+// actually running.
+//
+// The points log write itself can legitimately fail independent of any of this — the
+// persistent cache Redis instance has a hard memory ceiling with a noeviction policy
+// (confirmed live: an OOM error on rPush, not a bug in this code), so a full cache
+// blocks new writes, including log entries, until space frees up. logPointsUsage
+// already swallows that internally; nothing here needs to treat it as fatal.
 export async function getMetaBuild(params: {
   bossId: number;
   className: string;
@@ -71,19 +75,16 @@ export async function getMetaBuild(params: {
   metric?: string;
 }): Promise<MetaBuildOutcome> {
   const comboLabel = `${params.className}/${params.spec} vs ${params.bossId} (${params.difficulty})`;
-  let e1: string | null = null, e2: string | null = null, e3: string | null = null;
   const wclToken = await getWclToken();
-  const pointsBefore = await getWclPointsSpent(wclToken).catch((e) => { e1 = String(e?.stack || e); return null; });
+  const pointsBefore = await getWclPointsSpent(wclToken).catch(() => null);
 
   const result = await getMetaBuildInner(params, wclToken);
 
-  let pointsAfter: number | null = null;
   if (pointsBefore != null) {
-    pointsAfter = await getWclPointsSpent(wclToken).catch((e) => { e2 = String(e?.stack || e); return null; });
+    const pointsAfter = await getWclPointsSpent(wclToken).catch(() => null);
     const delta = pointsAfter != null && pointsAfter >= pointsBefore ? pointsAfter - pointsBefore : null;
-    await logPointsUsage({ combo: comboLabel, points: delta, ts: Date.now() }).catch((e) => { e3 = String(e?.stack || e); });
+    await logPointsUsage({ combo: comboLabel, points: delta, ts: Date.now() });
   }
-  (result as any)._debugPoints2 = { pointsBefore, pointsAfter, e1, e2, e3 };
   return result;
 }
 

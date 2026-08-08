@@ -96,13 +96,17 @@ export interface PointsUsageEntry {
 // Awaited by callers deliberately — Vercel can freeze/tear down a serverless function
 // immediately after it returns a response, so an unawaited write here has no guarantee
 // of ever actually landing (confirmed live: a fire-and-forget version of this logged
-// zero entries despite requests succeeding normally).
+// zero entries despite requests succeeding normally). Swallows its own errors — a full
+// Redis instance (noeviction policy, confirmed live via an OOM error on rPush) or any
+// other cache failure should never break a real response over diagnostic logging.
 export async function logPointsUsage(entry: PointsUsageEntry): Promise<void> {
-  // TEMP DEBUG: rethrowing instead of swallowing so the caller's debug capture can see
-  // the real error — no server-log access available to diagnose otherwise.
-  const redis = await getClient();
-  await withTimeout(redis.rPush(POINTS_LOG_KEY, JSON.stringify(entry)), CACHE_TIMEOUT_MS, 'Redis rPush');
-  await withTimeout(redis.lTrim(POINTS_LOG_KEY, -POINTS_LOG_MAX_ENTRIES, -1), CACHE_TIMEOUT_MS, 'Redis lTrim').catch(() => {});
+  try {
+    const redis = await getClient();
+    await withTimeout(redis.rPush(POINTS_LOG_KEY, JSON.stringify(entry)), CACHE_TIMEOUT_MS, 'Redis rPush');
+    await withTimeout(redis.lTrim(POINTS_LOG_KEY, -POINTS_LOG_MAX_ENTRIES, -1), CACHE_TIMEOUT_MS, 'Redis lTrim').catch(() => {});
+  } catch (err) {
+    console.error('Points usage log write failed:', err);
+  }
 }
 
 export async function getPointsUsageLog(limit = POINTS_LOG_MAX_ENTRIES): Promise<PointsUsageEntry[]> {
