@@ -75,12 +75,32 @@ jobs:
           cd addon
           zip -r "../HotsBBTalents.zip" HotsBBTalents -x "*.git*"
 
+      - name: Write release.json
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          interface=$(grep -oP '^## Interface:\s*\K[0-9]+' addon/HotsBBTalents/HotsBBTalents.toc)
+          cat > release.json <<EOF
+          {
+            "releases": [
+              {
+                "name": "HotsBB Talents",
+                "version": "${{ steps.version.outputs.version }}",
+                "filename": "HotsBBTalents.zip",
+                "nolib": false,
+                "metadata": [
+                  { "flavor": "mainline", "interface": $interface }
+                ]
+              }
+            ]
+          }
+          EOF
+
       - name: Publish release
         if: steps.check.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "v${{ steps.version.outputs.version }}" \
-            HotsBBTalents.zip \
+            HotsBBTalents.zip release.json \
             --title "HotsBB Talents v${{ steps.version.outputs.version }}" \
             --notes "Automated meta-build data refresh."
