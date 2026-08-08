@@ -10,7 +10,23 @@ import { createClient, type RedisClientType } from 'redis';
 //
 // Any failure here (connection down, Redis unreachable, malformed cached value) falls
 // back to just computing fresh rather than failing the request — caching is a
-// performance optimization, not something real functionality should depend on.
+// performance optimization, not something real functionality should depend on. That
+// includes hangs, not just outright errors: if Vercel's network can't reach Redis for
+// any reason, a plain try/catch around a stuck connect()/get() would never fire at all
+// — the request would just hang. Every operation here is raced against a hard timeout
+// specifically so "Redis is unreachable" degrades to "slightly slower, still works"
+// instead of "the page hangs."
+const CACHE_TIMEOUT_MS = 3000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    promise.then(
+      v => { clearTimeout(timer); resolve(v); },
+      e => { clearTimeout(timer); reject(e); }
+    );
+  });
+}
 
 let client: RedisClientType | null = null;
 let connecting: Promise<RedisClientType> | null = null;
@@ -21,14 +37,19 @@ async function getClient(): Promise<RedisClientType> {
   connecting = (async () => {
     const url = process.env.storage_REDIS_URL;
     if (!url) throw new Error('storage_REDIS_URL is not set');
-    const c: RedisClientType = createClient({ url });
+    const c: RedisClientType = createClient({ url, socket: { connectTimeout: CACHE_TIMEOUT_MS } });
     c.on('error', (err) => console.error('Redis client error:', err));
-    await c.connect();
+    await withTimeout(c.connect() as unknown as Promise<unknown>, CACHE_TIMEOUT_MS, 'Redis connect');
     client = c;
     connecting = null;
     return c;
   })();
-  return connecting;
+  try {
+    return await connecting;
+  } catch (err) {
+    connecting = null;
+    throw err;
+  }
 }
 
 // Same shape as unstable_cache's get-or-compute-and-store pattern, but persisted in
@@ -40,7 +61,7 @@ export async function getOrSetPersistent<T>(
 ): Promise<T> {
   try {
     const redis = await getClient();
-    const cached = await redis.get(key);
+    const cached = await withTimeout(redis.get(key), CACHE_TIMEOUT_MS, 'Redis get');
     if (cached != null) return JSON.parse(cached) as T;
     const fresh = await compute();
     // Fire-and-forget the write — a slow/failed cache write shouldn't delay or fail a
