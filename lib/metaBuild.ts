@@ -56,10 +56,11 @@ export type MetaBuildOutcome =
 // (points-before vs points-after, via the cheap rateLimitData query) and logs it —
 // see logPointsUsage. Temporary instrumentation to get real numbers instead of
 // reasoning from indirect signals like pause counts; safe to remove once we have
-// enough data from a crawl or two. Both points checks are awaited (not fire-and-
-// forget) deliberately: Vercel can freeze/tear down a serverless function immediately
-// after it returns a response, so unawaited background work after the real return has
-// no guarantee of ever actually running — confirmed live, the first version of this
+// enough data from a crawl or two. Deliberately linear (not try/finally) and every
+// step awaited: Vercel can freeze/tear down a serverless function immediately after it
+// returns a response, so anything unawaited after the real work — including inside a
+// finally block racing the return — has no guarantee of ever actually running.
+// Confirmed live: both a fire-and-forget version and a try/finally version of this
 // logged zero entries despite requests succeeding normally.
 export async function getMetaBuild(params: {
   bossId: number;
@@ -70,28 +71,16 @@ export async function getMetaBuild(params: {
   metric?: string;
 }): Promise<MetaBuildOutcome> {
   const comboLabel = `${params.className}/${params.spec} vs ${params.bossId} (${params.difficulty})`;
-  let debugBeforeErr: string | null = null;
   const wclToken = await getWclToken();
-  const pointsBefore = await getWclPointsSpent(wclToken).catch((e) => { debugBeforeErr = String(e); return null; });
+  const pointsBefore = await getWclPointsSpent(wclToken).catch(() => null);
 
   const result = await getMetaBuildInner(params, wclToken);
 
-  let pointsAfter: number | null = null;
-  let delta: number | null = null;
-  let debugAfterErr: string | null = null;
-  let debugLogErr: string | null = null;
-  let debugLogWrote = false;
   if (pointsBefore != null) {
-    pointsAfter = await getWclPointsSpent(wclToken).catch((e) => { debugAfterErr = String(e); return null; });
-    delta = pointsAfter != null && pointsAfter >= pointsBefore ? pointsAfter - pointsBefore : null;
-    try {
-      await logPointsUsage({ combo: comboLabel, points: delta, ts: Date.now() });
-      debugLogWrote = true;
-    } catch (e) {
-      debugLogErr = String(e);
-    }
+    const pointsAfter = await getWclPointsSpent(wclToken).catch(() => null);
+    const delta = pointsAfter != null && pointsAfter >= pointsBefore ? pointsAfter - pointsBefore : null;
+    await logPointsUsage({ combo: comboLabel, points: delta, ts: Date.now() });
   }
-  (result as any)._debugPoints = { pointsBefore, pointsAfter, delta, debugBeforeErr, debugAfterErr, debugLogErr, debugLogWrote };
   return result;
 }
 
