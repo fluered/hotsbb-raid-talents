@@ -74,22 +74,25 @@ export async function getMetaBuild(params: {
   const wclToken = await getWclToken();
   const pointsBefore = await getWclPointsSpent(wclToken).catch((e) => { debugBeforeErr = String(e); return null; });
 
-  try {
-    const result = await getMetaBuildInner(params, wclToken);
-    (result as any)._debugPoints = { pointsBefore, debugBeforeErr };
-    return result;
-  } finally {
-    if (pointsBefore != null) {
-      let debugAfterErr: string | null = null;
-      let debugLogErr: string | null = null;
-      const pointsAfter = await getWclPointsSpent(wclToken).catch((e) => { debugAfterErr = String(e); return null; });
-      const delta = pointsAfter != null && pointsAfter >= pointsBefore ? pointsAfter - pointsBefore : null;
-      await logPointsUsage({ combo: comboLabel, points: delta, ts: Date.now() }).catch((e) => { debugLogErr = String(e); });
-      console.error('POINTS_DEBUG', JSON.stringify({ comboLabel, pointsBefore, pointsAfter, delta, debugAfterErr, debugLogErr }));
-    } else {
-      console.error('POINTS_DEBUG_SKIPPED', JSON.stringify({ comboLabel, debugBeforeErr }));
+  const result = await getMetaBuildInner(params, wclToken);
+
+  let pointsAfter: number | null = null;
+  let delta: number | null = null;
+  let debugAfterErr: string | null = null;
+  let debugLogErr: string | null = null;
+  let debugLogWrote = false;
+  if (pointsBefore != null) {
+    pointsAfter = await getWclPointsSpent(wclToken).catch((e) => { debugAfterErr = String(e); return null; });
+    delta = pointsAfter != null && pointsAfter >= pointsBefore ? pointsAfter - pointsBefore : null;
+    try {
+      await logPointsUsage({ combo: comboLabel, points: delta, ts: Date.now() });
+      debugLogWrote = true;
+    } catch (e) {
+      debugLogErr = String(e);
     }
   }
+  (result as any)._debugPoints = { pointsBefore, pointsAfter, delta, debugBeforeErr, debugAfterErr, debugLogErr, debugLogWrote };
+  return result;
 }
 
 async function getMetaBuildInner(
