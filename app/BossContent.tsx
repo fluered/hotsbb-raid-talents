@@ -1,5 +1,4 @@
 import React from 'react';
-import { unstable_cache } from 'next/cache';
 import BossView, { type HeroVariant } from '../components/BossView';
 import MetaBuildFreshnessBanner from '../components/MetaBuildFreshnessBanner';
 import {
@@ -10,6 +9,7 @@ import {
   selectPlayersWithValidTelemetry, resolveMetaBuildPick,
   SPEC_IDS, ENCHANT_SLOT_LABELS, ENCHANT_SLOT_ORDER,
 } from '../lib/wow';
+import { getOrSetPersistent } from '../lib/persistentCache';
 
 function stripWowCodes(text: string): string {
   return text
@@ -825,11 +825,11 @@ export default async function BossContent({
 
     const [treeInfo, rankingsResult] = await Promise.all([
       getTalentTreeId(spec, className, staticBlizzardToken),
-      unstable_cache(
-        async () => ({ rankings: await getWclRankingsForRegionMode(wclToken, bossId, className, spec, difficulty, region, metric, true), fetchedAt: Date.now() }),
-        [`wcl-rankings-v4-${bossId}-${className}-${spec}-${difficulty}-${region}-${metric}`],
-        { revalidate: 86400 }
-      )(),
+      getOrSetPersistent(
+        `wcl-rankings-v4-${bossId}-${className}-${spec}-${difficulty}-${region}-${metric}`,
+        86400,
+        async () => ({ rankings: await getWclRankingsForRegionMode(wclToken, bossId, className, spec, difficulty, region, metric, true), fetchedAt: Date.now() })
+      ),
     ]);
     if (!treeInfo) {
       return <div className="text-center py-12 text-zinc-600 text-sm">Talent tree not found for this spec.</div>;

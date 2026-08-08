@@ -1,5 +1,6 @@
 import { unstable_cache } from 'next/cache';
 import { normalizeTalentTree } from './talentNormalize';
+import { getOrSetPersistent } from './persistentCache';
 export { normalizeTalentTree } from './talentNormalize';
 
 // ─── WCL request pacing ─────────────────────────────────────────────────────────
@@ -337,6 +338,10 @@ async function getHistoricalFightTelemetryBatch(
 // the same combo (the backfill selection is deterministic given the same cached
 // rankings) still gets a full cache hit, exactly like per-player caching did, while a
 // cold crawl still only costs one request per batch instead of one per player.
+//
+// Persisted in Redis (not unstable_cache) specifically because this is the expensive,
+// WCL-rate-limited data — it needs to actually survive 24h regardless of how many
+// deploys happen in between, not just nominally.
 export function fetchTelemetryBatchCached(wclToken: string, players: any[]): Promise<any[]> {
   const requests = players.map(p => ({
     reportCode: p.report?.code as string,
@@ -344,11 +349,11 @@ export function fetchTelemetryBatchCached(wclToken: string, players: any[]): Pro
     playerName: p.name as string,
   }));
   const cacheKey = requests.map(r => `${r.reportCode}:${r.fightId}`).join(',');
-  return unstable_cache(
-    () => getHistoricalFightTelemetryBatch(wclToken, requests),
-    [`wcl-telemetry-batch-${cacheKey}`],
-    { revalidate: 86400 }
-  )();
+  return getOrSetPersistent(
+    `wcl-telemetry-batch-${cacheKey}`,
+    86400,
+    () => getHistoricalFightTelemetryBatch(wclToken, requests)
+  );
 }
 
 // ─── Blizzard ─────────────────────────────────────────────────────────────────

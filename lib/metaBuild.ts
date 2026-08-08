@@ -1,4 +1,3 @@
-import { unstable_cache } from 'next/cache';
 import {
   getWclToken, getBlizzardToken, getWclRankingsForRegionMode, fetchTelemetryBatchCached,
   getTalentTreeId, getCachedTalentLayout, playerRegion, getBlizzardTokensForRegions,
@@ -7,6 +6,7 @@ import {
   blizzardCharacterProfileFetch, selectPlayersWithValidTelemetry,
   resolveMetaBuildPick,
 } from './wow';
+import { getOrSetPersistent } from './persistentCache';
 
 // WCL enforces a burst rate limit independent of its overall points budget. Firing
 // all of a job's telemetry/profile lookups at once (up to 50+25 requests) reliably
@@ -68,11 +68,11 @@ export async function getMetaBuild(params: {
 
   const [treeInfo, rankingsResult] = await Promise.all([
     getTalentTreeId(spec, className, staticBlizzardToken),
-    unstable_cache(
-      async () => ({ rankings: await getWclRankingsForRegionMode(wclToken, bossId, className, spec, difficulty, region, metric, true), fetchedAt: Date.now() }),
-      [`wcl-rankings-v4-${bossId}-${className}-${spec}-${difficulty}-${region}-${metric ?? 'dps'}`],
-      { revalidate: 86400 }
-    )(),
+    getOrSetPersistent(
+      `wcl-rankings-v4-${bossId}-${className}-${spec}-${difficulty}-${region}-${metric ?? 'dps'}`,
+      86400,
+      async () => ({ rankings: await getWclRankingsForRegionMode(wclToken, bossId, className, spec, difficulty, region, metric, true), fetchedAt: Date.now() })
+    ),
   ]);
   if (!treeInfo) return { status: 'spec_not_found' };
 
