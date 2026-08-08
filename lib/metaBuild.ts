@@ -71,16 +71,19 @@ export async function getMetaBuild(params: {
   metric?: string;
 }): Promise<MetaBuildOutcome> {
   const comboLabel = `${params.className}/${params.spec} vs ${params.bossId} (${params.difficulty})`;
+  let e1: string | null = null, e2: string | null = null, e3: string | null = null;
   const wclToken = await getWclToken();
-  const pointsBefore = await getWclPointsSpent(wclToken).catch(() => null);
+  const pointsBefore = await getWclPointsSpent(wclToken).catch((e) => { e1 = String(e?.stack || e); return null; });
 
   const result = await getMetaBuildInner(params, wclToken);
 
+  let pointsAfter: number | null = null;
   if (pointsBefore != null) {
-    const pointsAfter = await getWclPointsSpent(wclToken).catch(() => null);
+    pointsAfter = await getWclPointsSpent(wclToken).catch((e) => { e2 = String(e?.stack || e); return null; });
     const delta = pointsAfter != null && pointsAfter >= pointsBefore ? pointsAfter - pointsBefore : null;
-    await logPointsUsage({ combo: comboLabel, points: delta, ts: Date.now() });
+    await logPointsUsage({ combo: comboLabel, points: delta, ts: Date.now() }).catch((e) => { e3 = String(e?.stack || e); });
   }
+  (result as any)._debugPoints2 = { pointsBefore, pointsAfter, e1, e2, e3 };
   return result;
 }
 
