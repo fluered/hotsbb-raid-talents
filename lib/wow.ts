@@ -2,10 +2,41 @@ import { unstable_cache } from 'next/cache';
 import { normalizeTalentTree } from './talentNormalize';
 export { normalizeTalentTree } from './talentNormalize';
 
+// ─── WCL request pacing ─────────────────────────────────────────────────────────
+
+// WCL enforces a burst limit independent of its hourly points budget, but doesn't
+// publish the exact threshold — community reports (WCL's own forums) put it somewhere
+// around 2 requests/second before a spate of 429s and a long enforced cooldown kicks
+// in, which is exactly the ~50min penalty pauses that repeatedly derailed batch export
+// runs. Rather than firing as fast as possible and reacting to 429s after the fact,
+// every outbound WCL request funnels through this serial queue with a minimum gap
+// between them — proactively staying under the threshold instead of tripping it and
+// paying a much longer cooldown. A single in-memory queue is fine here: a Vercel
+// serverless invocation and the export script's Node process are each their own
+// process, so there's no cross-instance coordination to worry about.
+let wclRequestQueue: Promise<void> = Promise.resolve();
+const MIN_WCL_REQUEST_GAP_MS = 500; // ~2 req/sec — conservative given the threshold isn't officially documented
+
+async function paceWclRequest<T>(fn: () => Promise<T>): Promise<T> {
+  const previous = wclRequestQueue;
+  let release!: () => void;
+  wclRequestQueue = new Promise<void>(r => { release = r; });
+  await previous;
+  try {
+    return await fn();
+  } finally {
+    setTimeout(release, MIN_WCL_REQUEST_GAP_MS);
+  }
+}
+
+function wclFetch(url: string, options: RequestInit): Promise<Response> {
+  return paceWclRequest(() => fetch(url, options));
+}
+
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 
 export async function getWclToken() {
-  const response = await fetch('https://www.warcraftlogs.com/oauth/token', {
+  const response = await wclFetch('https://www.warcraftlogs.com/oauth/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
@@ -64,7 +95,7 @@ function throwIfRateLimited(response: Response) {
 
 export async function getRaidStructure(token: string) {
   const query = `query { worldData { zones { id name encounters { id name journalID } } } }`;
-  const response = await fetch('https://www.warcraftlogs.com/api/v2/client', {
+  const response = await wclFetch('https://www.warcraftlogs.com/api/v2/client', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ query }),
@@ -78,7 +109,7 @@ export async function getRaidStructure(token: string) {
 
 export async function getMplusEncounters(token: string, zoneId: number) {
   const query = `query { worldData { zone(id: ${zoneId}) { encounters { id name journalID } } } }`;
-  const response = await fetch('https://www.warcraftlogs.com/api/v2/client', {
+  const response = await wclFetch('https://www.warcraftlogs.com/api/v2/client', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ query }),
@@ -106,7 +137,7 @@ export async function getWclRankings(token: string, bossId: number, className: s
       }
     }
   `;
-  const response = await fetch('https://www.warcraftlogs.com/api/v2/client', {
+  const response = await wclFetch('https://www.warcraftlogs.com/api/v2/client', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ query }),
@@ -223,7 +254,7 @@ export async function getHistoricalFightTelemetry(wclToken: string, reportCode: 
       }
     }
   `;
-  const response = await fetch('https://www.warcraftlogs.com/api/v2/client', {
+  const response = await wclFetch('https://www.warcraftlogs.com/api/v2/client', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${wclToken}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ query }),
@@ -249,6 +280,77 @@ export async function getHistoricalFightTelemetry(wclToken: string, reportCode: 
   }
 }
 
+// Same data as getHistoricalFightTelemetry, but for many players in ONE HTTP request
+// instead of one request each — WCL's GraphQL API allows querying the same field
+// (`report`) multiple times with different arguments via aliases, so N players' fights
+// become one query with N aliased sub-selections rather than N round trips. A full
+// 50-player consensus sample used to cost 50 separate requests; in batches of 10 it's
+// 5. That's the request *count* that's been tripping WCL's burst limit all night, not
+// the underlying points cost — batching cuts it directly without changing what data
+// comes back or how much of it. Kept deliberately modest-sized (see callers) since WCL
+// doesn't publish a max query complexity per request, and an oversized batch risks
+// getting rejected outright rather than just costing more.
+async function getHistoricalFightTelemetryBatch(
+  wclToken: string,
+  requests: Array<{ reportCode: string; fightId: number; playerName: string }>
+): Promise<Array<{ sourceId: number | null; event: any }>> {
+  if (requests.length === 0) return [];
+  const aliasedFields = requests.map((r, i) => `
+    p${i}: report(code: "${r.reportCode}") {
+      masterData { actors(type: "Player") { id name } }
+      events(fightIDs: [${r.fightId}], dataType: CombatantInfo, startTime: 0, endTime: 2147483647) { data }
+    }
+  `).join('\n');
+  const query = `query { reportData { ${aliasedFields} } }`;
+
+  const response = await wclFetch('https://www.warcraftlogs.com/api/v2/client', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${wclToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query }),
+    next: { revalidate: 86400 },
+  });
+  if (response.status === 429) {
+    const err: any = new Error('WCL rate limit exceeded — the API key has hit its request budget for the current window.');
+    err.isRateLimit = true;
+    err.retryAfter = response.headers.get('retry-after');
+    throw err;
+  }
+  try {
+    const reportData = (await response.json()).data?.reportData ?? {};
+    return requests.map((r, i) => {
+      const report = reportData[`p${i}`];
+      const actors = report?.masterData?.actors || [];
+      const events = report?.events?.data || [];
+      const targetActor = actors.find((a: any) => a.name.toLowerCase() === r.playerName.toLowerCase());
+      const matchedSourceId = targetActor ? targetActor.id : null;
+      return { sourceId: matchedSourceId, event: events.find((e: any) => e.sourceID === matchedSourceId) || null };
+    });
+  } catch {
+    // A genuinely malformed/unexpected response body (not a rate limit) — treat the
+    // whole batch as "no data" same as the single-player version, not worth aborting
+    // the whole crawl for.
+    return requests.map(() => ({ sourceId: null, event: null }));
+  }
+}
+
+// Cached as a unit, keyed by the batch's own player set — so a same-session re-run of
+// the same combo (the backfill selection is deterministic given the same cached
+// rankings) still gets a full cache hit, exactly like per-player caching did, while a
+// cold crawl still only costs one request per batch instead of one per player.
+export function fetchTelemetryBatchCached(wclToken: string, players: any[]): Promise<any[]> {
+  const requests = players.map(p => ({
+    reportCode: p.report?.code as string,
+    fightId: p.report?.fightID as number,
+    playerName: p.name as string,
+  }));
+  const cacheKey = requests.map(r => `${r.reportCode}:${r.fightId}`).join(',');
+  return unstable_cache(
+    () => getHistoricalFightTelemetryBatch(wclToken, requests),
+    [`wcl-telemetry-batch-${cacheKey}`],
+    { revalidate: 86400 }
+  )();
+}
+
 // ─── Blizzard ─────────────────────────────────────────────────────────────────
 
 // Run at most `limit` async tasks concurrently, preserving result order.
@@ -272,23 +374,39 @@ export async function mapConcurrent<T, U>(items: T[], limit: number, fn: (item: 
 // silently settling for "49 of 50" any time exactly one fetch fails. Returns paired
 // (player, telemetry) entries in rank order; only ever fetches as many extra candidates
 // as needed to cover the shortfall, not the whole remaining pool.
+//
+// Fetches happen in WCL-request-sized chunks (batchSize) rather than one request per
+// player — each chunk becomes a single aliased WCL query (see
+// getHistoricalFightTelemetryBatch) — with up to `concurrency` chunks in flight at
+// once, so the actual request rate stays at concurrency chunks/interval rather than
+// concurrency players/interval.
 export async function selectPlayersWithValidTelemetry<P>(
   rankings: P[],
   targetCount: number,
-  fetchOne: (player: P) => Promise<any>,
-  concurrency = 5
+  fetchBatch: (players: P[]) => Promise<any[]>,
+  opts: { batchSize?: number; concurrency?: number } = {}
 ): Promise<Array<{ player: P; telemetry: any }>> {
+  const batchSize = opts.batchSize ?? 10;
+  const concurrency = opts.concurrency ?? 5;
   const selected: Array<{ player: P; telemetry: any }> = [];
   let nextIdx = 0;
   while (selected.length < targetCount && nextIdx < rankings.length) {
     const need = targetCount - selected.length;
-    const batchEnd = Math.min(nextIdx + Math.max(need, concurrency), rankings.length);
-    const batch = rankings.slice(nextIdx, batchEnd);
-    nextIdx = batchEnd;
-    const results = await mapConcurrent(batch, concurrency, async (player) => ({ player, telemetry: await fetchOne(player) }));
-    for (const r of results) {
-      const tree = normalizeTalentTree((r.telemetry as any)?.event?.talentTree || []);
-      if (tree.length > 0) selected.push(r);
+    const stepSize = Math.max(need, batchSize * concurrency);
+    const stepEnd = Math.min(nextIdx + stepSize, rankings.length);
+    const stepPlayers = rankings.slice(nextIdx, stepEnd);
+    nextIdx = stepEnd;
+
+    const chunks: P[][] = [];
+    for (let i = 0; i < stepPlayers.length; i += batchSize) chunks.push(stepPlayers.slice(i, i + batchSize));
+
+    const chunkResults = await mapConcurrent(chunks, concurrency, async (chunk) => ({ chunk, telemetries: await fetchBatch(chunk) }));
+    for (const { chunk, telemetries } of chunkResults) {
+      for (let i = 0; i < chunk.length; i++) {
+        const telemetry = telemetries[i];
+        const tree = normalizeTalentTree((telemetry as any)?.event?.talentTree || []);
+        if (tree.length > 0) selected.push({ player: chunk[i], telemetry });
+      }
     }
   }
   return selected.slice(0, targetCount);

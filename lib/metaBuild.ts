@@ -1,6 +1,6 @@
 import { unstable_cache } from 'next/cache';
 import {
-  getWclToken, getBlizzardToken, getWclRankingsForRegionMode, getHistoricalFightTelemetry,
+  getWclToken, getBlizzardToken, getWclRankingsForRegionMode, fetchTelemetryBatchCached,
   getTalentTreeId, getCachedTalentLayout, playerRegion, getBlizzardTokensForRegions,
   computeConsensus, getActiveHeroTreeId, computeFrequencyPct,
   mapConcurrent, normalizeTalentTree, type WclImportEntry,
@@ -11,6 +11,9 @@ import {
 // WCL enforces a burst rate limit independent of its overall points budget. Firing
 // all of a job's telemetry/profile lookups at once (up to 50+25 requests) reliably
 // trips it, so those fan-outs are capped rather than run via unbounded Promise.all.
+// Telemetry itself is additionally batched (see fetchTelemetryBatchCached) — this
+// concurrency now caps how many WCL-request-sized batches run at once, not how many
+// individual players' fetches run at once.
 const WCL_FANOUT_CONCURRENCY = 5;
 
 // Talent-only meta build export — mirrors BossContent's phase-1 consensus computation
@@ -87,13 +90,8 @@ export async function getMetaBuild(params: {
   const consensusSelection = await selectPlayersWithValidTelemetry(
     rawRankings,
     CONSENSUS_N,
-    (player: any) =>
-      unstable_cache(
-        async () => getHistoricalFightTelemetry(wclToken, player.report?.code, player.report?.fightID, player.name),
-        [`wcl-telemetry-${player.report?.code}-${player.report?.fightID}`],
-        { revalidate: 86400 }
-      )(),
-    WCL_FANOUT_CONCURRENCY
+    (players: any[]) => fetchTelemetryBatchCached(wclToken, players),
+    { batchSize: 10, concurrency: WCL_FANOUT_CONCURRENCY }
   );
   const consensusRankings = consensusSelection.map(s => s.player);
   const allTelemetryData = consensusSelection.map(s => s.telemetry);

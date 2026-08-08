@@ -3,7 +3,7 @@ import { unstable_cache } from 'next/cache';
 import BossView, { type HeroVariant } from '../components/BossView';
 import MetaBuildFreshnessBanner from '../components/MetaBuildFreshnessBanner';
 import {
-  getWclToken, getBlizzardToken, getWclRankingsForRegionMode, getHistoricalFightTelemetry,
+  getWclToken, getBlizzardToken, getWclRankingsForRegionMode, fetchTelemetryBatchCached,
   getTalentTreeId, getCachedTalentLayout, playerRegion, getBlizzardTokensForRegions,
   computeConsensus, getActiveHeroTreeId, makeTelemetry, computeFrequencyPct, computeRankDistribution,
   mapConcurrent, normalizeTalentTree, deriveTalentStringAndProfileNodes, blizzardCharacterProfileFetch,
@@ -872,18 +872,14 @@ export default async function BossContent({
     // Guarantees the consensus sample actually reaches CONSENSUS_N players whenever the
     // ranking pool is large enough to support it — backfilling past rank 50 for any
     // individual fetch that comes back empty, rather than silently reporting "49 of 50."
-    // Bounded concurrency rather than a bare Promise.all — firing ~50 telemetry lookups
-    // at once reliably trips WCL's burst rate limit (distinct from its points budget).
+    // Fetches happen in batches of 10 (one aliased WCL request per batch, not one per
+    // player) — see fetchTelemetryBatchCached — since firing ~50 individual telemetry
+    // requests reliably trips WCL's burst rate limit (distinct from its points budget).
     const consensusSelection = await selectPlayersWithValidTelemetry(
       rawRankings,
       CONSENSUS_N,
-      (player: any) =>
-        unstable_cache(
-          async () => getHistoricalFightTelemetry(wclToken, player.report?.code, player.report?.fightID, player.name),
-          [`wcl-telemetry-${player.report?.code}-${player.report?.fightID}`],
-          { revalidate: 86400 }
-        )(),
-      5
+      (players: any[]) => fetchTelemetryBatchCached(wclToken, players),
+      { batchSize: 10, concurrency: 5 }
     );
     const consensusRankings = consensusSelection.map(s => s.player);
     const allTelemetryData = consensusSelection.map(s => s.telemetry);
