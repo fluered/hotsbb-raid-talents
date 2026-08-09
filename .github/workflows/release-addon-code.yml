@@ -17,6 +17,10 @@ on:
     paths:
       - 'addon/HotsBBTalents/Core.lua'
       - 'addon/HotsBBTalents/HotsBBTalents.toc'
+  workflow_dispatch: {} # manual "Run workflow" button, for cases like a workflow-definition
+                        # change landing in the same push as the file change it's meant to catch —
+                        # GitHub evaluates a push's trigger paths against the workflow as it
+                        # existed *before* that push, so the first such change never fires itself
 
 permissions:
   contents: write
