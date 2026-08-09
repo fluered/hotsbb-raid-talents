@@ -6,17 +6,17 @@ name: Release addon on code change
 # export-meta-builds workflow handles the "new data" release path; this one
 # is just for shipping code fixes fast.
 #
-# Deliberately triggers on Core.lua only, not HotsBBTalents.toc — this
-# workflow's own version-bump commit touches the TOC, and export-meta-builds
-# does too, so triggering on TOC changes would risk this firing again off
-# either workflow's own commit. Both commit messages also carry [skip ci],
-# which GitHub itself honors to skip triggering any workflow for that push —
-# the path filter is a second, redundant guard against the same loop.
+# Triggers on Core.lua or the TOC (e.g. a manual Interface-number bump for a new game
+# patch). Both this workflow's own version-bump commit and export-meta-builds' commit
+# also touch the TOC, which could otherwise re-trigger this on their own pushes — but
+# both of those commit messages carry [skip ci], which GitHub honors globally to skip
+# triggering any workflow for that push, so the loop never actually happens.
 on:
   push:
     branches: [main]
     paths:
       - 'addon/HotsBBTalents/Core.lua'
+      - 'addon/HotsBBTalents/HotsBBTalents.toc'
 
 permissions:
   contents: write
