@@ -252,8 +252,21 @@ end
 -- can hand ImportLoadout entries it can't place, silently dropping picks (reported:
 -- apex nodes missing 2 of their talents on import). Fix: for any nodeID that this
 -- live client reports as Tiered, discard the guessed rows and rebuild them properly
--- via BuildTieredNodeEntries, driven only by the total rank WCL observed. Normal
--- (non-Tiered) nodes pass through untouched.
+-- via BuildTieredNodeEntries, driven only by the total rank WCL observed.
+--
+-- Non-Tiered nodes have a separate staleness problem: WCL telemetry is a permanent
+-- historical record, so a row's selectionEntryID reflects whatever was valid when
+-- that fight happened — even after a later Blizzard hotfix regenerates a node's entry
+-- IDs without changing the tree's visual layout (confirmed live: this exact thing
+-- happened mid-season). The server already drops choice nodes whose ID no longer
+-- matches either current option rather than risk applying the wrong one, but an
+-- ordinary single-option node's stale ID previously passed straight through — and
+-- ImportLoadout silently drops any entry it can't place, so it would just vanish from
+-- the imported build (reported: "sometimes it doesn't copy the talents over").
+-- Every row is now checked against this client's own live entryIDs for that node: a
+-- single-option node has no ambiguity, so a mismatch is safely corrected to the one
+-- real option; a genuinely multi-option node that still doesn't match is dropped
+-- rather than guessed at, same as the server-side rule for choice nodes.
 local function ResolveWclEntries(configID, rawEntries)
   local order, byNode = {}, {}
   for _, e in ipairs(rawEntries) do
@@ -277,7 +290,31 @@ local function ResolveWclEntries(configID, rawEntries)
       BuildTieredNodeEntries(results, configID, treeNodeInfo, totalRanksPurchased, isNodeGranted)
     else
       for _, row in ipairs(rows) do
-        table.insert(results, row)
+        local resolvedRow = row
+        if treeNodeInfo and treeNodeInfo.entryIDs and #treeNodeInfo.entryIDs > 0 then
+          local isValid = false
+          for _, validID in ipairs(treeNodeInfo.entryIDs) do
+            if validID == row.selectionEntryID then
+              isValid = true
+              break
+            end
+          end
+          if not isValid then
+            if #treeNodeInfo.entryIDs == 1 then
+              resolvedRow = {
+                nodeID = row.nodeID,
+                ranksGranted = row.ranksGranted,
+                ranksPurchased = row.ranksPurchased,
+                selectionEntryID = treeNodeInfo.entryIDs[1],
+              }
+            else
+              resolvedRow = nil
+            end
+          end
+        end
+        if resolvedRow then
+          table.insert(results, resolvedRow)
+        end
       end
     end
   end
