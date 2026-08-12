@@ -2,7 +2,7 @@
 ## Title: HotsBB Talents
 ## Notes: One-click import of meta talent builds from hotsbb-raid-talents.
 ## Author: HotsBB
-## Version: 2026.08.09-2
+## Version: 2026.08.12-2
 ## IconTexture: Interface\Icons\INV_Misc_Book_09
 
 Data.lua
