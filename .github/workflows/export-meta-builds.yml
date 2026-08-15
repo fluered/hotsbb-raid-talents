@@ -28,6 +28,13 @@ on:
 permissions:
   contents: write
 
+# Serialize against the fast-path code-release workflow (same group name there): both
+# push a TOC bump to main and cut a release, so running concurrently they could
+# non-fast-forward each other's pushes or race on tags.
+concurrency:
+  group: addon-release
+  cancel-in-progress: false
+
 jobs:
   export:
     runs-on: ubuntu-latest
@@ -42,21 +49,38 @@ jobs:
       - name: Run export
         run: node scripts/export-meta-builds.js
 
+      # A plain `git diff --quiet` can never say "unchanged" here: the export embeds a
+      # generation timestamp and per-combo fetchedAt values that are always fresh. Strip
+      # those before comparing so a week where the meta genuinely didn't move skips the
+      # release instead of pushing a pointless update to every WowUp user.
       - name: Check for changes
         id: check
         run: |
+          normalize() { sed -e '/^-- Generated /d' -e 's/fetchedAt = [0-9]*,/fetchedAt = 0,/'; }
           if git diff --quiet -- addon/HotsBBTalents/Data.lua; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "No changes to Data.lua — export produced identical data or made no progress."
+          elif diff -q <(git show HEAD:addon/HotsBBTalents/Data.lua | normalize) <(normalize < addon/HotsBBTalents/Data.lua) >/dev/null; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Only timestamps changed — meta builds identical to last release; skipping."
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # First free vYYYY.MM.DD-N tag rather than github.run_number: run_number is a
+      # per-workflow counter, so this workflow and release-addon-code would eventually
+      # mint the same tag on the same day and the second release would fail after its
+      # push already landed. Scanning existing releases is collision-proof across both.
       - name: Set addon version
         if: steps.check.outputs.changed == 'true'
         id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          version="$(date -u +%Y.%m.%d)-${{ github.run_number }}"
+          base="$(date -u +%Y.%m.%d)"
+          n=1
+          while gh release view "v$base-$n" >/dev/null 2>&1; do n=$((n+1)); done
+          version="$base-$n"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           sed -i "s/^## Version:.*/## Version: $version/" addon/HotsBBTalents/HotsBBTalents.toc
 
@@ -67,7 +91,12 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add addon/HotsBBTalents/Data.lua addon/HotsBBTalents/HotsBBTalents.toc
           git commit -m "Regenerate addon Data.lua (v${{ steps.version.outputs.version }}) [skip ci]"
-          git push
+          # A multi-hour crawl means main has often moved since checkout — rebase and
+          # retry so a non-fast-forward rejection doesn't discard the whole run.
+          for i in 1 2 3; do
+            git push && break
+            git pull --rebase origin main
+          done
 
       - name: Package addon zip
         if: steps.check.outputs.changed == 'true'

@@ -267,6 +267,11 @@ end
 -- single-option node has no ambiguity, so a mismatch is safely corrected to the one
 -- real option; a genuinely multi-option node that still doesn't match is dropped
 -- rather than guessed at, same as the server-side rule for choice nodes.
+-- Returns resolvedEntries, droppedCount. droppedCount is how many recorded picks could
+-- NOT be carried over to this client's current tree — callers must surface it, because
+-- ImportLoadout gives no signal about entries it silently discards, and announcing the
+-- handed-over count as if it all applied is exactly how a half-applied build gets a
+-- green success banner.
 local function ResolveWclEntries(configID, rawEntries)
   local order, byNode = {}, {}
   for _, e in ipairs(rawEntries) do
@@ -277,39 +282,48 @@ local function ResolveWclEntries(configID, rawEntries)
     table.insert(byNode[e.nodeID], e)
   end
 
-  local results = {}
+  local results, dropped = {}, 0
   for _, nodeID in ipairs(order) do
     local rows = byNode[nodeID]
     local treeNodeInfo = C_Traits.GetNodeInfo(configID, nodeID)
-    if treeNodeInfo and treeNodeInfo.type == Enum.TraitNodeType.Tiered and treeNodeInfo.entryIDs and #treeNodeInfo.entryIDs > 0 then
+    -- A nodeID the current client doesn't know (GetNodeInfo nil, or a zeroed struct
+    -- with no entryIDs — what the client returns for a node removed/renumbered by a
+    -- hotfix) can't be validated OR imported: ImportLoadout would silently drop it
+    -- anyway. Count it as dropped instead of passing the stale row through and
+    -- pretending it applied.
+    if not (treeNodeInfo and treeNodeInfo.entryIDs and #treeNodeInfo.entryIDs > 0) then
+      dropped = dropped + #rows
+    elseif treeNodeInfo.type == Enum.TraitNodeType.Tiered then
       local totalRanksPurchased, isNodeGranted = 0, false
       for _, row in ipairs(rows) do
-        totalRanksPurchased = totalRanksPurchased + (row.ranksPurchased or 0) + (row.ranksGranted or 0)
+        -- Purchased only: a granted rank is FREE — BuildTieredNodeEntries already
+        -- emits it via the isGranted flag on entry 1, so folding ranksGranted into
+        -- the purchased total double-counted it (one extra claimed rank).
+        totalRanksPurchased = totalRanksPurchased + (row.ranksPurchased or 0)
         if (row.ranksGranted or 0) > 0 then isNodeGranted = true end
       end
       BuildTieredNodeEntries(results, configID, treeNodeInfo, totalRanksPurchased, isNodeGranted)
     else
       for _, row in ipairs(rows) do
         local resolvedRow = row
-        if treeNodeInfo and treeNodeInfo.entryIDs and #treeNodeInfo.entryIDs > 0 then
-          local isValid = false
-          for _, validID in ipairs(treeNodeInfo.entryIDs) do
-            if validID == row.selectionEntryID then
-              isValid = true
-              break
-            end
+        local isValid = false
+        for _, validID in ipairs(treeNodeInfo.entryIDs) do
+          if validID == row.selectionEntryID then
+            isValid = true
+            break
           end
-          if not isValid then
-            if #treeNodeInfo.entryIDs == 1 then
-              resolvedRow = {
-                nodeID = row.nodeID,
-                ranksGranted = row.ranksGranted,
-                ranksPurchased = row.ranksPurchased,
-                selectionEntryID = treeNodeInfo.entryIDs[1],
-              }
-            else
-              resolvedRow = nil
-            end
+        end
+        if not isValid then
+          if #treeNodeInfo.entryIDs == 1 then
+            resolvedRow = {
+              nodeID = row.nodeID,
+              ranksGranted = row.ranksGranted,
+              ranksPurchased = row.ranksPurchased,
+              selectionEntryID = treeNodeInfo.entryIDs[1],
+            }
+          else
+            resolvedRow = nil
+            dropped = dropped + 1
           end
         end
         if resolvedRow then
@@ -318,7 +332,7 @@ local function ResolveWclEntries(configID, rawEntries)
       end
     end
   end
-  return results
+  return results, dropped
 end
 
 -- wclEntries rows are built server-side in whatever order WCL's CombatantInfo happened
@@ -376,30 +390,43 @@ local function ImportBuild(variant, displayName)
     return false
   end
 
-  local entries, decodeErr
-  if variant.wclEntries then
-    if not (C_Traits and C_Traits.GetNodeInfo and C_Traits.GetEntryInfo and C_Traits.GetConfigInfo and C_Traits.GetTreeNodes) then
-      Announce("|cffff4444HotsBB Talents:|r C_Traits API not found on this client. Use Copy instead.", 1.0, 0.3, 0.3)
-      return false
-    end
-    entries = ResolveWclEntries(configID, variant.wclEntries)
-    local configInfo = C_Traits.GetConfigInfo(configID)
-    local treeID = configInfo and configInfo.treeIDs and configInfo.treeIDs[1]
-    if treeID then
+  if not (C_Traits and C_Traits.GetConfigInfo and C_Traits.GetTreeNodes and C_Traits.GetNodeInfo) then
+    Announce("|cffff4444HotsBB Talents:|r C_Traits API not found on this client. Use Copy instead.", 1.0, 0.3, 0.3)
+    return false
+  end
+  local configInfo = C_Traits.GetConfigInfo(configID)
+  local treeID = configInfo and configInfo.treeIDs and configInfo.treeIDs[1]
+  if not treeID then
+    Announce("|cffff4444HotsBB Talents:|r Could not determine your talent tree ID. Use Copy instead.", 1.0, 0.3, 0.3)
+    return false
+  end
+
+  -- Fallback shared by both branches below — decode the Blizzard string when the
+  -- WCL-telemetry path can't produce anything usable.
+  local function EntriesFromString()
+    if not variant.importString then return nil, "no import string available for this build" end
+    return DecodeLoadoutString(variant.importString, configID, treeID)
+  end
+
+  local entries, dropped, decodeErr
+  if variant.wclEntries and C_Traits.GetEntryInfo then
+    entries, dropped = ResolveWclEntries(configID, variant.wclEntries)
+    if #entries == 0 then
+      -- Everything resolved away (e.g. a big tree rework invalidated the recorded
+      -- node IDs). Importing an empty loadout and calling it success would be worse
+      -- than useless — fall back to the Blizzard string if we have one.
+      entries, decodeErr = EntriesFromString()
+      dropped = 0
+      if not entries then
+        Announce("|cffff4444HotsBB Talents:|r This build's recorded talents no longer match the current game version (" .. tostring(decodeErr) .. "). It should fix itself after the next data update.", 1.0, 0.3, 0.3)
+        return false
+      end
+    else
       entries = SortEntriesByTreeOrder(entries, treeID)
     end
   else
-    if not (C_Traits and C_Traits.GetConfigInfo and C_Traits.GetTreeNodes and C_Traits.GetNodeInfo) then
-      Announce("|cffff4444HotsBB Talents:|r C_Traits API not found on this client. Use Copy instead.", 1.0, 0.3, 0.3)
-      return false
-    end
-    local configInfo = C_Traits.GetConfigInfo(configID)
-    local treeID = configInfo and configInfo.treeIDs and configInfo.treeIDs[1]
-    if not treeID then
-      Announce("|cffff4444HotsBB Talents:|r Could not determine your talent tree ID. Use Copy instead.", 1.0, 0.3, 0.3)
-      return false
-    end
-    entries, decodeErr = DecodeLoadoutString(variant.importString, configID, treeID)
+    entries, decodeErr = EntriesFromString()
+    dropped = 0
     if not entries then
       Announce("|cffff4444HotsBB Talents:|r Decode failed: " .. tostring(decodeErr) .. ". Use Copy instead.", 1.0, 0.3, 0.3)
       return false
@@ -416,7 +443,10 @@ local function ImportBuild(variant, displayName)
     return false
   end
 
-  Announce("|cff44ff44HotsBB Talents:|r Imported \"" .. (displayName or "build") .. "\" with " .. #entries .. " talents — review it in your Talents panel before applying.", 0.3, 1.0, 0.3)
+  local skippedNote = (dropped and dropped > 0)
+    and (" |cffffcc44(" .. dropped .. " outdated talent" .. (dropped == 1 and "" or "s") .. " skipped — check the tree)|r")
+    or ""
+  Announce("|cff44ff44HotsBB Talents:|r Imported \"" .. (displayName or "build") .. "\" with " .. #entries .. " talents" .. skippedNote .. " — review it in your Talents panel before applying.", 0.3, 1.0, 0.3)
   return true
 end
 
@@ -738,7 +768,16 @@ local function RefreshCardButtons(card, variants)
   end
   local importString = variant.importString
   card.importBtn:SetScript("OnClick", function() ImportBuild(variant, label) end)
-  card.copyBtn:SetScript("OnClick", function() ShowCopyBox(importString) end)
+  -- Roughly half the variants have no Blizzard-profile-derived string (importString is
+  -- nil server-side when no clean profile match exists) — showing Copy anyway presented
+  -- an EMPTY box to Ctrl+C, so the user pasted nothing into Blizzard's import dialog.
+  -- Same rule as the website: no string, no Copy button.
+  if importString then
+    card.copyBtn:SetScript("OnClick", function() ShowCopyBox(importString) end)
+    card.copyBtn:Show()
+  else
+    card.copyBtn:Hide()
+  end
   for i, pill in ipairs(card.pills) do
     if pill:IsShown() then
       pill:SetSelected(i == (card.selectedVariantIndex or 1))
@@ -882,7 +921,7 @@ local function Refresh()
   end
   local tabLabel = activeTabKey == "raid" and "Raid" or "Dungeons"
   frame.subtitle:SetText(tabLabel .. ": " .. haveCount .. " of " .. #roster ..
-    " have data. Import decodes client-side; Copy always works as a fallback.")
+    " have data. Import applies the build; Copy (where shown) gives the paste-in string.")
 
   for _, card in ipairs(cardPool) do card:Hide() end
 
@@ -974,14 +1013,35 @@ SLASH_HOTSBBTALENTS1 = "/hbt"
 SLASH_HOTSBBTALENTS2 = "/hotsbbtalents"
 SlashCmdList["HOTSBBTALENTS"] = ToggleFrame
 
-if C_AddOns and C_AddOns.RegisterAddOnCompartmentInfo then
-  C_AddOns.RegisterAddOnCompartmentInfo({
+-- AddonCompartmentFrame:RegisterAddon is the real runtime registration API (Blizzard's
+-- AddonCompartment.lua) — the previously-used C_AddOns.RegisterAddOnCompartmentInfo
+-- doesn't exist on any client, so the guarded call silently never ran and the addon
+-- never appeared in the compartment at all.
+if AddonCompartmentFrame and AddonCompartmentFrame.RegisterAddon then
+  AddonCompartmentFrame:RegisterAddon({
     text = "HotsBB Talents",
     icon = "Interface\\Icons\\INV_Misc_Book_09",
     notCheckable = true,
     func = ToggleFrame,
   })
 end
+
+-- Respec while the panel is open: the cards (and their Import click handlers) were
+-- built for the OLD spec's data and stayed live — clicking Import then ran another
+-- spec's build against the new spec's config. Rebuild from the current spec, and keep
+-- the title-bar spec icon honest too.
+local specWatcher = CreateFrame("Frame")
+specWatcher:RegisterUnitEvent("PLAYER_SPECIALIZATION_CHANGED", "player")
+specWatcher:SetScript("OnEvent", function()
+  local specIndex = GetSpecialization and GetSpecialization()
+  if specIndex then
+    local _, _, _, icon = GetSpecializationInfo(specIndex)
+    if icon then frame.specIcon:SetTexture(icon) end
+  end
+  if frame:IsShown() then
+    Refresh()
+  end
+end)
 
 -- ── Button on Blizzard's own Talents screen ──────────────────────────────────
 -- Frame names/structure here can vary by patch (see EnsureTalentFrameLoaded above,

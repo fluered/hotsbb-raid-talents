@@ -7,6 +7,15 @@ export default function DungeonCardImage({ primary, fallback }: { primary?: stri
   const [dead, setDead] = useState(!initialSrc);
   const imgRef = useRef<HTMLImageElement>(null);
 
+  // Props can change on a client-side re-render of the same mounted card (e.g. the
+  // image URL was missing on first render and present later) — without this, state
+  // seeded from the original props stays locked on the fallback forever.
+  useEffect(() => {
+    const next = primary || fallback;
+    setSrc(next);
+    setDead(!next);
+  }, [primary, fallback]);
+
   const tryFallback = () => {
     if (src !== fallback && fallback) {
       setSrc(fallback);

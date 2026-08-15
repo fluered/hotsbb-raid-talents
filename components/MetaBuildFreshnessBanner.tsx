@@ -10,6 +10,15 @@ import { useRouter } from 'next/navigation';
 // moments before it rendered.
 const CHECK_DELAY_MS = 5000;
 
+// The page renders from its own 24h unstable_cache pipeline, while /api/meta-build
+// answers from the separate Redis-backed crawl pipeline — the two recompute at
+// independent times, so the API's fetchedAt being merely newer is normal and does NOT
+// mean a refresh would deliver anything different (the page's cache entry may still be
+// valid; clicking Refresh would re-serve the identical page). Only when the API's data
+// is more than a full page-TTL newer is the page's entry guaranteed expired — then a
+// refresh genuinely picks up new data, and the banner is telling the truth.
+const PAGE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
 export default function MetaBuildFreshnessBanner({
   className,
   spec,
@@ -50,7 +59,7 @@ export default function MetaBuildFreshnessBanner({
         const res = await fetch(`/api/meta-build?${params}`, { cache: 'no-store' });
         const json = await res.json();
         const latest = json?.data?.fetchedAt;
-        if (!cancelled && latest && knownFetchedAt.current && latest > knownFetchedAt.current) {
+        if (!cancelled && latest && knownFetchedAt.current && latest > knownFetchedAt.current + PAGE_CACHE_TTL_MS) {
           setStale(true);
         }
       } catch {

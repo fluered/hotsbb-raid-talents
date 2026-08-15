@@ -25,6 +25,13 @@ on:
 permissions:
   contents: write
 
+# Serialize against the data-crawl workflow (same group name there): both push a TOC
+# bump to main and cut a release, so running concurrently they could non-fast-forward
+# each other's pushes or race on tags.
+concurrency:
+  group: addon-release
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -32,10 +39,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # First free vYYYY.MM.DD-N tag rather than github.run_number: run_number is a
+      # per-workflow counter, so this workflow and export-meta-builds would eventually
+      # mint the same tag on the same day and the second release would fail after its
+      # push already landed. Scanning existing releases is collision-proof across both,
+      # and makes failed runs re-runnable: a re-run just picks up where the last one
+      # died (the bump commit diff is empty, the tag is still free).
       - name: Set addon version
         id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          version="$(date -u +%Y.%m.%d)-${{ github.run_number }}"
+          base="$(date -u +%Y.%m.%d)"
+          n=1
+          while gh release view "v$base-$n" >/dev/null 2>&1; do n=$((n+1)); done
+          version="$base-$n"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           sed -i "s/^## Version:.*/## Version: $version/" addon/HotsBBTalents/HotsBBTalents.toc
 
@@ -44,8 +62,17 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add addon/HotsBBTalents/HotsBBTalents.toc
-          git commit -m "Bump addon version to ${{ steps.version.outputs.version }} [skip ci]"
-          git push
+          # Empty diff happens on a re-run after a failed release step (the bump commit
+          # already landed) — skip the commit and proceed straight to packaging.
+          if ! git diff --cached --quiet; then
+            git commit -m "Bump addon version to ${{ steps.version.outputs.version }} [skip ci]"
+            # Main may have moved since checkout (user pushes) — rebase and retry so a
+            # non-fast-forward rejection doesn't kill the release.
+            for i in 1 2 3; do
+              git push && break
+              git pull --rebase origin main
+            done
+          fi
 
       - name: Package addon zip
         run: |

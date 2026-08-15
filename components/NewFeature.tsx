@@ -104,6 +104,7 @@ function ChoicePopup({
   aChosen,
   choiceFreq,
   colors,
+  pinned,
   onClose,
 }: {
   node: any;
@@ -111,6 +112,7 @@ function ChoicePopup({
   aChosen: boolean;
   choiceFreq?: { aPct: number; bPct: number };
   colors: { color: string; border: string };
+  pinned: boolean;
   onClose: () => void;
 }) {
   const POPUP_W = 272;
@@ -136,8 +138,12 @@ function ChoicePopup({
 
   return createPortal(
     <>
-      {/* Tap/click anywhere outside to dismiss — needed since touch has no hover-out to close on */}
-      <div style={{ position: 'fixed', inset: 0, zIndex: 9996 }} onClick={onClose} />
+      {/* Tap/click anywhere outside to dismiss — needed since touch has no hover-out to
+          close on. ONLY when pinned: rendered during plain hover, this full-screen layer
+          sat on top of the node itself, so the node instantly got a mouseleave (popup
+          flicker) and the click meant to pin landed on the overlay instead — pinning was
+          unreachable with a mouse and the first click anywhere was silently eaten. */}
+      {pinned && <div style={{ position: 'fixed', inset: 0, zIndex: 9996 }} onClick={onClose} />}
       <div
         style={{ position: 'fixed', top: rect.top - 8, left, transform: 'translateY(-100%)', zIndex: 9997, width: POPUP_W }}
         className="bg-zinc-950 border border-zinc-700 rounded-lg shadow-2xl overflow-hidden"
@@ -653,6 +659,24 @@ export default function NewFeature({
                     : { node, rect: target.getBoundingClientRect(), aChosen: !chosenIsB, pinned: true }
                 );
               }}
+              role={isChoiceNode || displayNode.spellId ? 'button' : undefined}
+              tabIndex={isChoiceNode || displayNode.spellId ? 0 : undefined}
+              aria-label={displayNode.name}
+              onKeyDown={(e) => {
+                if (e.key !== 'Enter' && e.key !== ' ') return;
+                e.preventDefault();
+                if (isChoiceNode) {
+                  const target = e.currentTarget as HTMLElement | null;
+                  if (!target) return;
+                  setChoiceHover(prev =>
+                    prev && prev.node.nodeID === node.nodeID
+                      ? null
+                      : { node, rect: target.getBoundingClientRect(), aChosen: !chosenIsB, pinned: true }
+                  );
+                } else if (displayNode.spellId) {
+                  window.open(`https://www.wowhead.com/spell=${displayNode.spellId}`, '_blank', 'noopener,noreferrer');
+                }
+              }}
             >
               <div
                 className={`w-10 h-10 rounded-full border-2 overflow-hidden transition-all relative ${
@@ -735,6 +759,7 @@ export default function NewFeature({
           aChosen={choiceHover.aChosen}
           choiceFreq={choiceFreqMap?.[choiceHover.node.nodeID]}
           colors={colors}
+          pinned={choiceHover.pinned}
           onClose={() => setChoiceHover(null)}
         />
       )}

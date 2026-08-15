@@ -1,14 +1,24 @@
+import { NextRequest } from 'next/server';
 import { getBlizzardToken, getTalentTreeId, getTalentTreeLayout } from '../../../lib/wow';
+import { isAuthorizedInternalCaller } from '../../../lib/internalAuth';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET(req: Request) {
+export async function GET(req: NextRequest) {
+  // Debug-only: uncached layout builds fan out into rate-limited Blizzard icon
+  // fetches — gate it like the other internal routes.
+  if (!isAuthorizedInternalCaller(req)) {
+    return Response.json({ status: 'forbidden' }, { status: 403 });
+  }
   const { searchParams } = new URL(req.url);
   const spec = searchParams.get('spec') ?? 'Devastation';
   const className = searchParams.get('class') ?? 'Evoker';
 
   const token = await getBlizzardToken();
   const treeInfo = await getTalentTreeId(spec, className, token);
+  if (!treeInfo) {
+    return Response.json({ status: 'unknown-spec', spec, class: className }, { status: 404 });
+  }
   const { layout, heroTreeNames } = await getTalentTreeLayout(treeInfo.treeId, treeInfo.specId, token);
 
   const heroNodes = layout.filter(n => n.section === 'hero');
@@ -50,6 +60,6 @@ export async function GET(req: Request) {
     outlierClassNodes: outlierClassNodes.map(n => ({ nodeID: n.nodeID, name: n.name, row: n.row, column: n.column }))
       .sort((a, b) => a.column - b.column || a.row - b.row),
     heroNodesAll: heroNodes.map(n => ({ nodeID: n.nodeID, name: n.name, heroTreeId: n.heroTreeId, row: n.row, column: n.column }))
-      .sort((a, b) => a.heroTreeId - b.heroTreeId || a.row - b.row || a.column - b.column),
+      .sort((a, b) => (a.heroTreeId ?? 0) - (b.heroTreeId ?? 0) || a.row - b.row || a.column - b.column),
   });
 }

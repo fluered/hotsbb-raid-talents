@@ -738,7 +738,7 @@ async function computeGearPhase({
   }
 
   // ── Apply icons ──────────────────────────────────────────────────────────
-  const applyTrinketIcons = (trinkets: Array<{ itemId: number; iconUrl: string }>) =>
+  const applyTrinketIcons = <T extends { itemId: number }>(trinkets: T[]) =>
     trinkets.map(t => ({ ...t, iconUrl: iconById.get(t.itemId) ?? '', description: descById.get(t.itemId) ?? '' }));
 
   for (const htGear of heroTreeGear) {

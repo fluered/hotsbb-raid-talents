@@ -178,8 +178,10 @@ function GearSection({
             <div className="mb-3 flex items-baseline gap-3">
               <h2 className="text-base font-black text-white tracking-tight">Meta Trinkets</h2>
               <p className="text-sm text-zinc-500">
-                · {active.totalPlayers} top {active.id !== null ? `${active.name} ` : ''}parses
-                {gear!.playerCount < active.totalPlayers && (
+                {/* Hero variants are computed from the variant's own player subset, not the
+                    full sample — labeling them with totalPlayers overstated the sample. */}
+                · {active.id !== null ? (active.count ?? active.totalPlayers) : active.totalPlayers} top {active.id !== null ? `${active.name} ` : ''}parses
+                {gear!.playerCount < (active.id !== null ? (active.count ?? active.totalPlayers) : active.totalPlayers) && (
                   <span className="text-zinc-600"> · {gear!.playerCount} with gear data</span>
                 )}
               </p>
@@ -203,6 +205,8 @@ function GearSection({
                       <div className="space-y-3">
                         {gear!.trinkets.map((t, i) => (
                           <div key={i} className="flex items-center gap-2.5 cursor-pointer group"
+                            role="button" tabIndex={0} aria-label={`${t.name} on Wowhead`}
+                            onKeyDown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && t.itemId) { e.preventDefault(); window.open(`https://www.wowhead.com/item=${t.itemId}`, '_blank', 'noopener,noreferrer'); } }}
                             onClick={() => t.itemId && window.open(`https://www.wowhead.com/item=${t.itemId}`, '_blank', 'noopener,noreferrer')}
                             onMouseEnter={(e) => {
                               const target = e.currentTarget as HTMLElement | null;
@@ -298,8 +302,8 @@ function GearSection({
             <div className="mb-3 flex items-baseline gap-3">
               <h2 className="text-base font-black text-white tracking-tight">Meta Gear</h2>
               <p className="text-sm text-zinc-500">
-                · {active.totalPlayers} top {active.id !== null ? `${active.name} ` : ''}parses
-                {gear!.playerCount < active.totalPlayers && (
+                · {active.id !== null ? (active.count ?? active.totalPlayers) : active.totalPlayers} top {active.id !== null ? `${active.name} ` : ''}parses
+                {gear!.playerCount < (active.id !== null ? (active.count ?? active.totalPlayers) : active.totalPlayers) && (
                   <span className="text-zinc-600"> · {gear!.playerCount} with gear data</span>
                 )}
               </p>
@@ -326,6 +330,8 @@ function GearSection({
                         const qualityColor = QUALITY_COLOR[item.quality] ?? '#9d9d9d';
                         return (
                           <div key={i} className="flex items-center gap-2 cursor-pointer group"
+                            role="button" tabIndex={0} aria-label={`${item.name} on Wowhead`}
+                            onKeyDown={(ev) => { if ((ev.key === 'Enter' || ev.key === ' ') && item.itemId) { ev.preventDefault(); window.open(`https://www.wowhead.com/item=${item.itemId}`, '_blank', 'noopener,noreferrer'); } }}
                             onClick={() => item.itemId && window.open(`https://www.wowhead.com/item=${item.itemId}`, '_blank', 'noopener,noreferrer')}
                             onMouseEnter={(ev) => {
                               const target = ev.currentTarget as HTMLElement | null;
@@ -536,6 +542,12 @@ export default function BossView({
   // over another variant's extra-loaded players.
   const [additionalPlayers, setAdditionalPlayers] = useState<any[]>([]);
   const [loadingMore, setLoadingMore] = useState(false);
+  // "updated Xm ago" must not be computed during render: the server stamps its own
+  // Date.now() into the SSR HTML and the client recomputes at hydration — crossing a
+  // minute boundary in between logs a hydration mismatch and forces a client re-render.
+  // Client-only after mount instead.
+  const [clientNow, setClientNow] = useState<number | null>(null);
+  useEffect(() => { setClientNow(Date.now()); }, []);
 
   const switchVariant = (idx: number) => {
     if (idx === activeIdx) return;
@@ -577,13 +589,22 @@ export default function BossView({
   const hasHeroFilter = variants.length > 1;
 
   const canLoadMore = active.id === null && bossId != null && region != null && loadMorePoolSize != null && wowClass != null;
-  const handleLoadMore = async (alreadyShown: number) => {
+  const handleLoadMore = async (_alreadyShown: number) => {
     if (!canLoadMore || loadingMore) return;
     setLoadingMore(true);
     try {
+      // Identify every player already on screen — the server walks the rankings and
+      // skips these, so it can never re-serve someone the page is already showing
+      // (raw-index slicing could, whenever the initial telemetry-filtered selection
+      // skipped a candidate).
+      const exclude = [...active.players, ...additionalPlayers].map((p: any) => ({
+        code: p.report?.code ?? '',
+        fightId: p.report?.fightID ?? 0,
+        name: p.name ?? '',
+      }));
       const { players } = await loadMorePlayers({
         bossId: bossId!, className: wowClass!, spec, difficulty, region: region!, metric,
-        startIdx: alreadyShown, count: 5,
+        exclude, count: 5,
       });
       setAdditionalPlayers(prev => [...prev, ...players]);
     } catch {
@@ -750,10 +771,10 @@ export default function BossView({
             </div>
             {active.consensus ? (
               <p className="text-sm text-zinc-500">
-                Consensus from top {active.totalPlayers} {difficulty === 10 ? 'Mythic+' : difficulty === 5 ? 'Mythic' : 'Heroic'} {spec} parses
+                Consensus from {active.id !== null ? `the ${active.count ?? active.totalPlayers} of the top ${active.totalPlayers}` : `top ${active.totalPlayers}`} {difficulty === 10 ? 'Mythic+' : difficulty === 5 ? 'Mythic' : 'Heroic'} {spec} parses
                 {active.id !== null ? ` using ${active.name}` : ''}
-                {dataFetchedAt != null && (() => {
-                  const mins = Math.round((Date.now() - dataFetchedAt) / 60000);
+                {dataFetchedAt != null && clientNow != null && (() => {
+                  const mins = Math.round((clientNow - dataFetchedAt) / 60000);
                   if (mins < 2) return ' · just updated';
                   if (mins < 60) return ` · updated ${mins}m ago`;
                   const hrs = Math.floor(mins / 60);

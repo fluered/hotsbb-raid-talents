@@ -1,7 +1,14 @@
 import { NextRequest } from 'next/server';
-import { getWclToken, getRaidStructure, MIDNIGHT_RAIDS } from '../../../lib/wow';
+import { getWclToken, getRaidStructure, getWclRankings, MIDNIGHT_RAIDS } from '../../../lib/wow';
+import { isAuthorizedInternalCaller } from '../../../lib/internalAuth';
 
 export async function GET(request: NextRequest) {
+  // Debug-only route, but it fires one uncached WCL rankings query PER ENCOUNTER per
+  // hit — exactly the quota-burning pattern the meta-build route had to be gated
+  // against after a crawler drained the WCL budget. Same gate applies here.
+  if (!isAuthorizedInternalCaller(request)) {
+    return Response.json({ status: 'forbidden' }, { status: 403 });
+  }
   const { searchParams } = new URL(request.url);
   const cls = searchParams.get('class') ?? 'Hunter';
   const spec = searchParams.get('spec') ?? 'Beast Mastery';
@@ -16,29 +23,12 @@ export async function GET(request: NextRequest) {
       (z.encounters ?? []).map((enc: any) => ({ id: enc.id, name: enc.name, zone: z.name }))
     );
 
-  const wclClass = cls.replace(/\s+/g, '');
-  const wclSpec = spec.replace(/\s+/g, '');
-
+  // Through getWclRankings rather than a raw fetch so these queries respect the shared
+  // WCL request pacing queue like every other call site.
   const results = await Promise.all(
     encounters.map(async enc => {
-      const query = `
-        query {
-          worldData {
-            encounter(id: ${enc.id}) {
-              characterRankings(className: "${wclClass}", specName: "${wclSpec}", difficulty: ${difficulty}, serverRegion: "US")
-            }
-          }
-        }
-      `;
       try {
-        const res = await fetch('https://www.warcraftlogs.com/api/v2/client', {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query }),
-          cache: 'no-store',
-        });
-        const json = await res.json();
-        const rankings = json.data?.worldData?.encounter?.characterRankings?.rankings ?? [];
+        const rankings = await getWclRankings(token, enc.id, cls, spec, difficulty, 'us', undefined, true);
         return { bossId: enc.id, boss: enc.name, zone: enc.zone, us: rankings.length, topDps: rankings[0]?.amount ?? null };
       } catch (e) {
         return { bossId: enc.id, boss: enc.name, zone: enc.zone, us: 'error', topDps: null };

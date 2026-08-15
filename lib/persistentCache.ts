@@ -59,21 +59,32 @@ export async function getOrSetPersistent<T>(
   ttlSeconds: number,
   compute: () => Promise<T>
 ): Promise<T> {
+  // compute() deliberately runs OUTSIDE the cache try/catch: it used to sit inside,
+  // which meant a compute failure (e.g. the deliberately-thrown WCL rate-limit error)
+  // was caught, logged misleadingly as "cache unavailable", and compute was run a
+  // SECOND time — doubling the exact WCL request that had just been rate-limited.
+  // Cache errors degrade to uncached compute; compute errors are the caller's to see.
+  let redis: RedisClientType | null = null;
   try {
-    const redis = await getClient();
+    redis = await getClient();
     const cached = await withTimeout(redis.get(key), CACHE_TIMEOUT_MS, 'Redis get');
     if (cached != null) return JSON.parse(cached) as T;
-    const fresh = await compute();
-    // Fire-and-forget the write — a slow/failed cache write shouldn't delay or fail a
-    // response that already has its real data.
-    redis.set(key, JSON.stringify(fresh), { EX: ttlSeconds }).catch(err =>
-      console.error('Persistent cache write failed:', err)
-    );
-    return fresh;
   } catch (err) {
     console.error('Persistent cache unavailable, computing uncached:', err);
-    return compute();
+    redis = null;
   }
+  const fresh = await compute();
+  if (redis) {
+    // Awaited, not fire-and-forget: Vercel can freeze the function right after the
+    // response returns, so an unawaited write may silently never land (same failure
+    // mode logPointsUsage hit — confirmed live). withTimeout bounds the added latency.
+    try {
+      await withTimeout(redis.set(key, JSON.stringify(fresh), { EX: ttlSeconds }), CACHE_TIMEOUT_MS, 'Redis set');
+    } catch (err) {
+      console.error('Persistent cache write failed:', err);
+    }
+  }
+  return fresh;
 }
 
 // ─── WCL points usage log ───────────────────────────────────────────────────────

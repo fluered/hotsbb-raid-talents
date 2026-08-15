@@ -94,6 +94,30 @@ function throwIfRateLimited(response: Response) {
   }
 }
 
+// Every WCL GraphQL response funnels through here. The 429 case was handled everywhere,
+// but every OTHER failure shape — 401 (expired token), 5xx-with-JSON, or a 200 carrying
+// a GraphQL `errors` payload with data: null — used to fall through the callers'
+// `.data?...  || []` chains and come out looking exactly like "this combo genuinely has
+// no data", which then got CACHED for 24h (Redis and unstable_cache both). One transient
+// WCL hiccup could poison a combo for a full day. Throw distinguishably instead: nothing
+// gets cached, and upstream retry/pause logic gets a real signal.
+// Partial GraphQL errors (errors present but data non-null, e.g. one private report in
+// an aliased batch) are NOT thrown — callers use whatever data did come back.
+async function parseWclResponse(response: Response, context: string): Promise<any> {
+  throwIfRateLimited(response);
+  if (!response.ok) throw new Error(`WCL ${context} request failed: HTTP ${response.status}`);
+  let json: any;
+  try {
+    json = await response.json();
+  } catch {
+    throw new Error(`WCL ${context} returned an unparseable response body`);
+  }
+  if (json?.errors?.length && json?.data == null) {
+    throw new Error(`WCL ${context} GraphQL error: ${json.errors[0]?.message ?? 'unknown'}`);
+  }
+  return json;
+}
+
 // Cheap diagnostic query (just one number back, no ranking/telemetry payload) used to
 // measure real points cost around a combo's WCL work — see logPointsUsage in
 // lib/metaBuild.ts. Not itself expected to meaningfully add to points/burst cost, but
@@ -124,8 +148,7 @@ export async function getRaidStructure(token: string) {
     // Zone/encounter structure only changes on patch days, so 24h is safe.
     next: { revalidate: 86400 },
   });
-  throwIfRateLimited(response);
-  return (await response.json()).data?.worldData?.zones || [];
+  return (await parseWclResponse(response, 'zones')).data?.worldData?.zones || [];
 }
 
 export async function getMplusEncounters(token: string, zoneId: number) {
@@ -136,8 +159,7 @@ export async function getMplusEncounters(token: string, zoneId: number) {
     body: JSON.stringify({ query }),
     next: { revalidate: 86400 },
   });
-  throwIfRateLimited(response);
-  return (await response.json()).data?.worldData?.zone?.encounters || [];
+  return (await parseWclResponse(response, 'mplus-encounters')).data?.worldData?.zone?.encounters || [];
 }
 
 // region omitted/undefined returns ALL regions combined in one query (confirmed live:
@@ -164,20 +186,12 @@ export async function getWclRankings(token: string, bossId: number, className: s
     body: JSON.stringify({ query }),
     ...(noCache ? { cache: 'no-store' } : { next: { revalidate: 604800 } }),
   });
-  // A 429 here was previously swallowed into an empty rankings array — indistinguishable
-  // from a boss/spec combo that genuinely has no parses yet. That's exactly why a WCL
-  // rate-limit exhaustion (confirmed 2026-07-26, "Too many requests... subscribe on
-  // Patreon to increase their request limit") went undetected mid-batch-export: every
-  // caller just saw normal-looking no_data results and had no signal to stop. Throw a
-  // distinguishable error instead so callers (the export script especially) can react
-  // to "we're rate-limited" differently than "this combo has no data."
-  if (response.status === 429) {
-    const err: any = new Error('WCL rate limit exceeded — the API key has hit its request budget for the current window.');
-    err.isRateLimit = true;
-    err.retryAfter = response.headers.get('retry-after');
-    throw err;
-  }
-  return (await response.json()).data?.worldData?.encounter?.characterRankings?.rankings || [];
+  // A 429 (and now any other error shape — see parseWclResponse) was previously
+  // swallowed into an empty rankings array — indistinguishable from a boss/spec combo
+  // that genuinely has no parses yet. That's exactly why a WCL rate-limit exhaustion
+  // (confirmed 2026-07-26) went undetected mid-batch-export: every caller just saw
+  // normal-looking no_data results and had no signal to stop.
+  return (await parseWclResponse(response, 'rankings')).data?.worldData?.encounter?.characterRankings?.rankings || [];
 }
 
 // Two region modes, matching the website/addon's toggle: 'global' (default) pools every
@@ -264,12 +278,27 @@ export function blizzardCharacterProfileFetch(
 // have been). Now throws distinguishably, same pattern as getWclRankings, so a caller
 // (the backfill selection, the API route's rate-limit handling, the export script's
 // pause-and-retry) can actually react to it instead of quietly eating the data loss.
-export async function getHistoricalFightTelemetry(wclToken: string, reportCode: string, fightId: number, playerName: string) {
+// Character names are unique per REALM, not per raid — a cross-realm group can contain
+// two same-named players, and name-only matching would hand the ranked player the other
+// one's CombatantInfo. When the caller knows the ranked player's server, prefer the
+// actor whose server matches; fall back to name-only when server info is missing.
+function matchActor(actors: any[], playerName: string, serverName?: string): any | null {
+  const nameLower = playerName.toLowerCase();
+  const nameMatches = actors.filter((a: any) => a.name?.toLowerCase() === nameLower);
+  if (nameMatches.length > 1 && serverName) {
+    const serverLower = serverName.toLowerCase();
+    const exact = nameMatches.find((a: any) => (a.server || '').toLowerCase() === serverLower);
+    if (exact) return exact;
+  }
+  return nameMatches[0] ?? null;
+}
+
+export async function getHistoricalFightTelemetry(wclToken: string, reportCode: string, fightId: number, playerName: string, serverName?: string) {
   const query = `
     query {
       reportData {
         report(code: "${reportCode}") {
-          masterData { actors(type: "Player") { id name } }
+          masterData { actors(type: "Player") { id name server } }
           events(fightIDs: [${fightId}], dataType: CombatantInfo, startTime: 0, endTime: 2147483647) { data }
         }
       }
@@ -281,24 +310,16 @@ export async function getHistoricalFightTelemetry(wclToken: string, reportCode: 
     body: JSON.stringify({ query }),
     next: { revalidate: 86400 },
   });
-  if (response.status === 429) {
-    const err: any = new Error('WCL rate limit exceeded — the API key has hit its request budget for the current window.');
-    err.isRateLimit = true;
-    err.retryAfter = response.headers.get('retry-after');
-    throw err;
-  }
-  try {
-    const reportData = (await response.json()).data?.reportData?.report;
-    const actors = reportData?.masterData?.actors || [];
-    const events = reportData?.events?.data || [];
-    const targetActor = actors.find((a: any) => a.name.toLowerCase() === playerName.toLowerCase());
-    const matchedSourceId = targetActor ? targetActor.id : null;
-    return { sourceId: matchedSourceId, event: events.find((e: any) => e.sourceID === matchedSourceId) || null };
-  } catch {
-    // A genuinely malformed/unexpected response body (not a rate limit) — treat as
-    // "no data for this player" same as before, not worth aborting the whole batch for.
-    return { sourceId: null, event: null };
-  }
+  // Errors (429 and otherwise) throw distinguishably instead of degrading to a
+  // normal-looking "no event" — a swallowed failure here used to get CACHED as
+  // "player has no telemetry" for 24h. A null report (private/deleted) still
+  // resolves to no-data below, which IS a stable fact worth caching.
+  const reportData = (await parseWclResponse(response, 'telemetry')).data?.reportData?.report;
+  const actors = reportData?.masterData?.actors || [];
+  const events = reportData?.events?.data || [];
+  const targetActor = matchActor(actors, playerName, serverName);
+  const matchedSourceId = targetActor ? targetActor.id : null;
+  return { sourceId: matchedSourceId, event: events.find((e: any) => e.sourceID === matchedSourceId) || null };
 }
 
 // Same data as getHistoricalFightTelemetry, but for many players in ONE HTTP request
@@ -313,12 +334,12 @@ export async function getHistoricalFightTelemetry(wclToken: string, reportCode: 
 // getting rejected outright rather than just costing more.
 async function getHistoricalFightTelemetryBatch(
   wclToken: string,
-  requests: Array<{ reportCode: string; fightId: number; playerName: string }>
+  requests: Array<{ reportCode: string; fightId: number; playerName: string; serverName?: string }>
 ): Promise<Array<{ sourceId: number | null; event: any }>> {
   if (requests.length === 0) return [];
   const aliasedFields = requests.map((r, i) => `
     p${i}: report(code: "${r.reportCode}") {
-      masterData { actors(type: "Player") { id name } }
+      masterData { actors(type: "Player") { id name server } }
       events(fightIDs: [${r.fightId}], dataType: CombatantInfo, startTime: 0, endTime: 2147483647) { data }
     }
   `).join('\n');
@@ -330,28 +351,21 @@ async function getHistoricalFightTelemetryBatch(
     body: JSON.stringify({ query }),
     next: { revalidate: 86400 },
   });
-  if (response.status === 429) {
-    const err: any = new Error('WCL rate limit exceeded — the API key has hit its request budget for the current window.');
-    err.isRateLimit = true;
-    err.retryAfter = response.headers.get('retry-after');
-    throw err;
-  }
-  try {
-    const reportData = (await response.json()).data?.reportData ?? {};
-    return requests.map((r, i) => {
-      const report = reportData[`p${i}`];
-      const actors = report?.masterData?.actors || [];
-      const events = report?.events?.data || [];
-      const targetActor = actors.find((a: any) => a.name.toLowerCase() === r.playerName.toLowerCase());
-      const matchedSourceId = targetActor ? targetActor.id : null;
-      return { sourceId: matchedSourceId, event: events.find((e: any) => e.sourceID === matchedSourceId) || null };
-    });
-  } catch {
-    // A genuinely malformed/unexpected response body (not a rate limit) — treat the
-    // whole batch as "no data" same as the single-player version, not worth aborting
-    // the whole crawl for.
-    return requests.map(() => ({ sourceId: null, event: null }));
-  }
+  // Whole-batch failures (429, 5xx, auth, full GraphQL rejection) throw — a swallowed
+  // failure here used to resolve to all-nulls, which both cache layers then stored for
+  // 24h as "these 10 players have no telemetry", silently excluding the actual top
+  // ranks from every consensus computed that day. A single null aliased report among
+  // many (private/deleted — a partial GraphQL error with data non-null) still resolves
+  // to no-data for just that entry, which is correct and cacheable.
+  const reportData = (await parseWclResponse(response, 'telemetry-batch')).data?.reportData ?? {};
+  return requests.map((r, i) => {
+    const report = reportData[`p${i}`];
+    const actors = report?.masterData?.actors || [];
+    const events = report?.events?.data || [];
+    const targetActor = matchActor(actors, r.playerName, r.serverName);
+    const matchedSourceId = targetActor ? targetActor.id : null;
+    return { sourceId: matchedSourceId, event: events.find((e: any) => e.sourceID === matchedSourceId) || null };
+  });
 }
 
 // Cached as a unit, keyed by the batch's own player set — so a same-session re-run of
@@ -366,15 +380,28 @@ async function getHistoricalFightTelemetryBatch(
 // fetchTelemetryBatchCachedUnstable below) — Redis is a small, fixed-size store meant
 // for the crawl's structured, bounded set of combos, not the much larger and more
 // varied key space organic site traffic would generate.
-export function fetchTelemetryBatchCached(wclToken: string, players: any[]): Promise<any[]> {
-  const requests = players.map(p => ({
+// The cache key MUST include the player name, not just report:fight — the stored value
+// is the CombatantInfo matched to that specific player's sourceID. Keyed by fights
+// alone, two batches covering the same fight list for DIFFERENT players (e.g. one
+// premade group topping multiple specs' leaderboards) would share an entry, attributing
+// one player's build to another. v2 prefix invalidates the old name-less entries.
+function telemetryBatchRequests(players: any[]) {
+  return players.map(p => ({
     reportCode: p.report?.code as string,
     fightId: p.report?.fightID as number,
     playerName: p.name as string,
+    serverName: (p.server?.name ?? p.server?.slug) as string | undefined,
   }));
-  const cacheKey = requests.map(r => `${r.reportCode}:${r.fightId}`).join(',');
+}
+
+function telemetryBatchKey(requests: Array<{ reportCode: string; fightId: number; playerName: string }>) {
+  return requests.map(r => `${r.reportCode}:${r.fightId}:${r.playerName.toLowerCase()}`).join(',');
+}
+
+export function fetchTelemetryBatchCached(wclToken: string, players: any[]): Promise<any[]> {
+  const requests = telemetryBatchRequests(players);
   return getOrSetPersistent(
-    `wcl-telemetry-batch-${cacheKey}`,
+    `wcl-telemetry-batch-v2-${telemetryBatchKey(requests)}`,
     86400,
     () => getHistoricalFightTelemetryBatch(wclToken, requests)
   );
@@ -386,15 +413,10 @@ export function fetchTelemetryBatchCached(wclToken: string, players: any[]): Pro
 // combos than the crawl's fixed 720, and sharing the same small Redis instance between
 // both is exactly what filled it to its memory ceiling in practice.
 export function fetchTelemetryBatchCachedUnstable(wclToken: string, players: any[]): Promise<any[]> {
-  const requests = players.map(p => ({
-    reportCode: p.report?.code as string,
-    fightId: p.report?.fightID as number,
-    playerName: p.name as string,
-  }));
-  const cacheKey = requests.map(r => `${r.reportCode}:${r.fightId}`).join(',');
+  const requests = telemetryBatchRequests(players);
   return unstable_cache(
     () => getHistoricalFightTelemetryBatch(wclToken, requests),
-    [`wcl-telemetry-batch-${cacheKey}`],
+    [`wcl-telemetry-batch-v2-${telemetryBatchKey(requests)}`],
     { revalidate: 86400 }
   )();
 }
@@ -440,7 +462,10 @@ export async function selectPlayersWithValidTelemetry<P>(
   let nextIdx = 0;
   while (selected.length < targetCount && nextIdx < rankings.length) {
     const need = targetCount - selected.length;
-    const stepSize = Math.max(need, batchSize * concurrency);
+    // Round the shortfall up to whole WCL batches, but never fetch more batches than
+    // needed — a 1-player shortfall used to trigger a full batchSize*concurrency (50
+    // player) step, 5 real WCL requests to fill one slot.
+    const stepSize = Math.ceil(need / batchSize) * batchSize;
     const stepEnd = Math.min(nextIdx + stepSize, rankings.length);
     const stepPlayers = rankings.slice(nextIdx, stepEnd);
     nextIdx = stepEnd;
@@ -923,6 +948,7 @@ export function deriveTalentStringAndProfileNodes(
     // loadout against the fight's actual telemetry and take the best match; `is_active`
     // only breaks ties between equally-good matches, never bypasses scoring outright.
     let bestScore = -1;
+    let bestNodeCount = 0;
     let bestIsActive = false;
     for (const loadout of fightSpec.loadouts ?? []) {
       if (!loadout.talent_loadout_code) continue;
@@ -937,8 +963,17 @@ export function deriveTalentStringAndProfileNodes(
       }
       const isActive = !!loadout.is_active;
       if (score > bestScore || (score === bestScore && isActive && !bestIsActive)) {
-        bestScore = score; talentString = loadout.talent_loadout_code; bestIsActive = isActive;
+        bestScore = score; bestNodeCount = nodes.length; talentString = loadout.talent_loadout_code; bestIsActive = isActive;
       }
+    }
+    // "Best of the saved loadouts" is not the same as "the build they actually played" —
+    // a player who fully respecced since the fight still produces a best match, just a
+    // bad one, and its copyable string would disagree with the fight build shown on
+    // screen. Below a reasonable agreement floor, no string at all (Copy hides) beats a
+    // confidently wrong one. 80%: true matches agree on nearly every node (small slack
+    // for granted-node/representation differences); wholesale respecs fall well under.
+    if (bestScore >= 0 && (bestNodeCount === 0 || bestScore < bestNodeCount * 0.8)) {
+      talentString = null;
     }
   }
   const selectedLoadout = fightSpec?.loadouts?.find((l: any) => l.talent_loadout_code === talentString) ?? null;

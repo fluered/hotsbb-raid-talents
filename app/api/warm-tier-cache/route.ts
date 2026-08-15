@@ -10,18 +10,21 @@ const PAGES = [
   // but it's the best available without paying for more frequent crons.
   '/',
   '/dungeons',
+  // 'us-eu' is the only non-default region value the pages recognize — the old
+  // 'region=eu' entries were parsed as Global and just re-warmed the default variant,
+  // leaving the real us-eu variants cold.
   '/tier-list',
   '/tier-list?difficulty=4',
-  '/tier-list?region=eu',
-  '/tier-list?difficulty=4&region=eu',
+  '/tier-list?region=us-eu',
+  '/tier-list?difficulty=4&region=us-eu',
   '/tier-list/tanks',
   '/tier-list/tanks?difficulty=4',
-  '/tier-list/tanks?region=eu',
-  '/tier-list/tanks?difficulty=4&region=eu',
+  '/tier-list/tanks?region=us-eu',
+  '/tier-list/tanks?difficulty=4&region=us-eu',
   '/tier-list/healers',
   '/tier-list/healers?difficulty=4',
-  '/tier-list/healers?region=eu',
-  '/tier-list/healers?difficulty=4&region=eu',
+  '/tier-list/healers?region=us-eu',
+  '/tier-list/healers?difficulty=4&region=us-eu',
 ];
 
 export async function GET(request: NextRequest) {

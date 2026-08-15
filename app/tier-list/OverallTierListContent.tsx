@@ -216,7 +216,9 @@ export default async function OverallTierListContent({
     '@context': 'https://schema.org',
     '@type': 'ItemList',
     name: title ?? `${diffLabel} Overall Tier List`,
-    description: `${diffLabel} spec rankings averaged across all Midnight bosses · ${region.toUpperCase()}`,
+    // computeOverall always pools every region (Global) regardless of the requested
+    // region param — label it honestly instead of echoing a region we didn't apply.
+    description: `${diffLabel} spec rankings averaged across all Midnight bosses · GLOBAL`,
     itemListElement: tiered.map(s => ({
       '@type': 'ListItem',
       position: s.globalRank,
@@ -230,7 +232,7 @@ export default async function OverallTierListContent({
       {title && <h1 className="text-xl font-black text-zinc-100 tracking-tight">{title}</h1>}
       <div>
         <p className="text-xs text-zinc-500">
-          {diffLabel} · avg DPS across all bosses · {region.toUpperCase()} · as of {new Date(cachedAt).toLocaleDateString('en-US', { month: 'long', day: 'numeric' })} · refreshed weekly on Mondays
+          {diffLabel} · avg DPS across all bosses · GLOBAL · as of {new Date(cachedAt).toLocaleDateString('en-US', { month: 'long', day: 'numeric' })} · refreshed weekly on Mondays
         </p>
       </div>
 

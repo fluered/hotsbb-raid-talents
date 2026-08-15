@@ -191,7 +191,15 @@ async function mapConcurrent(items, limit, fn) {
 
 function luaStr(s) {
   if (s == null) return 'nil';
-  return '"' + String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+  // Control characters would end up raw inside a Lua short-string literal, which is a
+  // syntax error that bricks the addon for every user on load — escape them. Names come
+  // from WCL/Blizzard, i.e. external data we don't control.
+  return '"' + String(s)
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, c => '\\' + c.charCodeAt(0)) + '"';
 }
 
 // Serializes a {nodeID: number} map (frequencyPct or entryIds) into a Lua table
@@ -268,6 +276,32 @@ function luaEntries(entries) {
       return;
     }
     console.log(`   --force-write passed — writing partial data anyway.`);
+  }
+
+  // The abort guard above only covers rate-limit exhaustion. A deploy/outage mid-crawl
+  // (5xx / HTML responses → 'fetch_error'), an auth change on /api/meta-build (every
+  // combo some non-ok status), or anything else that fails whole swaths of combos would
+  // otherwise still be written, committed, and *released* — silently gutting data every
+  // WowUp user then downloads. Same invariant as the abort path: partial data must
+  // never overwrite good data.
+  const knownStatuses = new Set(['ok', 'no_data', 'error', 'fetch_error', 'aborted']);
+  const unknownCount = Object.entries(statusCounts)
+    .filter(([s]) => !knownStatuses.has(s))
+    .reduce((sum, [, n]) => sum + n, 0);
+  const failureCount = (statusCounts.error || 0) + (statusCounts.fetch_error || 0) + unknownCount;
+  const failureBudget = Math.max(5, Math.round(activeJobs.length * 0.01)); // ~1%, min 5
+  const partialReasons = [];
+  if (failureCount > failureBudget) partialReasons.push(`${failureCount} combos failed (budget: ${failureBudget})`);
+  if (missingSpecs.length > 0) partialReasons.push(`${missingSpecs.length} spec(s) have no data at all`);
+  if (bySpec.size === 0) partialReasons.push('zero combos returned data');
+  if (partialReasons.length > 0 && !FORCE_WRITE) {
+    console.log(`\n🛑 Refusing to write Data.lua — this run looks partial: ${partialReasons.join('; ')}.`);
+    console.log(`   The existing file is untouched. Re-run once the cause is fixed, or pass --force-write to override.`);
+    process.exitCode = 1;
+    return;
+  }
+  if (partialReasons.length > 0) {
+    console.log(`\n⚠  Writing despite partial-run signals (${partialReasons.join('; ')}) — --force-write passed.`);
   }
 
   const lines = [];

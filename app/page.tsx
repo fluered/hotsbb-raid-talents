@@ -36,6 +36,29 @@ export async function generateMetadata({ searchParams }: PageProps): Promise<Met
   let title: string;
   let description: string;
 
+  // The in-page dungeons mode (?mode=dungeons) is what the UI links to — without this
+  // branch those URLs got raid-flavored titles ("Mythic Raid Talents") that don't
+  // apply to M+.
+  if (sp.mode === 'dungeons') {
+    const dungeonName = sp.dungeonName;
+    if (cls && spec && dungeonName) {
+      title = `Best ${spec} ${cls} Talents for ${dungeonName} Mythic+ | HotsBB`;
+      description = `Best ${spec} ${cls} talent build for ${dungeonName} in Mythic+. Consensus talents and meta gear from top World of Warcraft M+ parses.`;
+    } else if (cls && spec) {
+      title = `${spec} ${cls} Mythic+ Talents | HotsBB`;
+      description = `Optimal ${spec} ${cls} talent builds for every Mythic+ dungeon in WoW. Updated from top-parsing logs.`;
+    } else {
+      title = `World of Warcraft Mythic+ Talents Finder: Meta Dungeon Builds For Every Class | HotsBB`;
+      description = `Find the best meta talent builds for every Mythic+ dungeon in World of Warcraft. Meta builds and gear from top-parsing players, per dungeon.`;
+    }
+    return {
+      title,
+      description,
+      openGraph: { title, description, type: 'website' },
+      twitter: { card: 'summary', title, description },
+    };
+  }
+
   if (cls && spec && bossName) {
     title = `Best ${spec} ${cls} Talents for ${diffLabel} ${bossName} | HotsBB`;
     description = `Best ${spec} ${cls} talent build for ${bossName} on ${diffLabel}. Consensus talents and meta gear from top World of Warcraft raid parses.`;
@@ -476,8 +499,11 @@ export default async function Home(props: PageProps) {
                   })}
                 </div>
 
-                {/* Metric toggle — visible whenever a healer spec is selected */}
-                {isHealer && activeSpec && (
+                {/* Metric toggle — raids mode only: its links are built by the raid URL
+                    builder (no mode/dungeon params), so in dungeons mode it silently
+                    navigated back to the raids view and dropped the selected dungeon —
+                    and the dungeon content ignores the metric param anyway. */}
+                {isHealer && activeSpec && activeMode === 'raids' && (
                   <div className="flex items-center gap-2">
                     <span className="text-[10px] font-black text-zinc-600 uppercase tracking-widest">Ranked by</span>
                     <div className="flex items-center gap-1 bg-zinc-900 rounded-lg p-0.5 border border-zinc-800/80">

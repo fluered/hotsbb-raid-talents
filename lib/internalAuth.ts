@@ -12,7 +12,19 @@ export function isAuthorizedInternalCaller(request: NextRequest): boolean {
   const referer = request.headers.get('referer') || request.headers.get('origin') || '';
   try {
     const host = new URL(referer).hostname;
-    return host === 'hotsbbtalents.io' || host.endsWith('.vercel.app') || host === 'localhost';
+    // Only THIS project's deployments — a blanket *.vercel.app match would authorize
+    // any third party's Vercel site (anyone can deploy one) to burn our WCL quota.
+    // Vercel injects the current deployment's own hostnames at runtime, so preview
+    // deployments keep working without hardcoding the project's URL pattern.
+    const selfHosts = [
+      'hotsbbtalents.io',
+      'www.hotsbbtalents.io',
+      'localhost',
+      process.env.VERCEL_URL,
+      process.env.VERCEL_BRANCH_URL,
+      process.env.VERCEL_PROJECT_PRODUCTION_URL,
+    ].filter(Boolean);
+    return selfHosts.includes(host);
   } catch {
     return false;
   }
