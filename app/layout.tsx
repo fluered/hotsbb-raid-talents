@@ -15,6 +15,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
+  // Relative OG-image URLs (see lib/ogImage.ts) resolve against this — without it,
+  // Next falls back to the deployment URL, which breaks share cards on previews.
+  metadataBase: new URL("https://hotsbbtalents.io"),
   title: "HotsBB Talents · WoW Raid & Dungeon Talent Finder",
   description: "Meta talent builds from top Mythic raid and M+ parses — per boss, per dungeon, per spec.",
   verification: {

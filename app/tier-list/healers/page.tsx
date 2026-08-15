@@ -4,6 +4,7 @@ import type { Metadata } from 'next';
 import { getWclToken, getRaidStructure, MIDNIGHT_RAIDS, HEALER_SPECS } from '../../../lib/wow';
 import TierListContent from '../TierListContent';
 import OverallTierListContent from '../OverallTierListContent';
+import { ogImageMeta } from '../../../lib/ogImage';
 
 // See app/page.tsx for why: heavy concurrent WCL fetching across many specs can
 // exceed the platform's default function timeout on a cold cache.
@@ -24,7 +25,16 @@ export async function generateMetadata({ searchParams }: PageProps): Promise<Met
   const description = bossName
     ? `Healer spec tier list for ${diffLabel} ${bossName} — ranked by avg DPS of top 50 parses.`
     : 'Overall healer spec tier list for WoW Midnight Season 1 — avg DPS across all raid bosses, ranked from top parses.';
-  return { title, description };
+  return {
+    title,
+    description,
+    ...ogImageMeta({
+      title, description,
+      imageTitle: 'Healer Tier List',
+      subtitle: bossName ? `Healer spec rankings for ${diffLabel} ${bossName}` : `${diffLabel} healer rankings across all Midnight bosses`,
+      kicker: bossName ? `${diffLabel} · ${bossName}` : `${diffLabel} · All Bosses`,
+    }),
+  };
 }
 
 export default async function HealerTierListPage({ searchParams }: PageProps) {

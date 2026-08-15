@@ -6,6 +6,7 @@ import type { Metadata } from 'next';
 import BossContent from './BossContent';
 import BossPicker from './BossPicker';
 import DungeonCardImage from '../components/DungeonCardImage';
+import { ogImageMeta } from '../lib/ogImage';
 import {
   getWclToken, getBlizzardToken, getRaidStructure, getDungeonRoster,
   POPULAR_SPECS, SPEC_IDS, MIDNIGHT_RAIDS, CLASS_IDS,
@@ -54,8 +55,13 @@ export async function generateMetadata({ searchParams }: PageProps): Promise<Met
     return {
       title,
       description,
-      openGraph: { title, description, type: 'website' },
-      twitter: { card: 'summary', title, description },
+      ...ogImageMeta({
+        title, description,
+        imageTitle: cls && spec ? `${spec} ${cls}` : 'Mythic+ Talents',
+        subtitle: 'Meta talent build & gear from top M+ parses',
+        kicker: dungeonName ? `Mythic+ · ${dungeonName}` : 'Mythic+',
+        className: cls,
+      }),
     };
   }
 
@@ -76,8 +82,15 @@ export async function generateMetadata({ searchParams }: PageProps): Promise<Met
   return {
     title,
     description,
-    openGraph: { title, description, type: 'website' },
-    twitter: { card: 'summary', title, description },
+    ...ogImageMeta({
+      title, description,
+      imageTitle: cls && spec ? `${spec} ${cls}` : cls ? `${cls} Builds` : 'Raid Talents',
+      subtitle: bossName
+        ? 'Consensus talent build & meta gear from top parses'
+        : `Meta builds for every ${diffLabel} raid boss, per spec`,
+      kicker: bossName ? `${diffLabel} · ${bossName}` : diffLabel,
+      className: cls,
+    }),
   };
 }
 

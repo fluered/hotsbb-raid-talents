@@ -4,6 +4,7 @@ import type { Metadata } from 'next';
 import { unstable_cache } from 'next/cache';
 import BossContent from '../BossContent';
 import DungeonCardImage from '../../components/DungeonCardImage';
+import { ogImageMeta } from '../../lib/ogImage';
 import {
   getWclToken, getBlizzardToken, getDungeonRoster,
   POPULAR_SPECS, SPEC_IDS, CLASS_IDS, MPLUS_DIFFICULTY, MPLUS_ZONE_ID,
@@ -40,8 +41,13 @@ export async function generateMetadata({ searchParams }: PageProps): Promise<Met
   return {
     title,
     description,
-    openGraph: { title, description, type: 'website' },
-    twitter: { card: 'summary', title, description },
+    ...ogImageMeta({
+      title, description,
+      imageTitle: cls && spec ? `${spec} ${cls}` : 'Mythic+ Talents',
+      subtitle: 'Meta talent build & gear from top M+ parses',
+      kicker: dungeonName ? `Mythic+ · ${dungeonName}` : 'Mythic+ · Midnight Season 1',
+      className: cls,
+    }),
   };
 }
 
