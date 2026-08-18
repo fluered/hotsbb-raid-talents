@@ -1074,14 +1074,15 @@ export const MPLUS_DIFFICULTY = 10; // bracket that returns high-key parses
 // A dungeon missing an entry here just falls back to a generic look — it never breaks
 // the actual talent-build data, which comes from getDungeonRoster below instead.
 const DUNGEON_MEDIA_OVERRIDES: Record<string, { wclCdnId?: number; blizzardInstanceId?: number }> = {
-  'Windrunner Spire':          { blizzardInstanceId: 1299 },
-  'Maisara Caverns':           { wclCdnId: 12874 },
-  'Nexus-Point Xenas':         { wclCdnId: 12915 },
-  "Algeth'ar Academy":         { blizzardInstanceId: 1201 },
-  "Magisters' Terrace":        { wclCdnId: 12811, blizzardInstanceId: 1300 },
-  'Pit of Saron':              { wclCdnId: 10658, blizzardInstanceId: 278 },
-  'Seat of the Triumvirate':   { blizzardInstanceId: 945 },
-  'Skyreach':                  { blizzardInstanceId: 476 },
+  // Season 2 (verified 2026-08-18: every tile exists, wclCdnId only where the CDN 200s)
+  'Altar of Fangs':            { wclCdnId: 12993, blizzardInstanceId: 1322 },
+  'Den of Nalorakk':           { wclCdnId: 12825, blizzardInstanceId: 1311 },
+  "Kings' Rest":               { blizzardInstanceId: 1041 },
+  'Murder Row':                { wclCdnId: 12813, blizzardInstanceId: 1304 },
+  'Ruby Life Pools':           { blizzardInstanceId: 1202 },
+  'Temple of Sethraliss':      { blizzardInstanceId: 1030 },
+  'The Blinding Vale':         { wclCdnId: 12859, blizzardInstanceId: 1309 },
+  'Voidscar Arena':            { wclCdnId: 12923, blizzardInstanceId: 1313 },
 };
 
 // Discovers the current season's Mythic+ dungeon roster live from WCL instead of a
