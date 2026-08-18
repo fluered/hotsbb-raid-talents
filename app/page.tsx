@@ -10,7 +10,7 @@ import { ogImageMeta } from '../lib/ogImage';
 import {
   getWclToken, getBlizzardToken, getRaidStructure, getDungeonRoster,
   POPULAR_SPECS, SPEC_IDS, MIDNIGHT_RAIDS, CLASS_IDS,
-  MPLUS_DIFFICULTY, MPLUS_ZONE_ID, HEALER_SPECS,
+  MPLUS_DIFFICULTY, MPLUS_ZONE_ID, HEALER_SPECS, DEFAULT_RAID_DIFFICULTY,
 } from '../lib/wow';
 
 // BossContent awaits up to 50 concurrent WCL telemetry fetches + 25 Blizzard profile
@@ -31,7 +31,7 @@ export async function generateMetadata({ searchParams }: PageProps): Promise<Met
   const cls = sp.class;
   const spec = sp.spec;
   const bossName = sp.bossName;
-  const diff = sp.difficulty ? parseInt(sp.difficulty) : 5;
+  const diff = sp.difficulty ? parseInt(sp.difficulty) : DEFAULT_RAID_DIFFICULTY;
   const diffLabel = diff === 4 ? 'Heroic' : 'Mythic';
 
   let title: string;
@@ -70,7 +70,7 @@ export async function generateMetadata({ searchParams }: PageProps): Promise<Met
     description = `Best ${spec} ${cls} talent build for ${bossName} on ${diffLabel}. Consensus talents and meta gear from top World of Warcraft raid parses.`;
   } else if (cls && spec) {
     title = `${spec} ${cls} ${diffLabel} Raid Talents | HotsBB`;
-    description = `Optimal ${spec} ${cls} talent builds for every ${diffLabel} raid boss in WoW. Updated from top-parsing logs across Sporefall and Midnight.`;
+    description = `Optimal ${spec} ${cls} talent builds for every ${diffLabel} raid boss in WoW. Updated from top-parsing logs across The Venomous Abyss.`;
   } else if (cls) {
     title = `${cls} ${diffLabel} Raid Talent Builds | HotsBB`;
     description = `Best ${cls} talent builds for every ${diffLabel} raid boss in World of Warcraft. Consensus builds from top-parsing players.`;
@@ -129,7 +129,7 @@ export default async function Home(props: PageProps) {
   const activeDungeonName = searchParams.dungeonName || null;
   const activeClass = searchParams.class || null;
   const activeSpec = searchParams.spec || null;
-  const activeDifficulty = searchParams.difficulty ? parseInt(searchParams.difficulty) : 5;
+  const activeDifficulty = searchParams.difficulty ? parseInt(searchParams.difficulty) : DEFAULT_RAID_DIFFICULTY;
   const activeRegion = (searchParams.region === 'us-eu' ? 'us-eu' : 'global') as 'global' | 'us-eu';
   const isHealer = HEALER_SPECS.some(h => h.class === activeClass && h.spec === activeSpec);
   const activeMetric: 'hps' | 'dps' = searchParams.metric === 'dps' ? 'dps' : searchParams.metric === 'hps' ? 'hps' : (isHealer ? 'hps' : 'dps');
@@ -431,11 +431,9 @@ export default async function Home(props: PageProps) {
                 {/* Hero */}
                 <div className="text-center space-y-3 max-w-lg mx-auto">
                   <div className="flex items-center justify-center gap-2 text-[10px] font-black text-zinc-600 uppercase tracking-widest">
-                    <span>Sporefall</span>
+                    <span>The Venomous Abyss</span>
                     <span className="text-zinc-800">·</span>
-                    <span>Midnight</span>
-                    <span className="text-zinc-800">·</span>
-                    <span>Season 1 Dungeons</span>
+                    <span>Season 2 Dungeons</span>
                   </div>
                   <h1 className="text-3xl font-black text-zinc-100 leading-tight">
                     Meta builds for every boss
@@ -574,7 +572,7 @@ export default async function Home(props: PageProps) {
                   <>
                     {activeSpec && (
                       <div className="space-y-2">
-                        <p className="text-[10px] font-black text-zinc-600 uppercase tracking-widest">Midnight Season 1 Dungeons</p>
+                        <p className="text-[10px] font-black text-zinc-600 uppercase tracking-widest">Midnight Season 2 Dungeons</p>
                         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
                           {dungeons.map(dungeon => {
                             const isSelected = activeDungeonId === dungeon.id;

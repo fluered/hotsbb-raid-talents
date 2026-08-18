@@ -1,4 +1,4 @@
-## Interface: 120007
+## Interface: 120100
 ## Title: HotsBB Talents
 ## Notes: One-click import of meta talent builds from hotsbb-raid-talents.
 ## Author: HotsBB

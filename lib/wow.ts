@@ -1058,11 +1058,14 @@ export async function resolveMetaBuildPick(
 // ─── Static Data ──────────────────────────────────────────────────────────────
 
 export const MIDNIGHT_RAIDS: Record<string, string> = {
-  'Sporefall': 'Sporefall',
-  'VS / DR / MQD': 'Midnight',
+  'The Venomous Abyss': 'The Venomous Abyss',
 };
 
-export const MPLUS_ZONE_ID = 47; // Midnight Season 1
+// Launch-week default: Mythic doesn't open until the second reset, so defaulting to
+// Heroic (4) keeps every page populated. Flip to 5 once Mythic parses exist.
+export const DEFAULT_RAID_DIFFICULTY = 4;
+
+export const MPLUS_ZONE_ID = 55; // Midnight Season 2
 export const MPLUS_DIFFICULTY = 10; // bracket that returns high-key parses
 
 // Splash-image lookups only. Blizzard's journal-instance IDs and WCL's CDN icon IDs

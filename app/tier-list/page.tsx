@@ -1,7 +1,7 @@
 import React, { Suspense } from 'react';
 import Link from 'next/link';
 import type { Metadata } from 'next';
-import { getWclToken, getRaidStructure, MIDNIGHT_RAIDS, DPS_SPECS } from '../../lib/wow';
+import { getWclToken, getRaidStructure, MIDNIGHT_RAIDS, DPS_SPECS, DEFAULT_RAID_DIFFICULTY } from '../../lib/wow';
 import TierListContent from './TierListContent';
 import OverallTierListContent from './OverallTierListContent';
 import { ogImageMeta } from '../../lib/ogImage';
@@ -17,14 +17,14 @@ interface PageProps {
 export async function generateMetadata({ searchParams }: PageProps): Promise<Metadata> {
   const sp = await searchParams;
   const bossName = sp.bossName;
-  const diff = sp.difficulty ? parseInt(sp.difficulty) : 5;
+  const diff = sp.difficulty ? parseInt(sp.difficulty) : DEFAULT_RAID_DIFFICULTY;
   const diffLabel = diff === 4 ? 'Heroic' : 'Mythic';
   const title = bossName
     ? `${diffLabel} ${bossName} DPS Tier List | HotsBB`
-    : 'Midnight Season 1 DPS Tier List — All Bosses | HotsBB';
+    : 'Midnight Season 2 DPS Tier List — All Bosses | HotsBB';
   const description = bossName
     ? `DPS spec tier list for ${diffLabel} ${bossName} — ranked by avg DPS of top 50 parses.`
-    : 'Overall DPS spec tier list for WoW Midnight Season 1 — avg DPS across all raid bosses, ranked from top parses.';
+    : 'Overall DPS spec tier list for WoW Midnight Season 2 — avg DPS across all raid bosses, ranked from top parses.';
   return {
     title,
     description,
@@ -39,7 +39,7 @@ export async function generateMetadata({ searchParams }: PageProps): Promise<Met
 
 export default async function TierListPage({ searchParams }: PageProps) {
   const sp = await searchParams;
-  const activeDifficulty = sp.difficulty ? parseInt(sp.difficulty) : 5;
+  const activeDifficulty = sp.difficulty ? parseInt(sp.difficulty) : DEFAULT_RAID_DIFFICULTY;
   const activeRegion = sp.region === 'us-eu' ? 'us-eu' : 'global';
   const activeBossId = sp.boss ? parseInt(sp.boss) : null;
 
@@ -161,7 +161,7 @@ export default async function TierListPage({ searchParams }: PageProps) {
               region={activeRegion}
               role="dps"
               thresholds={{ S: 95, A: 88, B: 78 }}
-              title="Midnight Season 1 Raid DPS Tier List"
+              title="Midnight Season 2 Raid DPS Tier List"
               footerNote="Avg DPS per spec across all Midnight bosses · excludes tanks and healers · Augmentation Evoker personal DPS appears lower than actual raid contribution · click any row to view talent builds"
             />
           </Suspense>

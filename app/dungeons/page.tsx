@@ -29,13 +29,13 @@ export async function generateMetadata({ searchParams }: PageProps): Promise<Met
 
   if (cls && spec && dungeonName) {
     title = `Best ${spec} ${cls} Talents for ${dungeonName} M+ | HotsBB`;
-    description = `Meta ${spec} ${cls} talent build for ${dungeonName} Mythic+. From top-parsing players in Midnight Season 1.`;
+    description = `Meta ${spec} ${cls} talent build for ${dungeonName} Mythic+. From top-parsing players in Midnight Season 2.`;
   } else if (cls && spec) {
-    title = `${spec} ${cls} Dungeon Talents — Midnight M+ Season 1 | HotsBB`;
-    description = `Best ${spec} ${cls} talent builds for every Midnight Season 1 M+ dungeon. Meta builds from top key holders.`;
+    title = `${spec} ${cls} Dungeon Talents — Midnight M+ Season 2 | HotsBB`;
+    description = `Best ${spec} ${cls} talent builds for every Midnight Season 2 M+ dungeon. Meta builds from top key holders.`;
   } else {
-    title = `Mythic+ Dungeon Talent Finder — Midnight Season 1 | HotsBB`;
-    description = `Find the meta talent build for every spec in every Midnight Season 1 Mythic+ dungeon. From top-parsing key holders.`;
+    title = `Mythic+ Dungeon Talent Finder — Midnight Season 2 | HotsBB`;
+    description = `Find the meta talent build for every spec in every Midnight Season 2 Mythic+ dungeon. From top-parsing key holders.`;
   }
 
   return {
@@ -45,7 +45,7 @@ export async function generateMetadata({ searchParams }: PageProps): Promise<Met
       title, description,
       imageTitle: cls && spec ? `${spec} ${cls}` : 'Mythic+ Talents',
       subtitle: 'Meta talent build & gear from top M+ parses',
-      kicker: dungeonName ? `Mythic+ · ${dungeonName}` : 'Mythic+ · Midnight Season 1',
+      kicker: dungeonName ? `Mythic+ · ${dungeonName}` : 'Mythic+ · Midnight Season 2',
       className: cls,
     }),
   };
@@ -303,7 +303,7 @@ export default async function DungeonsPage(props: PageProps) {
                 {/* Dungeon picker */}
                 {activeSpec && (
                   <div className="space-y-2">
-                    <p className="text-[10px] font-black text-zinc-600 uppercase tracking-widest">Midnight Season 1 Dungeons</p>
+                    <p className="text-[10px] font-black text-zinc-600 uppercase tracking-widest">Midnight Season 2 Dungeons</p>
                     {dungeonsRateLimited ? (
                       <p className="text-xs text-zinc-500">
                         Dungeon list temporarily unavailable (WarcraftLogs rate limit) — reload in a few minutes.
