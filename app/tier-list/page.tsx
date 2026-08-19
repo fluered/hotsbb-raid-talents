@@ -8,7 +8,7 @@ import { ogImageMeta } from '../../lib/ogImage';
 
 // See app/page.tsx for why: heavy concurrent WCL fetching across many specs can
 // exceed the platform's default function timeout on a cold cache.
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 interface PageProps {
   searchParams: Promise<{ boss?: string; bossName?: string; difficulty?: string; region?: string }>;

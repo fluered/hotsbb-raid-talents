@@ -18,7 +18,7 @@ import {
 // cold cache (a combo nobody's requested recently) that can exceed the platform's
 // default function timeout, which surfaces to users as a raw "page couldn't load"
 // connection failure rather than a clean error page. Give it real headroom.
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 // ─── Metadata ─────────────────────────────────────────────────────────────────
 

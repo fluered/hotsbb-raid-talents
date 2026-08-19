@@ -12,7 +12,7 @@ import {
 
 // See app/page.tsx for why this is needed: BossContent's cold-cache path can exceed
 // the platform's default function timeout on less-common combos.
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 interface PageProps {
   searchParams: Promise<{ dungeon?: string; dungeonName?: string; class?: string; spec?: string; region?: string }>;
