@@ -40,9 +40,13 @@ const SPEC_IDS = {
   'Warrior':       { 'Arms': 71, 'Fury': 72, 'Protection': 73 },
 };
 
-// Difficulty enum values are WCL-wide constants, not season-specific — these don't
-// need updating when the season's content pool rotates.
-const RAID_DIFFICULTY = 5;
+// Difficulty enum values are WCL-wide constants, not season-specific. But WHICH raid
+// difficulty to crawl is season-phase-specific: Mythic (5) doesn't open until the
+// season's second reset, so crawling 5 during launch week finds zero parses for every
+// spec and the partial-data guard (correctly) refuses to publish. Keep this in sync
+// with DEFAULT_RAID_DIFFICULTY in lib/wow.ts — 4 for launch week, both back to 5 once
+// Mythic parses exist.
+const RAID_DIFFICULTY = 4;
 const MPLUS_DIFFICULTY = 10;
 
 // Raid bosses and dungeons used to be hardcoded here, snapshotted by hand each season
