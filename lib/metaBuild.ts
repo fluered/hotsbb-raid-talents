@@ -1,12 +1,12 @@
 import {
-  getWclToken, getBlizzardToken, getWclRankingsForRegionMode, fetchTelemetryBatchCached,
+  getWclToken, getBlizzardToken, fetchTelemetryBatchCached,
   getTalentTreeId, getCachedTalentLayout, playerRegion, getBlizzardTokensForRegions,
   computeConsensus, getActiveHeroTreeId, computeFrequencyPct, getWclPointsSpent,
   mapConcurrent, normalizeTalentTree, type WclImportEntry,
   blizzardCharacterProfileFetch, selectPlayersWithValidTelemetry,
-  resolveMetaBuildPick,
+  resolveMetaBuildPick, getRankingsCachedSWR,
 } from './wow';
-import { getOrSetPersistent, logPointsUsage } from './persistentCache';
+import { logPointsUsage } from './persistentCache';
 
 // WCL enforces a burst rate limit independent of its overall points budget. Firing
 // all of a job's telemetry/profile lookups at once (up to 50+25 requests) reliably
@@ -105,13 +105,12 @@ async function getMetaBuildInner(
   // token authenticates it regardless of which rankings region mode is selected.
   const staticBlizzardToken = await getBlizzardToken('us');
 
+  // forceFresh: this pipeline serves the addon export — the weekly crawl must ship
+  // this week's meta, not a stale-served copy of last week's. Its fresh writes land in
+  // the same SWR entry the website reads, so the crawl doubles as the site's warmer.
   const [treeInfo, rankingsResult] = await Promise.all([
     getTalentTreeId(spec, className, staticBlizzardToken),
-    getOrSetPersistent(
-      `wcl-rankings-v4-${bossId}-${className}-${spec}-${difficulty}-${region}-${metric ?? 'dps'}`,
-      86400,
-      async () => ({ rankings: await getWclRankingsForRegionMode(wclToken, bossId, className, spec, difficulty, region, metric, true), fetchedAt: Date.now() })
-    ),
+    getRankingsCachedSWR(wclToken, bossId, className, spec, difficulty, region, metric, { forceFresh: true }),
   ]);
   if (!treeInfo) return { status: 'spec_not_found' };
 

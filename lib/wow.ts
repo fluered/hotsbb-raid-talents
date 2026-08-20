@@ -1,6 +1,7 @@
 import { unstable_cache } from 'next/cache';
+import { after } from 'next/server';
 import { normalizeTalentTree } from './talentNormalize';
-import { getOrSetPersistent } from './persistentCache';
+import { getOrSetPersistent, getPersistentReadOnly, getSwrEntry, setSwrEntry, tryAcquireLock } from './persistentCache';
 export { normalizeTalentTree } from './talentNormalize';
 
 // ─── WCL request pacing ─────────────────────────────────────────────────────────
@@ -412,13 +413,100 @@ export function fetchTelemetryBatchCached(wclToken: string, players: any[]): Pro
 // fetchTelemetryBatchCached above); organic site traffic can span far more distinct
 // combos than the crawl's fixed 720, and sharing the same small Redis instance between
 // both is exactly what filled it to its memory ceiling in practice.
-export function fetchTelemetryBatchCachedUnstable(wclToken: string, players: any[]): Promise<any[]> {
+//
+// It does READ Redis first, though: the keys are content-addressed identically to the
+// crawl's, so whenever the weekly crawl (or an SWR background refresh) already paid for
+// this exact batch, the website reuses it for free — reads can't grow the instance.
+export async function fetchTelemetryBatchCachedUnstable(wclToken: string, players: any[]): Promise<any[]> {
   const requests = telemetryBatchRequests(players);
+  const key = `wcl-telemetry-batch-v2-${telemetryBatchKey(requests)}`;
+  const fromCrawl = await getPersistentReadOnly<any[]>(key);
+  if (fromCrawl != null) return fromCrawl;
   return unstable_cache(
     () => getHistoricalFightTelemetryBatch(wclToken, requests),
-    [`wcl-telemetry-batch-v2-${telemetryBatchKey(requests)}`],
+    [key],
     { revalidate: 86400 }
   )();
+}
+
+// ─── Rankings: serve-stale-while-revalidate ────────────────────────────────────
+
+// The rankings entry is what makes a combo page render instantly or in ~55s: it names
+// the top players, and everything downstream (telemetry, profiles) keys off them.
+// Hard-expiring it (the old model) handed the full cold rebuild to the first visitor
+// per combo per day. Instead: serve whatever exists (up to STALE_TTL old) immediately,
+// and past FRESH_SECONDS kick a post-response refresh that also re-warms telemetry for
+// the new top players — so the follow-up visitor is warm end to end. Meta data being
+// up to a day or three behind is invisible in practice; a 55-second page is not.
+//
+// Memory budget: rankings entries are ~40KB. The 3-day ceiling (vs the telemetry
+// caches' 24h) is deliberate — the instance runs near its noeviction memory limit,
+// and rankings are the only entries worth keeping longer.
+const RANKINGS_FRESH_SECONDS = 86400;
+const RANKINGS_STALE_TTL_SECONDS = 3 * 86400;
+const RANKINGS_REFRESH_LOCK_SECONDS = 600;
+
+export interface CachedRankings {
+  rankings: any[];
+  fetchedAt: number;
+}
+
+export async function getRankingsCachedSWR(
+  wclToken: string,
+  bossId: number,
+  className: string,
+  spec: string,
+  difficulty: number,
+  region: string,
+  metric: string | undefined,
+  opts?: { forceFresh?: boolean }
+): Promise<CachedRankings> {
+  const key = `wcl-rankings-v5-${bossId}-${className}-${spec}-${difficulty}-${region}-${metric ?? 'dps'}`;
+  const compute = async (): Promise<CachedRankings> => ({
+    rankings: await getWclRankingsForRegionMode(wclToken, bossId, className, spec, difficulty, region, metric, true),
+    fetchedAt: Date.now(),
+  });
+
+  if (!opts?.forceFresh) {
+    const hit = await getSwrEntry<CachedRankings>(key);
+    if (hit) {
+      if (hit.ageSeconds >= RANKINGS_FRESH_SECONDS) {
+        after(() => refreshRankingsInBackground(key, compute, wclToken));
+      }
+      return hit.value;
+    }
+  }
+
+  const fresh = await compute();
+  await setSwrEntry(key, fresh, RANKINGS_STALE_TTL_SECONDS);
+  return fresh;
+}
+
+async function refreshRankingsInBackground(
+  key: string,
+  compute: () => Promise<CachedRankings>,
+  wclToken: string
+): Promise<void> {
+  // One refresher per key: concurrent stale hits all schedule this, only one runs.
+  if (!(await tryAcquireLock(`${key}:refresh-lock`, RANKINGS_REFRESH_LOCK_SECONDS))) return;
+  try {
+    const fresh = await compute();
+    await setSwrEntry(key, fresh, RANKINGS_STALE_TTL_SECONDS);
+    // Warm telemetry for the refreshed top players through the website's own cache
+    // path (unstable_cache — deliberately NOT the Redis writer, see the memory note
+    // above), so the next visitor's render is cache-hit end to end.
+    if (fresh.rankings.length > 0) {
+      await selectPlayersWithValidTelemetry(
+        fresh.rankings,
+        Math.min(fresh.rankings.length, 50),
+        (players: any[]) => fetchTelemetryBatchCachedUnstable(wclToken, players),
+        { batchSize: 10, concurrency: 5 }
+      );
+    }
+  } catch (err) {
+    // Stale keeps serving; the next stale hit after the lock expires retries.
+    console.error('SWR rankings background refresh failed:', err);
+  }
 }
 
 // ─── Blizzard ─────────────────────────────────────────────────────────────────

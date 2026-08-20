@@ -87,6 +87,79 @@ export async function getOrSetPersistent<T>(
   return fresh;
 }
 
+// Read-only peek at a plain (non-SWR) cache entry. Lets the website's rendering path
+// reuse data the crawl already paid for WITHOUT contributing any writes of its own —
+// the instance sits near its memory ceiling on a noeviction policy (hit it once,
+// confirmed live), so organic traffic must never grow Redis.
+export async function getPersistentReadOnly<T>(key: string): Promise<T | null> {
+  try {
+    const redis = await getClient();
+    const cached = await withTimeout(redis.get(key), CACHE_TIMEOUT_MS, 'Redis get');
+    return cached != null ? (JSON.parse(cached) as T) : null;
+  } catch {
+    return null;
+  }
+}
+
+// ─── Serve-stale-while-revalidate entries ────────────────────────────────────────
+
+// Wrapper format for cache entries whose age matters: the stored value carries its
+// write timestamp so callers can distinguish "fresh enough to serve as-is" from
+// "servable, but kick off a background refresh". The Redis TTL is the hard ceiling
+// on staleness; freshness within that window is the caller's policy.
+export interface SwrHit<T> {
+  value: T;
+  ageSeconds: number;
+}
+
+export async function getSwrEntry<T>(key: string): Promise<SwrHit<T> | null> {
+  try {
+    const redis = await getClient();
+    const cached = await withTimeout(redis.get(key), CACHE_TIMEOUT_MS, 'Redis get');
+    if (cached == null) return null;
+    const parsed = JSON.parse(cached);
+    if (parsed && typeof parsed === 'object' && typeof parsed.__at === 'number') {
+      return { value: parsed.v as T, ageSeconds: (Date.now() - parsed.__at) / 1000 };
+    }
+    return null; // unrecognized format — treat as a miss, the caller recomputes
+  } catch (err) {
+    console.error('SWR cache read failed, treating as miss:', err);
+    return null;
+  }
+}
+
+export async function setSwrEntry<T>(key: string, value: T, ttlSeconds: number): Promise<void> {
+  try {
+    const redis = await getClient();
+    await withTimeout(
+      redis.set(key, JSON.stringify({ __at: Date.now(), v: value }), { EX: ttlSeconds }),
+      CACHE_TIMEOUT_MS,
+      'Redis set'
+    );
+  } catch (err) {
+    console.error('SWR cache write failed:', err);
+  }
+}
+
+// Best-effort mutex so N concurrent requests to the same stale key produce one
+// background refresh, not N. Expiry-based: a crashed holder just delays the next
+// refresh attempt by the lock TTL, never wedges the key permanently.
+export async function tryAcquireLock(key: string, ttlSeconds: number): Promise<boolean> {
+  try {
+    const redis = await getClient();
+    const res = await withTimeout(
+      redis.set(key, '1', { NX: true, EX: ttlSeconds }),
+      CACHE_TIMEOUT_MS,
+      'Redis lock'
+    );
+    return res === 'OK';
+  } catch {
+    // Redis unreachable — the cache read failed too, so there's nothing stale being
+    // served that would need refreshing. Declining the lock is the safe answer.
+    return false;
+  }
+}
+
 // ─── WCL points usage log ───────────────────────────────────────────────────────
 
 // Diagnostic-only: how many WCL points a single combo's rankings+telemetry work

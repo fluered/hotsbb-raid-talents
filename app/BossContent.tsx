@@ -1,9 +1,8 @@
 import React from 'react';
 import { unstable_cache } from 'next/cache';
 import BossView, { type HeroVariant } from '../components/BossView';
-import MetaBuildFreshnessBanner from '../components/MetaBuildFreshnessBanner';
 import {
-  getWclToken, getBlizzardToken, getWclRankingsForRegionMode, fetchTelemetryBatchCachedUnstable,
+  getWclToken, getBlizzardToken, getRankingsCachedSWR, fetchTelemetryBatchCachedUnstable,
   getTalentTreeId, getCachedTalentLayout, playerRegion, getBlizzardTokensForRegions,
   computeConsensus, getActiveHeroTreeId, makeTelemetry, computeFrequencyPct, computeRankDistribution,
   mapConcurrent, normalizeTalentTree, deriveTalentStringAndProfileNodes, blizzardCharacterProfileFetch,
@@ -823,13 +822,14 @@ export default async function BossContent({
     // token authenticates it regardless of which rankings region mode is selected.
     const [wclToken, staticBlizzardToken] = await Promise.all([getWclToken(), getBlizzardToken('us')]);
 
+    // Serve-stale-while-revalidate (see getRankingsCachedSWR): whatever's cached — up
+    // to 3 days old — renders immediately; a post-response refresh keeps it current.
+    // Also deploy-proof, unlike the unstable_cache entry this replaced: rankings live
+    // in Redis, shared with the crawl pipeline, so a deploy no longer cold-starts
+    // every combo on the site at once.
     const [treeInfo, rankingsResult] = await Promise.all([
       getTalentTreeId(spec, className, staticBlizzardToken),
-      unstable_cache(
-        async () => ({ rankings: await getWclRankingsForRegionMode(wclToken, bossId, className, spec, difficulty, region, metric, true), fetchedAt: Date.now() }),
-        [`wcl-rankings-v4-${bossId}-${className}-${spec}-${difficulty}-${region}-${metric}`],
-        { revalidate: 86400 }
-      )(),
+      getRankingsCachedSWR(wclToken, bossId, className, spec, difficulty, region, metric),
     ]);
     if (!treeInfo) {
       return <div className="text-center py-12 text-zinc-600 text-sm">Talent tree not found for this spec.</div>;
@@ -1153,10 +1153,6 @@ export default async function BossContent({
 
       return (
         <>
-          <MetaBuildFreshnessBanner
-            className={className} spec={spec} bossId={bossId} difficulty={difficulty}
-            region={region} metric={metric} fetchedAt={dataFetchedAt}
-          />
           <BossView
             variants={talentVariants}
             gearPromise={gearPromise}
@@ -1189,10 +1185,6 @@ export default async function BossContent({
       }];
       return (
         <>
-          <MetaBuildFreshnessBanner
-            className={className} spec={spec} bossId={bossId} difficulty={difficulty}
-            region={region} metric={metric} fetchedAt={dataFetchedAt}
-          />
           <BossView
             variants={heroVariants}
             layout={correctedSkeletonMap}
