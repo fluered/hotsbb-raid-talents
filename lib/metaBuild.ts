@@ -6,7 +6,7 @@ import {
   blizzardCharacterProfileFetch, selectPlayersWithValidTelemetry,
   resolveMetaBuildPick, getRankingsCachedSWR,
 } from './wow';
-import { logPointsUsage } from './persistentCache';
+import { logPointsUsage, ensureRedisHeadroom } from './persistentCache';
 
 // WCL enforces a burst rate limit independent of its overall points budget. Firing
 // all of a job's telemetry/profile lookups at once (up to 50+25 requests) reliably
@@ -75,6 +75,9 @@ export async function getMetaBuild(params: {
   metric?: string;
 }): Promise<MetaBuildOutcome> {
   const comboLabel = `${params.className}/${params.spec} vs ${params.bossId} (${params.difficulty})`;
+  // This pipeline is the instance's heavy writer (a crawl touches every combo), so
+  // it's where the once-hourly memory check pays for itself. See ensureRedisHeadroom.
+  await ensureRedisHeadroom();
   const wclToken = await getWclToken();
   const pointsBefore = await getWclPointsSpent(wclToken).catch(() => null);
 

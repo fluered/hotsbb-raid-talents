@@ -160,6 +160,64 @@ export async function tryAcquireLock(key: string, ttlSeconds: number): Promise<b
   }
 }
 
+// ─── Memory headroom janitor ─────────────────────────────────────────────────────
+
+// The managed instance enforces a hard memory cap with a noeviction policy and
+// rejects CONFIG SET (verified live 2026-08-19) — at the ceiling, writes simply fail
+// (hit once in production). This is the app-level substitute: before heavy write
+// phases, if usage is near the cap, delete telemetry batch entries — the bulkiest
+// pure-cache keys — oldest first (ascending remaining TTL ≙ oldest, since all are
+// written with the same TTL). Evicted entries just recompute on next use.
+//
+// Throttled to once per hour via an NX marker so the check itself costs nothing on
+// the hot path. All failures are swallowed: this is an optimization, never a gate.
+const HEADROOM_CHECK_MARKER = 'redis-headroom-check';
+const HEADROOM_CHECK_INTERVAL_SECONDS = 3600;
+const HEADROOM_SOFT_LIMIT_BYTES = 200 * 1024 * 1024;
+const HEADROOM_TARGET_BYTES = 170 * 1024 * 1024;
+const HEADROOM_MAX_DELETIONS = 800;
+
+export async function ensureRedisHeadroom(): Promise<void> {
+  try {
+    const redis = await getClient();
+    const marker = await withTimeout(
+      redis.set(HEADROOM_CHECK_MARKER, '1', { NX: true, EX: HEADROOM_CHECK_INTERVAL_SECONDS }),
+      CACHE_TIMEOUT_MS, 'Redis headroom marker'
+    );
+    if (marker !== 'OK') return; // checked within the last hour
+
+    const usedBytes = async () => {
+      const info = await withTimeout(redis.info('memory'), CACHE_TIMEOUT_MS, 'Redis info');
+      return parseInt((info.match(/used_memory:(\d+)/) ?? [])[1] ?? '0');
+    };
+    if ((await usedBytes()) < HEADROOM_SOFT_LIMIT_BYTES) return;
+
+    // Collect telemetry batch keys with their remaining TTLs, evict oldest first.
+    const candidates: Array<{ key: string; ttl: number }> = [];
+    let cursor: string | number = '0';
+    do {
+      const res: any = await redis.scan(cursor as any, { MATCH: 'wcl-telemetry-batch-*', COUNT: 500 });
+      cursor = res.cursor;
+      for (const key of res.keys) {
+        const ttl = await redis.ttl(key);
+        if (ttl > 0) candidates.push({ key, ttl });
+      }
+    } while (String(cursor) !== '0');
+    candidates.sort((a, b) => a.ttl - b.ttl);
+
+    let deleted = 0;
+    for (const { key } of candidates) {
+      if (deleted >= HEADROOM_MAX_DELETIONS) break;
+      await redis.del(key);
+      deleted++;
+      if (deleted % 100 === 0 && (await usedBytes()) < HEADROOM_TARGET_BYTES) break;
+    }
+    console.log(`Redis headroom janitor: evicted ${deleted} telemetry entries`);
+  } catch (err) {
+    console.error('Redis headroom check failed (ignored):', err);
+  }
+}
+
 // ─── WCL points usage log ───────────────────────────────────────────────────────
 
 // Diagnostic-only: how many WCL points a single combo's rankings+telemetry work
