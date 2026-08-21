@@ -1,0 +1,39 @@
+name: Warm site caches daily
+
+# Runs the export sweep in --warm-only mode: every class/spec x boss/dungeon combo
+# through the live site's /api/meta-build, which force-refreshes the shared Redis
+# rankings entry (SWR v6) and warms telemetry + the entry->node map — so no visitor
+# ever pays a cold or stale load. Data.lua and releases are untouched; that's the
+# weekly export-meta-builds workflow's job.
+#
+# Cost check (2026-08-21, after the inline-talents change): a full sweep is roughly
+# 1-2k WCL points against an 18k/hour budget, and typically ~30-60 min of wall clock.
+#
+# Deliberately NOT in the addon-release concurrency group: with cancel-in-progress
+# false, a new pending run REPLACES the group's existing pending run — a warm firing
+# while a release sat queued behind the 5h crawl would silently cancel that release.
+# Solo group instead; the 09:00 UTC schedule keeps it clear of the Tuesday 22:00
+# crawl window anyway, and skipping an overlap costs nothing.
+concurrency:
+  group: site-warm
+  cancel-in-progress: true
+
+on:
+  schedule:
+    - cron: '0 9 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  warm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Warm every combo through the live site
+        run: node scripts/export-meta-builds.js --warm-only

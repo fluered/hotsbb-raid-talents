@@ -5,7 +5,7 @@
 // own 24h data cache instead of costing a fresh WCL request.
 //
 // Usage:
-//   node scripts/export-meta-builds.js [--base https://hotsbbtalents.io] [--concurrency 6] [--limit N]
+//   node scripts/export-meta-builds.js [--base https://hotsbbtalents.io] [--concurrency 6] [--limit N] [--warm-only]
 
 const fs = require('fs');
 const path = require('path');
@@ -22,6 +22,11 @@ const LIMIT = argVal('--limit', null) ? parseInt(argVal('--limit', null)) : null
 // ceiling hit below) refuses to touch Data.lua so a bad partial run can't clobber a
 // good prior one.
 const FORCE_WRITE = process.argv.includes('--force-write');
+// Warm-only: run the exact same sweep — every combo through /api/meta-build, which
+// force-refreshes the site's shared rankings cache and telemetry — but never touch
+// Data.lua. This is how the site's caches stay hot for every spec without any user
+// interaction (the daily warm-site-cache workflow), decoupled from the weekly release.
+const WARM_ONLY = process.argv.includes('--warm-only');
 
 // Mirrors lib/wow.ts SPEC_IDS
 const SPEC_IDS = {
@@ -266,6 +271,19 @@ function luaEntries(entries) {
 
   if (pauseCount > 0) {
     console.log(`\nPaused for rate limiting ${pauseCount} time(s), ${Math.round(cumulativePauseMs / 60000)} min cumulative wait.`);
+  }
+
+  if (WARM_ONLY) {
+    // The sweep itself was the product: every combo's SWR entry is now fresh and its
+    // telemetry warm. Data.lua and all its partial-run guards are the release path's
+    // concern, not ours. Exit non-zero on an abort purely so the workflow run shows
+    // red — a failed warm costs nothing but is worth noticing if it becomes a pattern.
+    console.log(`\n✅ Warm-only run complete — Data.lua untouched.`);
+    if (aborted) {
+      console.log(`   (Run aborted early: ${abortReason})`);
+      process.exitCode = 1;
+    }
+    return;
   }
 
   if (aborted) {
