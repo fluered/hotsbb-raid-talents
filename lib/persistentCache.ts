@@ -101,6 +101,22 @@ export async function getPersistentReadOnly<T>(key: string): Promise<T | null> {
   }
 }
 
+// Plain write. ttlSeconds omitted ⇒ no expiry — reserve that for small, effectively
+// static data (e.g. the talent entry→node map): under volatile-lru or the headroom
+// janitor, non-expiring keys are exactly the ones that survive.
+export async function setPersistentValue<T>(key: string, value: T, ttlSeconds?: number): Promise<void> {
+  try {
+    const redis = await getClient();
+    await withTimeout(
+      redis.set(key, JSON.stringify(value), ttlSeconds ? { EX: ttlSeconds } : {}),
+      CACHE_TIMEOUT_MS,
+      'Redis set'
+    );
+  } catch (err) {
+    console.error('Persistent value write failed:', err);
+  }
+}
+
 // ─── Serve-stale-while-revalidate entries ────────────────────────────────────────
 
 // Wrapper format for cache entries whose age matters: the stored value carries its

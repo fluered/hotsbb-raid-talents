@@ -1,7 +1,7 @@
 import { unstable_cache } from 'next/cache';
 import { after } from 'next/server';
 import { normalizeTalentTree } from './talentNormalize';
-import { getOrSetPersistent, getPersistentReadOnly, getSwrEntry, setSwrEntry, tryAcquireLock } from './persistentCache';
+import { getOrSetPersistent, getPersistentReadOnly, getSwrEntry, setSwrEntry, setPersistentValue, tryAcquireLock } from './persistentCache';
 export { normalizeTalentTree } from './talentNormalize';
 
 // ─── WCL request pacing ─────────────────────────────────────────────────────────
@@ -172,11 +172,17 @@ export async function getWclRankings(token: string, bossId: number, className: s
   const wclSpecName = specName.replace(/\s+/g, '');
   const metricArg = metric ? `, metric: ${metric}` : '';
   const regionArg = region ? `, serverRegion: "${region.toUpperCase()}"` : '';
+  // includeCombatantInfo costs nothing extra (verified live 2026-08-21: same ~2 points,
+  // +200ms) and returns each ranked player's talents inline — [{talentID, points}],
+  // where talentID is EXACTLY the trait entry id that CombatantInfo telemetry reports
+  // as its rows' `id` (verified 79/79 with matching ranks on live data). Combined with
+  // the entry→node map below, this replaces the per-fight telemetry fan-out — the bulk
+  // of a cold combo's ~50s and points cost — for every player whose entries are known.
   const query = `
     query {
       worldData {
         encounter(id: ${bossId}) {
-          characterRankings(className: "${wclClassName}", specName: "${wclSpecName}", difficulty: ${difficulty}${regionArg}${metricArg})
+          characterRankings(className: "${wclClassName}", specName: "${wclSpecName}", difficulty: ${difficulty}${regionArg}${metricArg}, includeCombatantInfo: true)
         }
       }
     }
@@ -192,7 +198,32 @@ export async function getWclRankings(token: string, bossId: number, className: s
   // that genuinely has no parses yet. That's exactly why a WCL rate-limit exhaustion
   // (confirmed 2026-07-26) went undetected mid-batch-export: every caller just saw
   // normal-looking no_data results and had no signal to stop.
-  return (await parseWclResponse(response, 'rankings')).data?.worldData?.encounter?.characterRankings?.rankings || [];
+  const rankings = (await parseWclResponse(response, 'rankings')).data?.worldData?.encounter?.characterRankings?.rankings || [];
+  // Compact before it hits any cache layer — uncompacted, a 100-row entry is ~0.5MB,
+  // too heavy for the memory-capped Redis. Talents become [entryId, points] pairs for
+  // the rows consensus can actually reach (top 50 + backfill margin); gear keeps only
+  // the fields the gear phase's wclItemData pre-population reads (numbers, not the
+  // API's strings), only for the top consensus rows. Rows past the margins lose the
+  // inline data and simply fall back to a real telemetry fetch if ever reached.
+  const TALENT_ROWS_KEPT = 75;
+  const GEAR_ROWS_KEPT = 50;
+  return rankings.map((row: any, i: number) => {
+    const { gear, talents, ...rest } = row;
+    if (i < TALENT_ROWS_KEPT && Array.isArray(talents) && talents.length > 0) {
+      rest._tp = talents.map((t: any) => [t.talentID, t.points]);
+      if (i < GEAR_ROWS_KEPT && Array.isArray(gear)) {
+        rest._tg = gear
+          .filter((g: any) => g.id != null && g.itemLevel != null)
+          .map((g: any) => ({
+            id: Number(g.id),
+            itemLevel: Number(g.itemLevel),
+            icon: g.icon ?? '',
+            bonusIDs: (g.bonusIDs ?? []).map(Number),
+          }));
+      }
+    }
+    return rest;
+  });
 }
 
 // Two region modes, matching the website/addon's toggle: 'global' (default) pools every
@@ -399,13 +430,97 @@ function telemetryBatchKey(requests: Array<{ reportCode: string; fightId: number
   return requests.map(r => `${r.reportCode}:${r.fightId}:${r.playerName.toLowerCase()}`).join(',');
 }
 
+// ─── Talent entry→node map ─────────────────────────────────────────────────────
+
+// Rankings' inline talents identify entries by trait ENTRY id; consensus (and every
+// consumer downstream) works in node ids. The mapping is static game data, but no
+// public API serves it (verified: Blizzard's tree JSON has node ids only, WCL has no
+// trait catalog). It IS embedded in every CombatantInfo telemetry event we fetch —
+// {id, nodeID} per row — so the map builds itself: seeded and extended by every real
+// telemetry fetch, persisted without TTL (small — a few hundred KB across all specs;
+// the headroom janitor and any eviction policy leave non-expiring keys alone).
+// Players whose inline entries are all known skip the telemetry fetch entirely;
+// unknown entries fall back to a real fetch, which teaches the map for next time.
+const ENTRY_NODE_MAP_KEY = 'wcl-entry-node-map-v1';
+const ENTRY_MAP_MEMO_MS = 5 * 60 * 1000;
+let entryMapMemo: { map: Record<number, number>; at: number } | null = null;
+
+async function loadEntryNodeMap(): Promise<Record<number, number>> {
+  if (entryMapMemo && Date.now() - entryMapMemo.at < ENTRY_MAP_MEMO_MS) return entryMapMemo.map;
+  const map = (await getPersistentReadOnly<Record<number, number>>(ENTRY_NODE_MAP_KEY)) ?? {};
+  entryMapMemo = { map, at: Date.now() };
+  return map;
+}
+
+// Read-modify-write without a lock: concurrent writers can drop each other's newest
+// pairs, but the data is static and monotonic — whatever is missed is re-harvested by
+// the next fetch that needs it. Await-ed by callers (Vercel post-response freeze).
+async function harvestEntryNodePairs(telemetries: any[], map: Record<number, number>): Promise<void> {
+  let grew = false;
+  for (const t of telemetries) {
+    for (const row of t?.event?.talentTree ?? []) {
+      if (row?.id != null && row?.nodeID != null && map[row.id] === undefined) {
+        map[row.id] = row.nodeID;
+        grew = true;
+      }
+    }
+  }
+  if (grew) {
+    entryMapMemo = { map, at: Date.now() };
+    await setPersistentValue(ENTRY_NODE_MAP_KEY, map);
+  }
+}
+
+// Rebuild a telemetry-shaped record from a ranking row's compacted inline talents
+// (see getWclRankings) — same {event: {talentTree, gear}} shape the real fetch
+// produces, so every downstream consumer (normalize, consensus, hero-tree detection,
+// wclItemData) is oblivious to the source. Returns null unless EVERY entry maps — a
+// partially-mapped tree would silently misrepresent the build, so partial means
+// "fetch for real" (which also teaches the map the missing entries).
+function synthesizeTelemetryFromInline(player: any, map: Record<number, number>): any | null {
+  const pairs: Array<[number, number]> | undefined = player?._tp;
+  if (!Array.isArray(pairs) || pairs.length === 0) return null;
+  const talentTree: Array<{ nodeID: number; rank: number; id: number }> = [];
+  for (const [entryId, points] of pairs) {
+    const nodeID = map[entryId];
+    if (nodeID === undefined) return null;
+    talentTree.push({ nodeID, rank: points, id: entryId });
+  }
+  return { sourceId: null, event: { talentTree, gear: player?._tg ?? [] } };
+}
+
+// Shared front for both telemetry cache flavors: synthesize what the entry map can
+// cover, fetch only the remainder (per-player, preserving input order), and teach the
+// map from whatever was fetched.
+async function fetchTelemetryBatchSmart(
+  players: any[],
+  innerFetch: (subset: any[]) => Promise<any[]>
+): Promise<any[]> {
+  const map = await loadEntryNodeMap();
+  const out: any[] = new Array(players.length).fill(null);
+  const fetchIdx: number[] = [];
+  players.forEach((p, i) => {
+    const synthesized = synthesizeTelemetryFromInline(p, map);
+    if (synthesized) out[i] = synthesized;
+    else fetchIdx.push(i);
+  });
+  if (fetchIdx.length > 0) {
+    const fetched = await innerFetch(fetchIdx.map(i => players[i]));
+    fetchIdx.forEach((playerIdx, j) => { out[playerIdx] = fetched[j] ?? null; });
+    await harvestEntryNodePairs(fetched, map);
+  }
+  return out;
+}
+
 export function fetchTelemetryBatchCached(wclToken: string, players: any[]): Promise<any[]> {
-  const requests = telemetryBatchRequests(players);
-  return getOrSetPersistent(
-    `wcl-telemetry-batch-v2-${telemetryBatchKey(requests)}`,
-    86400,
-    () => getHistoricalFightTelemetryBatch(wclToken, requests)
-  );
+  return fetchTelemetryBatchSmart(players, (subset) => {
+    const requests = telemetryBatchRequests(subset);
+    return getOrSetPersistent(
+      `wcl-telemetry-batch-v2-${telemetryBatchKey(requests)}`,
+      86400,
+      () => getHistoricalFightTelemetryBatch(wclToken, requests)
+    );
+  });
 }
 
 // Same batching, cached via unstable_cache instead of Redis — for the website's own
@@ -418,15 +533,17 @@ export function fetchTelemetryBatchCached(wclToken: string, players: any[]): Pro
 // crawl's, so whenever the weekly crawl (or an SWR background refresh) already paid for
 // this exact batch, the website reuses it for free — reads can't grow the instance.
 export async function fetchTelemetryBatchCachedUnstable(wclToken: string, players: any[]): Promise<any[]> {
-  const requests = telemetryBatchRequests(players);
-  const key = `wcl-telemetry-batch-v2-${telemetryBatchKey(requests)}`;
-  const fromCrawl = await getPersistentReadOnly<any[]>(key);
-  if (fromCrawl != null) return fromCrawl;
-  return unstable_cache(
-    () => getHistoricalFightTelemetryBatch(wclToken, requests),
-    [key],
-    { revalidate: 86400 }
-  )();
+  return fetchTelemetryBatchSmart(players, async (subset) => {
+    const requests = telemetryBatchRequests(subset);
+    const key = `wcl-telemetry-batch-v2-${telemetryBatchKey(requests)}`;
+    const fromCrawl = await getPersistentReadOnly<any[]>(key);
+    if (fromCrawl != null) return fromCrawl;
+    return unstable_cache(
+      () => getHistoricalFightTelemetryBatch(wclToken, requests),
+      [key],
+      { revalidate: 86400 }
+    )();
+  });
 }
 
 // ─── Rankings: serve-stale-while-revalidate ────────────────────────────────────
@@ -461,7 +578,8 @@ export async function getRankingsCachedSWR(
   metric: string | undefined,
   opts?: { forceFresh?: boolean }
 ): Promise<CachedRankings> {
-  const key = `wcl-rankings-v5-${bossId}-${className}-${spec}-${difficulty}-${region}-${metric ?? 'dps'}`;
+  // v6: rows carry compacted inline talents (_tp) and no gear — see getWclRankings.
+  const key = `wcl-rankings-v6-${bossId}-${className}-${spec}-${difficulty}-${region}-${metric ?? 'dps'}`;
   const compute = async (): Promise<CachedRankings> => ({
     rankings: await getWclRankingsForRegionMode(wclToken, bossId, className, spec, difficulty, region, metric, true),
     fetchedAt: Date.now(),
