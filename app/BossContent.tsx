@@ -929,13 +929,26 @@ export default async function BossContent({
         }
       }
     }
+    // Synthesized telemetry carries positional {id, itemLevel} gear only (no icons/
+    // bonus ids per row) — the aggregated dict on the rankings entry fills those in.
+    // Merged after the loop so a synthesized row's empty icon never clobbers a real one.
+    for (const [idStr, d] of Object.entries(rankingsResult.itemData ?? {})) {
+      const itemId = Number(idStr);
+      const existing = wclItemData.get(itemId);
+      if (!existing || (!existing.icon && d.icon) || existing.ilvl < d.ilvl) {
+        wclItemData.set(itemId, { ilvl: d.ilvl, bonusIds: d.bonusIds, icon: d.icon || existing?.icon || '' });
+      }
+    }
 
     // ── Build detailedRankingsBase (renderUrl = null; filled in gear phase) ─
     const detailedRankingsBase = consensusRankings.map((player: any, idx: number) => {
       const telemetryData = allTelemetryData[idx];
       const profileData = blizzardProfiles[idx];
       const { talentString, profileNodes } = deriveTalentStringAndProfileNodes(telemetryData, profileData, treeInfo.specId);
-      return { ...player, telemetry: telemetryData, talentString, renderUrl: null, profileNodes };
+      // _tp/_tg are server-side cache compaction (see getWclRankings) — spreading them
+      // into client props would bloat the RSC payload by tens of KB per player.
+      const { _tp, _tg, ...playerClean } = player;
+      return { ...playerClean, telemetry: telemetryData, talentString, renderUrl: null, profileNodes };
     });
 
     // Separate from detailedRankingsBase (which only carries a derived talentString for

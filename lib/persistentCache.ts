@@ -188,7 +188,10 @@ export async function tryAcquireLock(key: string, ttlSeconds: number): Promise<b
 // Throttled to once per hour via an NX marker so the check itself costs nothing on
 // the hot path. All failures are swallowed: this is an optimization, never a gate.
 const HEADROOM_CHECK_MARKER = 'redis-headroom-check';
-const HEADROOM_CHECK_INTERVAL_SECONDS = 3600;
+// 10 min, not an hour: the first warm sweep wrote ~150MB in ~40 minutes and blew
+// straight past the ceiling between hourly checks — writes were silently OOM-rejected
+// for the rest of the run. The check is one INFO call when the marker has expired.
+const HEADROOM_CHECK_INTERVAL_SECONDS = 600;
 const HEADROOM_SOFT_LIMIT_BYTES = 200 * 1024 * 1024;
 const HEADROOM_TARGET_BYTES = 170 * 1024 * 1024;
 const HEADROOM_MAX_DELETIONS = 800;

@@ -28,7 +28,7 @@ export async function GET(request: NextRequest) {
   const results = await Promise.all(
     encounters.map(async enc => {
       try {
-        const rankings = await getWclRankings(token, enc.id, cls, spec, difficulty, 'us', undefined, true);
+        const rankings: any[] = await getWclRankings(token, enc.id, cls, spec, difficulty, 'us', undefined, true);
         return { bossId: enc.id, boss: enc.name, zone: enc.zone, us: rankings.length, topDps: rankings[0]?.amount ?? null };
       } catch (e) {
         return { bossId: enc.id, boss: enc.name, zone: enc.zone, us: 'error', topDps: null };

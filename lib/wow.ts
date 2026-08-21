@@ -199,31 +199,42 @@ export async function getWclRankings(token: string, bossId: number, className: s
   // (confirmed 2026-07-26) went undetected mid-batch-export: every caller just saw
   // normal-looking no_data results and had no signal to stop.
   const rankings = (await parseWclResponse(response, 'rankings')).data?.worldData?.encounter?.characterRankings?.rankings || [];
-  // Compact before it hits any cache layer — uncompacted, a 100-row entry is ~0.5MB,
-  // too heavy for the memory-capped Redis. Talents become [entryId, points] pairs for
-  // the rows consensus can actually reach (top 50 + backfill margin); gear keeps only
-  // the fields the gear phase's wclItemData pre-population reads (numbers, not the
-  // API's strings), only for the top consensus rows. Rows past the margins lose the
-  // inline data and simply fall back to a real telemetry fetch if ever reached.
-  const TALENT_ROWS_KEPT = 75;
+  // Compact before it hits any cache layer — uncompacted, a 100-row entry is ~0.5MB
+  // and even a first-pass compaction measured ~190KB, which at ~680 combos outgrows
+  // the memory-capped Redis on its own. Kept per row: _tp = [entryId, points] pairs
+  // (rows consensus can reach: top 50 + backfill margin) and _tg = positional
+  // [itemId, ilvl] per gear slot (what the gear phase's slot/trinket fallback reads
+  // — ids and levels only, order preserved, 0 = empty slot). Icons and bonus ids are
+  // identical across players per item, so they aggregate ONCE per response into an
+  // itemData dict rather than repeating per row; it rides on the returned array as a
+  // non-JSON property (plain-array callers like the tier lists neither see nor pay
+  // for it) and is lifted into the SWR entry explicitly by getRankingsCachedSWR.
+  // Rows past the margins lose inline data and fall back to a real telemetry fetch.
+  const ROWS_KEPT = 80;
+  const TALENT_ROWS_KEPT = 55;
   const GEAR_ROWS_KEPT = 50;
-  return rankings.map((row: any, i: number) => {
+  const itemData: Record<number, { ilvl: number; icon: string; bonusIds: number[] }> = {};
+  const rows = rankings.slice(0, ROWS_KEPT).map((row: any, i: number) => {
     const { gear, talents, ...rest } = row;
     if (i < TALENT_ROWS_KEPT && Array.isArray(talents) && talents.length > 0) {
       rest._tp = talents.map((t: any) => [t.talentID, t.points]);
       if (i < GEAR_ROWS_KEPT && Array.isArray(gear)) {
-        rest._tg = gear
-          .filter((g: any) => g.id != null && g.itemLevel != null)
-          .map((g: any) => ({
-            id: Number(g.id),
-            itemLevel: Number(g.itemLevel),
-            icon: g.icon ?? '',
-            bonusIDs: (g.bonusIDs ?? []).map(Number),
-          }));
+        rest._tg = gear.map((g: any) => [Number(g.id) || 0, Number(g.itemLevel) || 0]);
+        for (const g of gear) {
+          const id = Number(g.id) || 0;
+          const ilvl = Number(g.itemLevel) || 0;
+          if (!id || !ilvl) continue;
+          const existing = itemData[id];
+          if (!existing || existing.ilvl < ilvl) {
+            itemData[id] = { ilvl, icon: g.icon ?? '', bonusIds: (g.bonusIDs ?? []).map(Number) };
+          }
+        }
       }
     }
     return rest;
   });
+  (rows as any)._itemData = itemData;
+  return rows;
 }
 
 // Two region modes, matching the website/addon's toggle: 'global' (default) pools every
@@ -240,7 +251,16 @@ export async function getWclRankingsForRegionMode(
       getWclRankings(token, bossId, className, specName, difficulty, 'us', metric, noCache),
       getWclRankings(token, bossId, className, specName, difficulty, 'eu', metric, noCache),
     ]);
-    return [...(us as any[]), ...(eu as any[])].sort((a, b) => (b.amount ?? 0) - (a.amount ?? 0));
+    const merged = [...(us as any[]), ...(eu as any[])].sort((a, b) => (b.amount ?? 0) - (a.amount ?? 0));
+    // Merge both regions' aggregated item dicts (max ilvl wins) — see getWclRankings.
+    const itemData: Record<number, { ilvl: number; icon: string; bonusIds: number[] }> = {};
+    for (const src of [(us as any)._itemData, (eu as any)._itemData]) {
+      for (const [id, d] of Object.entries(src ?? {}) as any) {
+        if (!itemData[id as any] || itemData[id as any].ilvl < d.ilvl) itemData[id as any] = d;
+      }
+    }
+    (merged as any)._itemData = itemData;
+    return merged;
   }
   return getWclRankings(token, bossId, className, specName, difficulty, undefined, metric, noCache);
 }
@@ -486,7 +506,12 @@ function synthesizeTelemetryFromInline(player: any, map: Record<number, number>)
     if (nodeID === undefined) return null;
     talentTree.push({ nodeID, rank: points, id: entryId });
   }
-  return { sourceId: null, event: { talentTree, gear: player?._tg ?? [] } };
+  // Positional gear rows carry ids and item levels only — the slot/trinket fallback
+  // needs exactly that; icons/bonus ids come from the combo-level itemData instead.
+  const gear = Array.isArray(player?._tg)
+    ? player._tg.map(([id, ilvl]: [number, number]) => ({ id, itemLevel: ilvl }))
+    : [];
+  return { sourceId: null, event: { talentTree, gear } };
 }
 
 // Shared front for both telemetry cache flavors: synthesize what the entry map can
@@ -517,7 +542,10 @@ export function fetchTelemetryBatchCached(wclToken: string, players: any[]): Pro
     const requests = telemetryBatchRequests(subset);
     return getOrSetPersistent(
       `wcl-telemetry-batch-v2-${telemetryBatchKey(requests)}`,
-      86400,
+      // 6h, down from 24h: since inline-talent synthesis, these entries exist mostly
+      // to bootstrap the entry→node map — written once, rarely re-read — and they were
+      // the second-largest memory consumer on the capped instance.
+      21600,
       () => getHistoricalFightTelemetryBatch(wclToken, requests)
     );
   });
@@ -565,6 +593,9 @@ const RANKINGS_REFRESH_LOCK_SECONDS = 600;
 
 export interface CachedRankings {
   rankings: any[];
+  // Aggregated {itemId: {ilvl, icon, bonusIds}} across the top rows' inline gear —
+  // seeds BossContent's wclItemData without per-row icon/bonus duplication.
+  itemData?: Record<number, { ilvl: number; icon: string; bonusIds: number[] }>;
   fetchedAt: number;
 }
 
@@ -578,12 +609,13 @@ export async function getRankingsCachedSWR(
   metric: string | undefined,
   opts?: { forceFresh?: boolean }
 ): Promise<CachedRankings> {
-  // v6: rows carry compacted inline talents (_tp) and no gear — see getWclRankings.
-  const key = `wcl-rankings-v6-${bossId}-${className}-${spec}-${difficulty}-${region}-${metric ?? 'dps'}`;
-  const compute = async (): Promise<CachedRankings> => ({
-    rankings: await getWclRankingsForRegionMode(wclToken, bossId, className, spec, difficulty, region, metric, true),
-    fetchedAt: Date.now(),
-  });
+  // v7: rows carry compacted inline talents (_tp) + positional gear (_tg); icon/bonus
+  // data is aggregated once into itemData — see getWclRankings.
+  const key = `wcl-rankings-v7-${bossId}-${className}-${spec}-${difficulty}-${region}-${metric ?? 'dps'}`;
+  const compute = async (): Promise<CachedRankings> => {
+    const rows = await getWclRankingsForRegionMode(wclToken, bossId, className, spec, difficulty, region, metric, true);
+    return { rankings: rows, itemData: (rows as any)._itemData, fetchedAt: Date.now() };
+  };
 
   if (!opts?.forceFresh) {
     const hit = await getSwrEntry<CachedRankings>(key);

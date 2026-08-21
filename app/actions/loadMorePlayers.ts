@@ -1,9 +1,8 @@
 'use server';
 
-import { unstable_cache } from 'next/cache';
 import {
-  getWclToken, getBlizzardToken, getWclRankingsForRegionMode, getTalentTreeId,
-  getHistoricalFightTelemetry, playerRegion, getBlizzardTokensForRegions,
+  getWclToken, getBlizzardToken, getRankingsCachedSWR, getTalentTreeId,
+  fetchTelemetryBatchCachedUnstable, playerRegion, getBlizzardTokensForRegions,
   mapConcurrent, deriveTalentStringAndProfileNodes, blizzardCharacterProfileFetch,
   normalizeTalentTree,
 } from '../../lib/wow';
@@ -39,11 +38,10 @@ export async function loadMorePlayers(params: {
   const treeInfo = await getTalentTreeId(spec, className, staticBlizzardToken);
   if (!treeInfo) return { players: [] };
 
-  const rawRankings = await unstable_cache(
-    async () => getWclRankingsForRegionMode(wclToken, bossId, className, spec, difficulty, region, metric, true),
-    [`wcl-rankings-v4-${bossId}-${className}-${spec}-${difficulty}-${region}-${metric}`],
-    { revalidate: 86400 }
-  )();
+  // Same shared SWR entry the page itself rendered from — so "Load more" pages
+  // through the exact ranking list the visitor is already looking at, and its rows
+  // carry the compacted inline talents that let telemetry synthesize below.
+  const rawRankings = (await getRankingsCachedSWR(wclToken, bossId, className, spec, difficulty, region ?? 'global', metric)).rankings;
 
   const excludeKeys = new Set(exclude.map(e => `${e.code}:${e.fightId}:${e.name.toLowerCase()}`));
   // Small overscan so a candidate with invalid telemetry (private/deleted log) doesn't
@@ -54,17 +52,10 @@ export async function loadMorePlayers(params: {
     .slice(0, count + 3);
   if (candidates.length === 0) return { players: [] };
 
-  // Telemetry key includes the player name: the fetched value is the CombatantInfo
-  // matched to THAT player's sourceID, so keying by report+fight alone let two
-  // same-fight players (common — co-raiders on one kill) share a cache entry and one
-  // rendered with the other's talents.
-  const telemetries = await mapConcurrent(candidates, WCL_FANOUT_CONCURRENCY, (player: any) =>
-    unstable_cache(
-      async () => getHistoricalFightTelemetry(wclToken, player.report?.code, player.report?.fightID, player.name, player.server?.name),
-      [`wcl-telemetry-${player.report?.code}-${player.report?.fightID}-${(player.name ?? '').toLowerCase()}`],
-      { revalidate: 86400 }
-    )().catch(() => null)
-  );
+  // One order-preserving batch call replaces the old per-player fetch fan-out: rows
+  // with known inline talents synthesize without any network, and the rest go through
+  // the same batched, cached path the page render uses.
+  const telemetries = await fetchTelemetryBatchCachedUnstable(wclToken, candidates).catch(() => candidates.map(() => null));
 
   const keep: Array<{ player: any; telemetry: any }> = [];
   for (let i = 0; i < candidates.length && keep.length < count; i++) {
@@ -88,7 +79,9 @@ export async function loadMorePlayers(params: {
     const { talentString, profileNodes } = deriveTalentStringAndProfileNodes(telemetry, profileData, treeInfo.specId);
     const renderUrl = mediaData?.assets?.find((a: any) => a.key === 'avatar')?.value ?? null;
 
-    return { ...player, telemetry, talentString, renderUrl, profileNodes };
+    // _tp/_tg are server-side cache compaction — never ship them to the client.
+    const { _tp, _tg, ...playerClean } = player;
+    return { ...playerClean, telemetry, talentString, renderUrl, profileNodes };
   });
 
   return { players };
