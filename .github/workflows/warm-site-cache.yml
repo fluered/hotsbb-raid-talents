@@ -12,15 +12,15 @@ name: Warm site caches daily
 # Deliberately NOT in the addon-release concurrency group: with cancel-in-progress
 # false, a new pending run REPLACES the group's existing pending run — a warm firing
 # while a release sat queued behind the 5h crawl would silently cancel that release.
-# Solo group instead; the 09:00 UTC schedule keeps it clear of the Tuesday 22:00
-# crawl window anyway, and skipping an overlap costs nothing.
+# Solo group instead; the 07:00 UTC schedule (3am ET — dead of night for the guild,
+# after the Tuesday 22:00 crawl has drained ~03:00) keeps it clear of everything.
 concurrency:
   group: site-warm
   cancel-in-progress: true
 
 on:
   schedule:
-    - cron: '0 9 * * *'
+    - cron: '0 7 * * *'
   workflow_dispatch: {}
 
 permissions:
@@ -36,4 +36,6 @@ jobs:
         with:
           node-version: 22
       - name: Warm every combo through the live site
-        run: node scripts/export-meta-builds.js --warm-only
+        # Concurrency 3 (not the script's default 6): nothing is waiting on this run, so
+        # halving the per-minute load on WCL and the site is free — ~45 min instead of ~25.
+        run: node scripts/export-meta-builds.js --warm-only --concurrency 3
