@@ -209,6 +209,7 @@ export default function NewFeature({
   consensusEntryIds,
   choiceFreqMap,
   metaTelemetry,
+  searchQuery,
 }: {
   telemetry: any;
   layout: any[];
@@ -231,7 +232,13 @@ export default function NewFeature({
   // (which flags the reverse: a top player diverging from the shown consensus tree) but
   // for "this specific player's build has an off-meta pick."
   metaTelemetry?: { event: { talentTree: Array<{ nodeID: number; rank: number }> } } | null;
+  // Talent-name search (owned by BossView so one box drives every tree on the page):
+  // matching nodes get a sky ring + glow, everything else dims. A matching talent the
+  // build DOESN'T take still lights up faintly — "is X in this build?" is answered
+  // either way, which is the whole point of searching by name instead of by icon.
+  searchQuery?: string;
 }) {
+  const searchNeedle = (searchQuery ?? '').trim().toLowerCase();
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
   // pinned = opened via click/tap and stays open until an outside tap or re-click; unpinned = mouse-hover preview
   const [choiceHover, setChoiceHover] = useState<{ node: any; rect: DOMRect; aChosen: boolean; pinned: boolean } | null>(null);
@@ -621,6 +628,14 @@ export default function NewFeature({
 
           const isChoiceNode = node.isChoice && node.choiceB != null;
 
+          // Either option of a choice node counts — the searcher may be looking for the
+          // one this build didn't pick.
+          const isSearchHit = searchNeedle.length > 0 && (
+            (node.name ?? '').toLowerCase().includes(searchNeedle)
+            || (node.choiceB?.name ?? '').toLowerCase().includes(searchNeedle)
+          );
+          const isSearchMiss = searchNeedle.length > 0 && !isSearchHit;
+
           return (
             <div
               key={node.nodeID}
@@ -628,7 +643,7 @@ export default function NewFeature({
                 gridRow: mappedRow,
                 gridColumn: colSpan > 1 ? `${mappedColumn} / span ${colSpan}` : mappedColumn,
               }}
-              className={`relative ${colSpan > 1 ? 'flex justify-center' : ''}`}
+              className={`relative transition-opacity ${colSpan > 1 ? 'flex justify-center' : ''} ${isSearchMiss ? 'opacity-20' : ''}`}
               onMouseEnter={(e) => {
                 if (isChoiceNode) {
                   const target = e.currentTarget as HTMLElement | null;
@@ -682,10 +697,14 @@ export default function NewFeature({
                 className={`w-10 h-10 rounded-full border-2 overflow-hidden transition-all relative ${
                   isChoiceNode || displayNode.spellId ? 'cursor-pointer' : 'cursor-default'
                 } ${(topPlayerTakes || isOffMeta) ? 'border-amber-400 shadow-[0_0_6px_1px_rgba(251,191,36,0.5)]' : isActive ? colors.border : 'border-zinc-700/20'} ${
-                  // Tiered/apex nodes (e.g. Tigereye Brew, Benediction) are multiple separate
-                  // underlying picks sharing one icon — a violet ring marks that at a glance,
+                  // Search hits take the ring slot outright — finding the talent you typed
+                  // beats the apex marker while a search is active. Otherwise: tiered/apex
+                  // nodes (e.g. Tigereye Brew, Benediction) are multiple separate underlying
+                  // picks sharing one icon — a violet ring marks that at a glance,
                   // independent of the border color's existing active/divergent meaning.
-                  node.isTieredApex ? 'ring-2 ring-violet-400/70' : ''
+                  isSearchHit
+                    ? 'ring-2 ring-sky-400 shadow-[0_0_10px_2px_rgba(56,189,248,0.55)]'
+                    : node.isTieredApex ? 'ring-2 ring-violet-400/70' : ''
                 }`}
                 onClick={() => { if (!isChoiceNode && displayNode.spellId) window.open(`https://www.wowhead.com/spell=${displayNode.spellId}`, '_blank', 'noopener,noreferrer'); }}
               >
@@ -695,7 +714,7 @@ export default function NewFeature({
                     alt={displayNode.name}
                     fill
                     className="object-cover"
-                    style={{ opacity: isActive ? 1 : 0.15 }}
+                    style={{ opacity: isActive ? 1 : isSearchHit ? 0.55 : 0.15 }}
                   />
                 ) : (
                   <div className={`w-full h-full ${isActive ? colors.activeBg : 'bg-zinc-900/50'}`} />

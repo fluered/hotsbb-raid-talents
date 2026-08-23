@@ -14,6 +14,7 @@ export default function PlayerCard({
   heroTrees,
   metric = 'dps',
   metaTelemetry,
+  searchQuery,
 }: {
   player: any;
   layout: any[];
@@ -27,6 +28,8 @@ export default function PlayerCard({
   // that isn't part of it — the meta view already flags the inverse (top players
   // diverging from consensus); this closes the loop the other direction.
   metaTelemetry?: { event: { talentTree: Array<{ nodeID: number; rank: number }> } } | null;
+  // Page-wide talent-name search, owned by BossView — see NewFeature.searchQuery.
+  searchQuery?: string;
 }) {
   const activeNodeIds = new Set<number>((player.telemetry?.event?.talentTree ?? []).map((t: any) => t.nodeID));
   const activeHeroTreeId = layout.find((n: any) => n.section === 'hero' && n.heroTreeId != null && activeNodeIds.has(n.nodeID))?.heroTreeId ?? null;
@@ -121,6 +124,7 @@ export default function PlayerCard({
           heroTreeImageUrl={heroTree?.imageUrl}
           heroTreeName={heroTree?.name}
           metaTelemetry={metaTelemetry}
+          searchQuery={searchQuery}
         />
       </div>
     </div>

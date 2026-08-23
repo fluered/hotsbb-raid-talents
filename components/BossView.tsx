@@ -118,6 +118,7 @@ function GearSection({
   loadMorePoolSize,
   loadingMore,
   onLoadMore,
+  searchQuery,
 }: {
   gearPromise: Promise<GearPhaseResult>;
   activeIdx: number;
@@ -135,6 +136,7 @@ function GearSection({
   loadMorePoolSize?: number;
   loadingMore: boolean;
   onLoadMore: (alreadyShown: number) => void;
+  searchQuery?: string;
 }) {
   const { variantGear, variantPlayers } = use(gearPromise);
   const [activeTip, setActiveTip] = useState<ItemTip | null>(null);
@@ -471,6 +473,7 @@ function GearSection({
                 specName={spec}
                 metric={metric}
                 metaTelemetry={active.consensus?.telemetry}
+                searchQuery={searchQuery}
                 heroTrees={variants
                   .filter(v => v.id !== null)
                   .map(v => ({ id: v.id!, name: v.name, imageUrl: v.imageUrl }))}
@@ -549,6 +552,11 @@ export default function BossView({
   const [clientNow, setClientNow] = useState<number | null>(null);
   useEffect(() => { setClientNow(Date.now()); }, []);
 
+  // Talent-name search: one box in the Consensus header drives every tree on the page
+  // (consensus + each player card) — see NewFeature.searchQuery for the visual rules.
+  const [talentSearch, setTalentSearch] = useState('');
+  const talentSearchNeedle = talentSearch.trim().toLowerCase();
+
   const switchVariant = (idx: number) => {
     if (idx === activeIdx) return;
     setAdditionalPlayers([]);
@@ -587,6 +595,20 @@ export default function BossView({
   const active = variants[safeIdx];
   const accentHex = hexFromTwColor(colors.color);
   const hasHeroFilter = variants.length > 1;
+
+  // Which hero tree the consensus tree shows (its other hero trees' nodes are hidden) —
+  // shared by the NewFeature prop below and the search match-count, so "3 found"
+  // counts what's actually on screen.
+  const consensusHeroTreeId = active.id !== null
+    ? active.id
+    : (variants.filter(v => v.id !== null).sort((a, b) => b.count - a.count)[0]?.id ?? undefined);
+  const talentSearchMatches = talentSearchNeedle
+    ? layout.filter((n: any) =>
+        (n.section !== 'hero' || n.heroTreeId == null || n.heroTreeId === consensusHeroTreeId)
+        && ((n.name ?? '').toLowerCase().includes(talentSearchNeedle)
+          || (n.choiceB?.name ?? '').toLowerCase().includes(talentSearchNeedle))
+      ).length
+    : null;
 
   const canLoadMore = active.id === null && bossId != null && region != null && loadMorePoolSize != null && wowClass != null;
   const handleLoadMore = async (_alreadyShown: number) => {
@@ -761,7 +783,7 @@ export default function BossView({
 
       {/* ── Consensus Build ── */}
       <section id="meta-build" style={{ scrollMarginTop: '3rem' }}>
-        <div className="flex items-end justify-between mb-3">
+        <div className="flex items-end justify-between gap-3 flex-wrap mb-3">
           <div>
             <div className="flex items-center gap-2 mb-1">
               <span className="text-xs font-black uppercase tracking-widest px-2.5 py-1 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
@@ -789,7 +811,35 @@ export default function BossView({
               </p>
             )}
           </div>
-          {active.consensus && <CopyBuildButton talentString={active.consensus.talentString} />}
+          <div className="flex items-center gap-2">
+            <div className="relative">
+              <input
+                type="search"
+                value={talentSearch}
+                onChange={(e) => setTalentSearch(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Escape') setTalentSearch(''); }}
+                placeholder="Find a talent…"
+                aria-label="Find a talent by name"
+                className="w-40 md:w-48 bg-zinc-900/70 border border-zinc-800 rounded-lg pl-3 pr-7 py-1.5 text-xs text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-sky-500/60 focus:ring-1 focus:ring-sky-500/30 transition-colors [&::-webkit-search-cancel-button]:hidden"
+              />
+              {talentSearch && (
+                <button
+                  type="button"
+                  onClick={() => setTalentSearch('')}
+                  aria-label="Clear talent search"
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full text-zinc-500 hover:text-zinc-200 text-xs leading-none"
+                >
+                  ×
+                </button>
+              )}
+              {talentSearchMatches != null && (
+                <span className={`absolute -bottom-4 left-1 text-[10px] whitespace-nowrap ${talentSearchMatches === 0 ? 'text-zinc-600' : 'text-sky-400/80'}`}>
+                  {talentSearchMatches === 0 ? 'No talent matches' : `${talentSearchMatches} found`}
+                </span>
+              )}
+            </div>
+            {active.consensus && <CopyBuildButton talentString={active.consensus.talentString} />}
+          </div>
         </div>
         {active.consensus ? (
           <div className="bg-zinc-900/40 border border-zinc-800/50 rounded-2xl p-3 md:p-5 overflow-x-auto min-w-0">
@@ -809,11 +859,7 @@ export default function BossView({
                     .filter(v => v.pct > 0)
                     .sort((a, b) => b.pct - a.pct)
                 : undefined}
-              activeHeroTreeId={
-                active.id !== null
-                  ? active.id
-                  : (variants.filter(v => v.id !== null).sort((a, b) => b.count - a.count)[0]?.id ?? undefined)
-              }
+              activeHeroTreeId={consensusHeroTreeId}
               onHeroTreeClick={active.id === null ? (name) => {
                 const idx = variants.findIndex(v => v.name === name);
                 if (idx !== -1) switchVariant(idx);
@@ -823,6 +869,7 @@ export default function BossView({
               topPlayerTelemetry={active.players[0]?.telemetry}
               consensusEntryIds={active.consensus?.entryIds}
               choiceFreqMap={active.consensus?.choiceFreq}
+              searchQuery={talentSearch}
             />
           </div>
         ) : (
@@ -856,6 +903,7 @@ export default function BossView({
             loadMorePoolSize={loadMorePoolSize}
             loadingMore={loadingMore}
             onLoadMore={handleLoadMore}
+            searchQuery={talentSearch}
           />
         </Suspense>
       ) : (
@@ -894,6 +942,7 @@ export default function BossView({
                   specName={spec}
                   metric={metric}
                   metaTelemetry={active.consensus?.telemetry}
+                  searchQuery={talentSearch}
                   heroTrees={variants
                     .filter(v => v.id !== null)
                     .map(v => ({ id: v.id!, name: v.name, imageUrl: v.imageUrl }))}
