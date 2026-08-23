@@ -4,7 +4,7 @@ import {
   getWclToken, getBlizzardToken, getRankingsCachedSWR, getTalentTreeId,
   fetchTelemetryBatchCachedUnstable, playerRegion, getBlizzardTokensForRegions,
   mapConcurrent, deriveTalentStringAndProfileNodes, blizzardCharacterProfileFetch,
-  normalizeTalentTree,
+  normalizeTalentTree, harvestEntryTalentPairs,
 } from '../../lib/wow';
 
 const WCL_FANOUT_CONCURRENCY = 5;
@@ -84,5 +84,16 @@ export async function loadMorePlayers(params: {
     return { ...playerClean, telemetry, talentString, renderUrl, profileNodes };
   });
 
+  // Same choice-node mechanism as the initial render (see BossContent): learn bridge
+  // pairs from these players' profiles, then attach each player's per-node chosen
+  // entry (Blizzard-talent space) so their card renders the option they actually took.
+  const bridge = await harvestEntryTalentPairs(players);
+  for (const p of players as any[]) {
+    const ids: Record<number, number> = {};
+    for (const row of p.telemetry?.event?.talentTree ?? []) {
+      if (row?.nodeID != null && row?.id != null) ids[row.nodeID] = bridge[row.id] ?? row.id;
+    }
+    p.entryIds = ids;
+  }
   return { players };
 }

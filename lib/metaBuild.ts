@@ -5,6 +5,7 @@ import {
   mapConcurrent, normalizeTalentTree, type WclImportEntry,
   blizzardCharacterProfileFetch, selectPlayersWithValidTelemetry,
   resolveMetaBuildPick, getRankingsCachedSWR,
+  harvestEntryTalentPairs, deriveTalentStringAndProfileNodes,
 } from './wow';
 import { logPointsUsage, ensureRedisHeadroom } from './persistentCache';
 
@@ -157,6 +158,16 @@ async function getMetaBuildInner(
     telemetry: allTelemetryData[idx],
     profileData: blizzardProfiles[idx],
   }));
+
+  // Teach the trait→talent bridge (see harvestEntryTalentPairs) from this combo's
+  // profiled players — the weekly crawl and daily warm sweep both pass through here
+  // for every combo, so bridge coverage builds fleet-wide without user interaction.
+  await harvestEntryTalentPairs(
+    pickPool.slice(0, DISPLAY_N).map(({ telemetry, profileData }) => ({
+      telemetry,
+      profileNodes: deriveTalentStringAndProfileNodes(telemetry, profileData, treeInfo.specId).profileNodes,
+    }))
+  );
 
   const allFightTrees = allTelemetryData.map(t => normalizeTalentTree(t?.event?.talentTree || []));
   const validTrees = allFightTrees.filter(t => t.length > 0);

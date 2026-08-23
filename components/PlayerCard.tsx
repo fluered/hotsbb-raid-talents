@@ -125,6 +125,7 @@ export default function PlayerCard({
           heroTreeName={heroTree?.name}
           metaTelemetry={metaTelemetry}
           searchQuery={searchQuery}
+          consensusEntryIds={player.entryIds}
         />
       </div>
     </div>

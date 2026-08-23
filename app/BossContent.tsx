@@ -7,6 +7,7 @@ import {
   computeConsensus, getActiveHeroTreeId, makeTelemetry, computeFrequencyPct, computeRankDistribution,
   mapConcurrent, normalizeTalentTree, deriveTalentStringAndProfileNodes, blizzardCharacterProfileFetch,
   selectPlayersWithValidTelemetry, resolveMetaBuildPick,
+  harvestEntryTalentPairs, translateEntryIds,
   SPEC_IDS, ENCHANT_SLOT_LABELS, ENCHANT_SLOT_ORDER,
 } from '../lib/wow';
 
@@ -951,6 +952,20 @@ export default async function BossContent({
       return { ...playerClean, telemetry: telemetryData, talentString, renderUrl: null, profileNodes };
     });
 
+    // Bridge trait-space entry ids to Blizzard-talent space (see harvestEntryTalentPairs
+    // in lib/wow.ts): learn pairs from this render's own profiled players first — so a
+    // fresh pairing benefits this very response — then decorate each player with their
+    // per-node chosen-entry map so their card's choice nodes render the option they
+    // actually took (previously always option A, whatever they picked).
+    const entryTalentBridge = await harvestEntryTalentPairs(detailedRankingsBase);
+    for (const p of detailedRankingsBase as any[]) {
+      const ids: Record<number, number> = {};
+      for (const row of p.telemetry?.event?.talentTree ?? []) {
+        if (row?.nodeID != null && row?.id != null) ids[row.nodeID] = entryTalentBridge[row.id] ?? row.id;
+      }
+      p.entryIds = ids;
+    }
+
     // Separate from detailedRankingsBase (which only carries a derived talentString for
     // the DISPLAY_N players whose profile was eagerly fetched) — this pairs every
     // consensus player with their raw profileData (possibly undefined) so
@@ -1041,7 +1056,15 @@ export default async function BossContent({
       // wasn't in the initial batch — resolveMetaBuildPick fetches it on demand instead.
       const overallPick = await resolveMetaBuildPick(pickPool, consensusMap, skeletonMap, treeInfo.specId, blizzardTokensByRegion);
       metaTalentString = overallPick?.talentString ?? null;
-      const consensusEntryIds: Record<number, number> = overallPick?.entryIds ?? {};
+      // Translated to Blizzard-talent space so NewFeature's comparison against the
+      // layout's choiceA/BEntryId can actually match; where the popup's own profile-
+      // derived majority (metaChoiceFreq) exists it wins outright — the node face and
+      // the hover then CANNOT disagree (the reported bug: icon showed Scythe's
+      // Embrace while the hover said 0% take it).
+      const consensusEntryIds: Record<number, number> = translateEntryIds(overallPick?.entryIds ?? {}, entryTalentBridge);
+      for (const [nodeIdStr, cf] of Object.entries(metaChoiceFreq)) {
+        consensusEntryIds[Number(nodeIdStr)] = cf.bPct > cf.aPct ? cf.bEntryId : cf.aEntryId;
+      }
 
       const heroGroups = new Map<number, Array<Array<{ nodeID: number; rank: number }>>>();
       for (const tel of validTrees) {
@@ -1068,7 +1091,7 @@ export default async function BossContent({
           );
           const htPick = await resolveMetaBuildPick(htPool, htMap, skeletonMap, treeInfo.specId, blizzardTokensByRegion);
           htStr = htPick?.talentString ?? null;
-          htEntryIds = htPick?.entryIds ?? {};
+          htEntryIds = translateEntryIds(htPick?.entryIds ?? {}, entryTalentBridge);
         }
 
         // Which player indices (into blizzardEquipment/allTelemetryData) use this hero tree

@@ -491,6 +491,79 @@ async function harvestEntryNodePairs(telemetries: any[], map: Record<number, num
   }
 }
 
+// ─── Trait-entry → Blizzard-talent bridge ──────────────────────────────────────
+
+// A choice node's two options are identified in TWO unrelated id spaces (verified live
+// 2026-08-22 on Devourer node 108726): Blizzard's layout/profile data names them by
+// "talent" catalog id (e.g. Scythe's Embrace 139052 / Duty Eternal 139048), while WCL
+// telemetry reports the chosen option by trait ENTRY id (134279). Comparing across
+// spaces silently never matches — which made every choice node render option A's icon
+// regardless of what players actually picked, and made buildImportEntries drop choice
+// picks entirely. No API serves the bridge, but any player we hold BOTH a matched
+// Blizzard loadout and WCL telemetry for reveals one pair per choice node — so, like
+// the entry→node map above, it teaches itself and persists without TTL.
+const ENTRY_TALENT_MAP_KEY = 'wcl-entry-talent-map-v1';
+let entryTalentMemo: { map: Record<number, number>; at: number } | null = null;
+
+export async function loadEntryTalentMap(): Promise<Record<number, number>> {
+  if (entryTalentMemo && Date.now() - entryTalentMemo.at < ENTRY_MAP_MEMO_MS) return entryTalentMemo.map;
+  const map = (await getPersistentReadOnly<Record<number, number>>(ENTRY_TALENT_MAP_KEY)) ?? {};
+  entryTalentMemo = { map, at: Date.now() };
+  return map;
+}
+
+// Learns pairs from players carrying both sides: telemetry rows give (nodeID → trait
+// entry id), the matched profile loadout gives (nodeID → Blizzard talent id). Only
+// rows whose node appears in both are paired — and only single-entry rows (a tiered
+// apex node's several sub-entries can't be attributed through the single profile id).
+// Returns the merged map so the caller can translate with same-render freshness.
+export async function harvestEntryTalentPairs(
+  players: Array<{ telemetry?: any; profileNodes?: any[] }>
+): Promise<Record<number, number>> {
+  const map = await loadEntryTalentMap();
+  let grew = false;
+  for (const p of players) {
+    const profileByNode = new Map<number, number>();
+    for (const pn of p.profileNodes ?? []) {
+      const talentId = pn?.tooltip?.talent?.id;
+      if (pn?.id != null && talentId != null) profileByNode.set(pn.id, talentId);
+    }
+    if (profileByNode.size === 0) continue;
+    const rowsByNode = new Map<number, any[]>();
+    for (const row of p.telemetry?.event?.talentTree ?? []) {
+      if (row?.id == null || row?.nodeID == null) continue;
+      if (!rowsByNode.has(row.nodeID)) rowsByNode.set(row.nodeID, []);
+      rowsByNode.get(row.nodeID)!.push(row);
+    }
+    for (const [nodeID, rows] of rowsByNode) {
+      if (rows.length !== 1) continue;
+      const talentId = profileByNode.get(nodeID);
+      if (talentId != null && map[rows[0].id] === undefined) {
+        map[rows[0].id] = talentId;
+        grew = true;
+      }
+    }
+  }
+  if (grew) {
+    entryTalentMemo = { map, at: Date.now() };
+    await setPersistentValue(ENTRY_TALENT_MAP_KEY, map);
+  }
+  return map;
+}
+
+// Trait-space entry ids → Blizzard-talent-space where the bridge knows the pair;
+// unknown ids pass through (the UI then falls back to its status-quo option-A default).
+export function translateEntryIds(
+  entryIds: Record<number, number>,
+  bridge: Record<number, number>
+): Record<number, number> {
+  const out: Record<number, number> = {};
+  for (const [nodeId, entryId] of Object.entries(entryIds)) {
+    out[Number(nodeId)] = bridge[entryId] ?? entryId;
+  }
+  return out;
+}
+
 // Rebuild a telemetry-shaped record from a ranking row's compacted inline talents
 // (see getWclRankings) — same {event: {talentTree, gear}} shape the real fetch
 // produces, so every downstream consumer (normalize, consensus, hero-tree detection,
@@ -1027,7 +1100,13 @@ export interface WclImportEntry {
 // twin" to fall into, so they're left unvalidated.
 export function buildImportEntries(
   raw: Array<{ nodeID: number; rank: number; id?: number }>,
-  layout: Array<{ nodeID: number; grantedRanks?: number; isChoice?: boolean; choiceAEntryId?: number | null; choiceBEntryId?: number | null }>
+  layout: Array<{ nodeID: number; grantedRanks?: number; isChoice?: boolean; choiceAEntryId?: number | null; choiceBEntryId?: number | null }>,
+  // The trait entry→node map (see loadEntryNodeMap): since 12.1 split the id spaces,
+  // WCL's trait entry ids never match the layout's Blizzard-talent choice ids, so the
+  // choice-set check alone rejected every legitimate choice pick. An id this map
+  // confirms belongs to this exact node is current-and-correct by construction —
+  // the same stale-id protection the choice-set check wanted, in the right space.
+  entryNodeMap?: Record<number, number>
 ): WclImportEntry[] {
   const grantedByNode = new Map<number, number>();
   const choiceIdsByNode = new Map<number, Set<number>>();
@@ -1074,7 +1153,7 @@ export function buildImportEntries(
     const purchased = achievedRank - granted;
     const entryId = rows[0].id;
     if (entryId == null) continue;
-    if (validChoiceIds && !validChoiceIds.has(entryId)) continue;
+    if (validChoiceIds && !validChoiceIds.has(entryId) && entryNodeMap?.[entryId] !== nodeID) continue;
     entries.push({ nodeID, ranksGranted: granted, ranksPurchased: purchased, selectionEntryID: entryId });
   }
   return entries;
@@ -1274,7 +1353,7 @@ export async function resolveMetaBuildPick(
   if (!best) return null;
 
   const rawTree = best.telemetry.event.talentTree;
-  const wclEntries = buildImportEntries(rawTree, skeletonMap);
+  const wclEntries = buildImportEntries(rawTree, skeletonMap, await loadEntryNodeMap());
   const entryIds: Record<number, number> = {};
   for (const e of wclEntries) entryIds[e.nodeID] = e.selectionEntryID;
 
