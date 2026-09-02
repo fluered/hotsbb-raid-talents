@@ -45,12 +45,10 @@ const SPEC_IDS = {
   'Warrior':       { 'Arms': 71, 'Fury': 72, 'Protection': 73 },
 };
 
-// Difficulty enum values are WCL-wide constants, not season-specific. But WHICH raid
-// difficulty to crawl is season-phase-specific: Mythic (5) doesn't open until the
-// season's second reset, so crawling 5 during launch week finds zero parses for every
-// spec and the partial-data guard (correctly) refuses to publish. Keep this in sync
-// with DEFAULT_RAID_DIFFICULTY in lib/wow.ts — 4 for launch week, both back to 5 once
-// Mythic parses exist.
+// Difficulty enum values are WCL-wide constants, not season-specific. WHICH raid
+// difficulty to crawl comes from /api/season-content (resolved live server-side:
+// Heroic during launch weeks, Mythic once it has parses) — RAID_DIFFICULTY is only
+// the fallback for an older server that doesn't send the field.
 const RAID_DIFFICULTY = 4;
 const MPLUS_DIFFICULTY = 10;
 
@@ -68,12 +66,15 @@ async function fetchSeasonContent() {
 }
 
 async function buildJobs() {
-  const { dungeons, raidBosses } = await fetchSeasonContent();
+  const { dungeons, raidBosses, defaultRaidDifficulty, drift } = await fetchSeasonContent();
+  if (drift) console.warn(`\n⚠  SEASON DRIFT: ${drift}\n`);
+  const raidDifficulty = defaultRaidDifficulty ?? RAID_DIFFICULTY;
+  console.log(`Raid difficulty (from season-content): ${raidDifficulty === 5 ? 'Mythic' : 'Heroic'}`);
   const jobs = [];
   for (const [className, specs] of Object.entries(SPEC_IDS)) {
     for (const [specName, specID] of Object.entries(specs)) {
       for (const boss of raidBosses) {
-        jobs.push({ className, specName, specID, encounterId: boss.id, encounterName: boss.name, difficulty: RAID_DIFFICULTY });
+        jobs.push({ className, specName, specID, encounterId: boss.id, encounterName: boss.name, difficulty: raidDifficulty });
       }
       for (const dungeon of dungeons) {
         jobs.push({ className, specName, specID, encounterId: dungeon.id, encounterName: dungeon.name, difficulty: MPLUS_DIFFICULTY });

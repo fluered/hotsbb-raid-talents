@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getWclToken, getDungeonRoster, getRaidStructure, MIDNIGHT_RAIDS } from '../../../lib/wow';
+import { getWclToken, getDungeonRoster, getRaidStructure, getSeasonState, MIDNIGHT_RAIDS } from '../../../lib/wow';
 import { isAuthorizedInternalCaller } from '../../../lib/internalAuth';
 
 export const dynamic = 'force-dynamic';
@@ -19,9 +19,10 @@ export async function GET(request: NextRequest) {
 
   try {
     const token = await getWclToken();
-    const [dungeons, zones] = await Promise.all([
+    const [dungeons, zones, season] = await Promise.all([
       getDungeonRoster(token),
       getRaidStructure(token),
+      getSeasonState(),
     ]);
 
     const raidBosses = zones
@@ -30,11 +31,22 @@ export async function GET(request: NextRequest) {
         (z.encounters ?? []).map((enc: any) => ({ id: enc.id, name: enc.name, zone: z.name }))
       );
 
+    // The one seasonal change that still needs a human (see SeasonState.drift) —
+    // surfaced here so every crawl/warm-sweep log prints it where it gets read.
+    if (season.drift) console.warn(`SEASON DRIFT: ${season.drift}`);
+
     return NextResponse.json(
       {
         status: 'ok',
         dungeons: dungeons.map(d => ({ id: d.id, name: d.name })),
         raidBosses,
+        // Resolved live (see getSeasonState): the crawl inherits the same raid
+        // difficulty the site is currently defaulting to — Heroic during launch
+        // weeks, Mythic once it opens — with no constant to keep in sync.
+        defaultRaidDifficulty: season.defaultRaidDifficulty,
+        mplusZoneId: season.mplusZoneId,
+        seasonLabel: season.seasonLabel,
+        drift: season.drift,
       },
       { headers: { 'Cache-Control': 'public, s-maxage=21600, stale-while-revalidate=86400' } }
     );

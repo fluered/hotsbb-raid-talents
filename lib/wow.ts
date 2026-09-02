@@ -140,7 +140,7 @@ export async function getWclPointsSpent(token: string): Promise<number | null> {
 }
 
 export async function getRaidStructure(token: string) {
-  const query = `query { worldData { zones { id name encounters { id name journalID } } } }`;
+  const query = `query { worldData { zones { id name frozen expansion { id name } encounters { id name journalID } } } }`;
   const response = await wclFetch('https://www.warcraftlogs.com/api/v2/client', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -161,6 +161,119 @@ export async function getMplusEncounters(token: string, zoneId: number) {
     next: { revalidate: 86400 },
   });
   return (await parseWclResponse(response, 'mplus-encounters')).data?.worldData?.zone?.encounters || [];
+}
+
+// ─── Season state (self-resolving) ─────────────────────────────────────────────
+
+// Cheapest possible "is there data here?" probe: unfiltered rankings (no class/spec,
+// no combatantInfo) on one encounter. Used only by the season resolver below, which
+// is itself cached — so this costs ~2 WCL points every few hours, total.
+async function getUnfilteredRankingsCount(token: string, bossId: number, difficulty: number): Promise<number> {
+  const query = `query { worldData { encounter(id: ${bossId}) { characterRankings(difficulty: ${difficulty}) } } }`;
+  const response = await wclFetch('https://www.warcraftlogs.com/api/v2/client', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query }),
+    cache: 'no-store',
+  });
+  return ((await parseWclResponse(response, 'season-probe')).data?.worldData?.encounter?.characterRankings?.rankings ?? []).length;
+}
+
+export interface SeasonState {
+  mplusZoneId: number;
+  seasonLabel: string;         // e.g. "Season 2" — derived from the M+ zone's own name
+  expansionName: string;       // e.g. "Midnight"
+  defaultRaidDifficulty: 4 | 5;
+  // Non-null when a raid zone NEWER than everything in MIDNIGHT_RAIDS exists — the one
+  // seasonal change that still needs a human (see MIDNIGHT_RAIDS for why raids can't
+  // be auto-adopted: a season can ship several concurrent raid zones, and guessing
+  // wrong either drops a real raid or mixes seasons in the tier lists).
+  drift: string | null;
+}
+
+// The two decisions that used to be hand-flipped constants, resolved from live data:
+//
+// 1. WHICH M+ SEASON: the newest non-frozen "Mythic+ Season N" zone of the newest
+//    expansion — verified to actually have parses, so a pre-staged next-season zone
+//    (WCL creates them days early) can't hijack the site before its season starts.
+// 2. RAID DIFFICULTY DEFAULT: Mythic doesn't open until a season's second reset, and
+//    a Mythic default before then renders every raid page empty. Probe the current
+//    raid's first boss: enough Mythic parses ⇒ 5, else Heroic. This retires the
+//    "flip DEFAULT_RAID_DIFFICULTY when Mythic opens" ritual permanently — including
+//    the flip BACK at every future season launch.
+//
+// Cached a few hours in Redis (shared by pages, metadata, /api/season-content and
+// through it the crawl); any resolver failure falls back to the last-known constants
+// below rather than taking the site down with it.
+async function computeSeasonState(token: string): Promise<SeasonState> {
+  const zones: any[] = await getRaidStructure(token);
+  const maxExp = Math.max(...zones.map((z: any) => z.expansion?.id ?? 0));
+  const current = zones.filter((z: any) => (z.expansion?.id ?? 0) === maxExp && !z.frozen);
+
+  // M+ zone: newest by season number, activity-verified.
+  const mplusCandidates = current
+    .map((z: any) => ({ zone: z, season: parseInt((z.name.match(/^Mythic\+ Season (\d+)/) ?? [])[1] ?? '') }))
+    .filter((c: any) => Number.isFinite(c.season))
+    .sort((a: any, b: any) => b.season - a.season);
+  let mplusZone = mplusCandidates[0]?.zone ?? null;
+  for (const cand of mplusCandidates) {
+    const firstEnc = cand.zone.encounters?.[0]?.id;
+    if (firstEnc && (await getUnfilteredRankingsCount(token, firstEnc, MPLUS_DIFFICULTY)) >= 25) {
+      mplusZone = cand.zone;
+      break;
+    }
+  }
+  if (!mplusZone) throw new Error('Season resolver: no Mythic+ zone found');
+
+  // Raid difficulty: probe the configured current raid's first boss on Mythic.
+  const raidZones = current.filter((z: any) => z.name in MIDNIGHT_RAIDS);
+  let defaultRaidDifficulty: 4 | 5 = 4;
+  const probeBoss = raidZones[0]?.encounters?.[0]?.id;
+  if (probeBoss && (await getUnfilteredRankingsCount(token, probeBoss, 5)) >= 10) {
+    defaultRaidDifficulty = 5;
+  }
+
+  // Drift alarm: a raid zone newer than everything configured means a new season's
+  // raid exists and MIDNIGHT_RAIDS needs its one-line update.
+  const maxConfiguredId = Math.max(0, ...zones.filter((z: any) => z.name in MIDNIGHT_RAIDS).map((z: any) => z.id));
+  const newer = current.filter((z: any) =>
+    z.id > maxConfiguredId && !(z.name in MIDNIGHT_RAIDS) && !/^Mythic\+/.test(z.name) && z.name !== 'Delves'
+  );
+  const drift = newer.length > 0
+    ? `MIDNIGHT_RAIDS looks stale: newer raid zone(s) exist on WCL: ${newer.map((z: any) => `${z.name} (${z.id})`).join(', ')}`
+    : null;
+
+  return {
+    mplusZoneId: mplusZone.id,
+    seasonLabel: mplusZone.name.replace(/^Mythic\+\s*/, ''),
+    expansionName: zones.find((z: any) => (z.expansion?.id ?? 0) === maxExp)?.expansion?.name ?? '',
+    defaultRaidDifficulty,
+    drift,
+  };
+}
+
+// Last-known-good fallback if the resolver itself fails (WCL outage mid-cache-miss):
+// stale season info beats an error page. Update casually, not urgently. A function,
+// not a const — MPLUS_ZONE_ID is declared further down the file, so evaluating this
+// at module init would hit its temporal dead zone.
+function seasonFallback(): SeasonState {
+  return {
+    mplusZoneId: MPLUS_ZONE_ID,
+    seasonLabel: 'Season 2',
+    expansionName: 'Midnight',
+    defaultRaidDifficulty: 4,
+    drift: null,
+  };
+}
+
+export async function getSeasonState(): Promise<SeasonState> {
+  try {
+    const token = await getWclToken();
+    return await getOrSetPersistent('season-state-v1', 21600, () => computeSeasonState(token));
+  } catch (err) {
+    console.error('Season resolver failed, using fallback:', err);
+    return seasonFallback();
+  }
 }
 
 // region omitted/undefined returns ALL regions combined in one query (confirmed live:
@@ -1378,11 +1491,11 @@ export const MIDNIGHT_RAIDS: Record<string, string> = {
   'The Venomous Abyss': 'The Venomous Abyss',
 };
 
-// Launch-week default: Mythic doesn't open until the second reset, so defaulting to
-// Heroic (4) keeps every page populated. Flip to 5 once Mythic parses exist.
-export const DEFAULT_RAID_DIFFICULTY = 4;
-
-export const MPLUS_ZONE_ID = 55; // Midnight Season 2
+// Raid difficulty default and the current M+ zone are no longer hand-flipped
+// constants — getSeasonState() resolves both from live WCL data (Mythic-parse probe;
+// newest active "Mythic+ Season N" zone). MPLUS_ZONE_ID survives only as the
+// resolver's disaster fallback.
+export const MPLUS_ZONE_ID = 55; // Midnight Season 2 — fallback only, see getSeasonState
 export const MPLUS_DIFFICULTY = 10; // bracket that returns high-key parses
 
 // Splash-image lookups only. Blizzard's journal-instance IDs and WCL's CDN icon IDs
@@ -1407,7 +1520,7 @@ const DUNGEON_MEDIA_OVERRIDES: Record<string, { wclCdnId?: number; blizzardInsta
 // MPLUS_ZONE_ID above. Falls back to an empty roster (page renders with no dungeons
 // listed, not a crash) if the WCL query fails.
 export async function getDungeonRoster(token: string): Promise<Array<{ id: number; name: string; wclCdnId?: number; blizzardInstanceId?: number }>> {
-  const encounters = await getMplusEncounters(token, MPLUS_ZONE_ID);
+  const encounters = await getMplusEncounters(token, (await getSeasonState()).mplusZoneId);
   return encounters.map((enc: any) => ({
     id: enc.id,
     name: enc.name,

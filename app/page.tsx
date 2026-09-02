@@ -10,7 +10,7 @@ import { ogImageMeta } from '../lib/ogImage';
 import {
   getWclToken, getBlizzardToken, getRaidStructure, getDungeonRoster,
   POPULAR_SPECS, SPEC_IDS, MIDNIGHT_RAIDS, CLASS_IDS,
-  MPLUS_DIFFICULTY, MPLUS_ZONE_ID, HEALER_SPECS, DEFAULT_RAID_DIFFICULTY,
+  MPLUS_DIFFICULTY, HEALER_SPECS, getSeasonState,
 } from '../lib/wow';
 
 // BossContent awaits up to 50 concurrent WCL telemetry fetches + 25 Blizzard profile
@@ -28,10 +28,11 @@ interface PageProps {
 
 export async function generateMetadata({ searchParams }: PageProps): Promise<Metadata> {
   const sp = await searchParams;
+  const season = await getSeasonState();
   const cls = sp.class;
   const spec = sp.spec;
   const bossName = sp.bossName;
-  const diff = sp.difficulty ? parseInt(sp.difficulty) : DEFAULT_RAID_DIFFICULTY;
+  const diff = sp.difficulty ? parseInt(sp.difficulty) : season.defaultRaidDifficulty;
   const diffLabel = diff === 4 ? 'Heroic' : 'Mythic';
 
   let title: string;
@@ -122,6 +123,7 @@ function BossLoadingSkeleton() {
 
 export default async function Home(props: PageProps) {
   const searchParams = await props.searchParams;
+  const season = await getSeasonState();
   const activeMode = searchParams.mode === 'dungeons' ? 'dungeons' : 'raids';
   const activeBossId = searchParams.boss ? parseInt(searchParams.boss) : null;
   const activeBossName = searchParams.bossName || null;
@@ -129,7 +131,7 @@ export default async function Home(props: PageProps) {
   const activeDungeonName = searchParams.dungeonName || null;
   const activeClass = searchParams.class || null;
   const activeSpec = searchParams.spec || null;
-  const activeDifficulty = searchParams.difficulty ? parseInt(searchParams.difficulty) : DEFAULT_RAID_DIFFICULTY;
+  const activeDifficulty = searchParams.difficulty ? parseInt(searchParams.difficulty) : season.defaultRaidDifficulty;
   const activeRegion = (searchParams.region === 'us-eu' ? 'us-eu' : 'global') as 'global' | 'us-eu';
   const isHealer = HEALER_SPECS.some(h => h.class === activeClass && h.spec === activeSpec);
   const activeMetric: 'hps' | 'dps' = searchParams.metric === 'dps' ? 'dps' : searchParams.metric === 'hps' ? 'hps' : (isHealer ? 'hps' : 'dps');
@@ -433,7 +435,7 @@ export default async function Home(props: PageProps) {
                   <div className="flex items-center justify-center gap-2 text-[10px] font-black text-zinc-600 uppercase tracking-widest">
                     <span>The Venomous Abyss</span>
                     <span className="text-zinc-800">·</span>
-                    <span>Season 2 Dungeons</span>
+                    <span>{season.seasonLabel} Dungeons</span>
                   </div>
                   <h1 className="text-3xl font-black text-zinc-100 leading-tight">
                     Meta builds for every boss
@@ -572,7 +574,7 @@ export default async function Home(props: PageProps) {
                   <>
                     {activeSpec && (
                       <div className="space-y-2">
-                        <p className="text-[10px] font-black text-zinc-600 uppercase tracking-widest">Midnight Season 2 Dungeons</p>
+                        <p className="text-[10px] font-black text-zinc-600 uppercase tracking-widest">{season.expansionName} {season.seasonLabel} Dungeons</p>
                         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
                           {dungeons.map(dungeon => {
                             const isSelected = activeDungeonId === dungeon.id;
@@ -608,7 +610,7 @@ export default async function Home(props: PageProps) {
                           difficulty={MPLUS_DIFFICULTY}
                           nodeColors={nodeColors}
                           region={activeRegion}
-                          wclZoneId={MPLUS_ZONE_ID}
+                          wclZoneId={season.mplusZoneId}
                         />
                       </Suspense>
                     )}

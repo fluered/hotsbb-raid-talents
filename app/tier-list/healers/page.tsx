@@ -1,7 +1,7 @@
 import React, { Suspense } from 'react';
 import Link from 'next/link';
 import type { Metadata } from 'next';
-import { getWclToken, getRaidStructure, MIDNIGHT_RAIDS, HEALER_SPECS, DEFAULT_RAID_DIFFICULTY } from '../../../lib/wow';
+import { getWclToken, getRaidStructure, MIDNIGHT_RAIDS, HEALER_SPECS, getSeasonState } from '../../../lib/wow';
 import TierListContent from '../TierListContent';
 import OverallTierListContent from '../OverallTierListContent';
 import { ogImageMeta } from '../../../lib/ogImage';
@@ -16,15 +16,16 @@ interface PageProps {
 
 export async function generateMetadata({ searchParams }: PageProps): Promise<Metadata> {
   const sp = await searchParams;
+  const season = await getSeasonState();
   const bossName = sp.bossName;
-  const diff = sp.difficulty ? parseInt(sp.difficulty) : DEFAULT_RAID_DIFFICULTY;
+  const diff = sp.difficulty ? parseInt(sp.difficulty) : season.defaultRaidDifficulty;
   const diffLabel = diff === 4 ? 'Heroic' : 'Mythic';
   const title = bossName
     ? `${diffLabel} ${bossName} Healer Tier List | HotsBB`
-    : 'Midnight Season 2 Healer DPS Tier List — All Bosses | HotsBB';
+    : `${season.expansionName} ${season.seasonLabel} Healer DPS Tier List — All Bosses | HotsBB`;
   const description = bossName
     ? `Healer spec tier list for ${diffLabel} ${bossName} — ranked by avg DPS of top 50 parses.`
-    : 'Overall healer spec tier list for WoW Midnight Season 2 — avg DPS across all raid bosses, ranked from top parses.';
+    : `Overall healer spec tier list for WoW ${season.expansionName} ${season.seasonLabel} — avg DPS across all raid bosses, ranked from top parses.`;
   return {
     title,
     description,
@@ -39,7 +40,8 @@ export async function generateMetadata({ searchParams }: PageProps): Promise<Met
 
 export default async function HealerTierListPage({ searchParams }: PageProps) {
   const sp = await searchParams;
-  const activeDifficulty = sp.difficulty ? parseInt(sp.difficulty) : DEFAULT_RAID_DIFFICULTY;
+  const season = await getSeasonState();
+  const activeDifficulty = sp.difficulty ? parseInt(sp.difficulty) : season.defaultRaidDifficulty;
   const activeRegion = sp.region === 'us-eu' ? 'us-eu' : 'global';
   const activeBossId = sp.boss ? parseInt(sp.boss) : null;
 
@@ -157,7 +159,7 @@ export default async function HealerTierListPage({ searchParams }: PageProps) {
               region={activeRegion}
               role="healer"
               metric="dps"
-              title="Midnight Season 2 Raid Healer DPS Tier List"
+              title={`${season.expansionName} ${season.seasonLabel} Raid Healer DPS Tier List`}
               footerNote="Avg DPS per spec across all Midnight bosses · excludes DPS and tanks · click any row to view talent builds"
             />
           </Suspense>
