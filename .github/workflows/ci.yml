@@ -23,12 +23,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - name: Install
+        run: npm ci || { echo "=== npm debug log ==="; tail -n 80 /home/runner/.npm/_logs/*.log; exit 1; }
       - name: TypeScript
         run: npx tsc --noEmit
       - name: Addon Lua syntax
