@@ -237,6 +237,35 @@ export async function ensureRedisHeadroom(): Promise<void> {
   }
 }
 
+// ─── Server error log ────────────────────────────────────────────────────────────
+
+// Production has no log access (Vercel) — every incident so far was diagnosed by
+// reproduction. Same pattern as the points log: a small capped Redis list, written
+// at the moment of failure, readable via the gated /api/debug-errors route. Swallows
+// its own failures — diagnostics never break a response.
+const ERROR_LOG_KEY = 'server-error-log';
+const ERROR_LOG_MAX = 300;
+
+export async function logServerError(context: string, err: unknown): Promise<void> {
+  try {
+    const redis = await getClient();
+    const entry = JSON.stringify({
+      ts: Date.now(),
+      context,
+      message: err instanceof Error ? err.message : String(err),
+      stack: err instanceof Error ? (err.stack ?? '').split('\n').slice(0, 6).join('\n') : undefined,
+    });
+    await withTimeout(redis.rPush(ERROR_LOG_KEY, entry), CACHE_TIMEOUT_MS, 'Redis rPush');
+    await withTimeout(redis.lTrim(ERROR_LOG_KEY, -ERROR_LOG_MAX, -1), CACHE_TIMEOUT_MS, 'Redis lTrim').catch(() => {});
+  } catch {}
+}
+
+export async function getServerErrorLog(limit = 100): Promise<any[]> {
+  const redis = await getClient();
+  const raw = await withTimeout(redis.lRange(ERROR_LOG_KEY, -limit, -1), CACHE_TIMEOUT_MS, 'Redis lRange');
+  return raw.map(r => JSON.parse(r)).reverse();
+}
+
 // ─── WCL points usage log ───────────────────────────────────────────────────────
 
 // Diagnostic-only: how many WCL points a single combo's rankings+telemetry work

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getMetaBuild } from '../../../lib/metaBuild';
 import { SPEC_IDS } from '../../../lib/wow';
 import { isAuthorizedInternalCaller } from '../../../lib/internalAuth';
+import { logServerError } from '../../../lib/persistentCache';
 
 export const dynamic = 'force-dynamic';
 
@@ -46,6 +47,7 @@ export async function GET(request: NextRequest) {
         { status: 429 }
       );
     }
+    await logServerError(`meta-build ${className}/${spec} boss=${bossId} diff=${difficulty}`, e);
     return NextResponse.json({ status: 'error', message: e?.message ?? String(e) }, { status: 500 });
   }
 }

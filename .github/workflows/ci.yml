@@ -1,0 +1,45 @@
+name: CI
+
+# The checks every fix session used to re-run by hand before trusting the tree:
+# TypeScript (the repo accumulated latent type errors twice with nothing guarding),
+# addon Lua syntax (a non-parsing Data.lua bricks every WowUp user), the export
+# script, and workflow YAML. No build, no deploys — Vercel owns those; this exists
+# so a red X appears BEFORE a bad commit ships an addon release or breaks a crawl.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: TypeScript
+        run: npx tsc --noEmit
+      - name: Addon Lua syntax
+        run: node scripts/check-lua.js
+      - name: Export script syntax
+        run: node --check scripts/export-meta-builds.js
+      - name: Workflow YAML
+        run: |
+          node -e "
+            const yaml = require('js-yaml'); const fs = require('fs');
+            for (const f of fs.readdirSync('.github/workflows')) {
+              yaml.load(fs.readFileSync('.github/workflows/' + f, 'utf8'));
+              console.log('OK', f);
+            }"

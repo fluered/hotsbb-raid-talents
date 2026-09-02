@@ -1,6 +1,7 @@
 import React from 'react';
 import { unstable_cache } from 'next/cache';
 import BossView, { type HeroVariant } from '../components/BossView';
+import { logServerError } from '../lib/persistentCache';
 import {
   getWclToken, getBlizzardToken, getRankingsCachedSWR, fetchTelemetryBatchCachedUnstable,
   getTalentTreeId, getCachedTalentLayout, playerRegion, getBlizzardTokensForRegions,
@@ -1257,6 +1258,8 @@ export default async function BossContent({
       </div>
     );
   } catch (err: any) {
+    // Fire-and-forget would be dropped by Vercel's post-response freeze — await it.
+    await logServerError(`BossContent ${className}/${spec} boss=${bossId} diff=${difficulty} region=${region}`, err);
     if (err?.isRateLimit) {
       return (
         <div className="bg-amber-950/40 border border-amber-800/50 text-amber-300 px-4 py-3 rounded-xl text-sm">

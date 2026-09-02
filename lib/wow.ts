@@ -1,7 +1,7 @@
 import { unstable_cache } from 'next/cache';
 import { after } from 'next/server';
 import { normalizeTalentTree } from './talentNormalize';
-import { getOrSetPersistent, getPersistentReadOnly, getSwrEntry, setSwrEntry, setPersistentValue, tryAcquireLock } from './persistentCache';
+import { getOrSetPersistent, getPersistentReadOnly, getSwrEntry, setSwrEntry, setPersistentValue, tryAcquireLock, logServerError } from './persistentCache';
 export { normalizeTalentTree } from './talentNormalize';
 
 // ─── WCL request pacing ─────────────────────────────────────────────────────────
@@ -272,6 +272,7 @@ export async function getSeasonState(): Promise<SeasonState> {
     return await getOrSetPersistent('season-state-v1', 21600, () => computeSeasonState(token));
   } catch (err) {
     console.error('Season resolver failed, using fallback:', err);
+    await logServerError('season-resolver', err);
     return seasonFallback();
   }
 }
@@ -842,6 +843,7 @@ async function refreshRankingsInBackground(
   } catch (err) {
     // Stale keeps serving; the next stale hit after the lock expires retries.
     console.error('SWR rankings background refresh failed:', err);
+    await logServerError(`swr-refresh ${key}`, err);
   }
 }
 
