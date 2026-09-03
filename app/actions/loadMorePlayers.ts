@@ -4,7 +4,8 @@ import {
   getWclToken, getBlizzardToken, getRankingsCachedSWR, getTalentTreeId,
   fetchTelemetryBatchCachedUnstable, playerRegion, getBlizzardTokensForRegions,
   mapConcurrent, deriveTalentStringAndProfileNodes, blizzardCharacterProfileFetch,
-  normalizeTalentTree, harvestEntryTalentPairs,
+  normalizeTalentTree, harvestEntryTalentPairs, generatePlayerTalentString,
+  getCachedTalentLayout,
 } from '../../lib/wow';
 
 const WCL_FANOUT_CONCURRENCY = 5;
@@ -37,6 +38,8 @@ export async function loadMorePlayers(params: {
   const [wclToken, staticBlizzardToken] = await Promise.all([getWclToken(), getBlizzardToken('us')]);
   const treeInfo = await getTalentTreeId(spec, className, staticBlizzardToken);
   if (!treeInfo) return { players: [] };
+  // Needed for the generated-string fallback below (cached; shared with the page render).
+  const { layout: skeletonMap } = await getCachedTalentLayout(treeInfo.treeId, treeInfo.specId, staticBlizzardToken);
 
   // Same shared SWR entry the page itself rendered from — so "Load more" pages
   // through the exact ranking list the visitor is already looking at, and its rows
@@ -76,7 +79,11 @@ export async function loadMorePlayers(params: {
       blizzardCharacterProfileFetch(player, blizzardTokensByRegion, 'character-media', 'media'),
     ]);
 
-    const { talentString, profileNodes } = deriveTalentStringAndProfileNodes(telemetry, profileData, treeInfo.specId);
+    let { talentString, profileNodes } = deriveTalentStringAndProfileNodes(telemetry, profileData, treeInfo.specId);
+    if (!talentString) {
+      // No matching saved loadout — encode the fight build itself (see wow.ts).
+      talentString = await generatePlayerTalentString(className, treeInfo.specId, telemetry, skeletonMap);
+    }
     const renderUrl = mediaData?.assets?.find((a: any) => a.key === 'avatar')?.value ?? null;
 
     // _tp/_tg are server-side cache compaction — never ship them to the client.

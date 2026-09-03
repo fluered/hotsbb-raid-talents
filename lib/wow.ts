@@ -1431,6 +1431,119 @@ export function scorePlayerTree(tree: any[], cMap: Map<number, number>): number 
   return score;
 }
 
+// ─── Loadout string generation (see lib/loadoutCodec.ts) ───────────────────────
+
+// Full class tree in the codec's shape: the union of every spec's class+spec+hero
+// nodes for the class — the export format serializes ALL of them, not just the
+// active spec's. Redis-cached daily; ~4 Blizzard fetches per class per day.
+export async function getClassTreeForEncoding(className: string): Promise<import('./loadoutCodec').ClassTree | null> {
+  const specIds = Object.values(SPEC_IDS[className] ?? {});
+  if (specIds.length === 0) return null;
+  try {
+    // v2: hero membership must MERGE onto nodes already seen in class/spec lists —
+    // many hero nodes are also listed as spec nodes, and first-wins dropped their
+    // hero flag, breaking active-hero-tree detection during encoding.
+    return await getOrSetPersistent(`loadout-class-tree-v2-${className}`, 86400, async () => {
+      const token = await getBlizzardToken('us');
+      const idxRes = await fetchWithTimeout(
+        'https://us.api.blizzard.com/data/wow/talent-tree/index?namespace=static-us',
+        { Authorization: `Bearer ${token}` }, 10000, 86400
+      );
+      const idx = await idxRes.json();
+      const nodes: Record<number, any> = {};
+      for (const sid of specIds) {
+        const entry = (idx.spec_talent_trees ?? []).find((t: any) => (t.key?.href ?? '').includes(`playable-specialization/${sid}?`));
+        if (!entry) continue;
+        const treeRes = await fetchWithTimeout(
+          entry.key.href.replace(/namespace=[^&]*/, 'namespace=static-us'),
+          { Authorization: `Bearer ${token}` }, 15000, 86400
+        );
+        const tree = await treeRes.json();
+        const upsert = (n: any, isHero: boolean, heroTreeId: number | null) => {
+          if (nodes[n.id]) {
+            if (isHero) { nodes[n.id].isHero = true; nodes[n.id].heroTreeId = heroTreeId; }
+            return;
+          }
+          const choices = n.ranks?.[0]?.choice_of_tooltips ?? [];
+          nodes[n.id] = {
+            maxRanks: n.ranks?.length ?? 1,
+            granted: (n.ranks ?? []).reduce((s: number, r: any) => s + (r.default_points || 0), 0),
+            choiceTalentIds: choices.length >= 2 ? choices.map((c: any) => c?.talent?.id ?? null) : null,
+            isHero,
+            heroTreeId,
+          };
+        };
+        for (const n of tree.class_talent_nodes ?? []) upsert(n, false, null);
+        for (const n of tree.spec_talent_nodes ?? []) upsert(n, false, null);
+        for (const h of tree.hero_talent_trees ?? []) for (const n of h.hero_talent_nodes ?? []) upsert(n, true, h.id);
+      }
+      return nodes;
+    });
+  } catch (err) {
+    console.error('Class tree fetch for encoding failed:', err);
+    return null;
+  }
+}
+
+// Feed every profile loadout string we encounter to the codec's format harvester
+// (hash / selector maps / apex caps teach themselves — see loadoutCodec). Errors
+// are diagnostics-grade only.
+export async function harvestLoadoutStrings(className: string, codes: Array<string | null | undefined>): Promise<void> {
+  const real = codes.filter((c): c is string => !!c);
+  if (real.length === 0) return;
+  try {
+    const tree = await getClassTreeForEncoding(className);
+    if (!tree) return;
+    const { harvestLoadoutFormat } = await import('./loadoutCodec');
+    for (const code of real) await harvestLoadoutFormat(code, tree);
+  } catch (err) {
+    console.error('Loadout format harvest failed:', err);
+  }
+}
+
+// Generate the import string directly from WCL-derived entries — the fallback when
+// no player profile matches the fight build (the 80% rule). Returns null whenever
+// the codec lacks harvested knowledge (spec hash, selector mapping, a choice
+// option's bridge translation): never a guessed string.
+export async function generateTalentString(
+  className: string,
+  specId: number,
+  wclEntries: WclImportEntry[]
+): Promise<string | null> {
+  try {
+    const tree = await getClassTreeForEncoding(className);
+    if (!tree) return null;
+    const bridge = await loadEntryTalentMap();
+    const { encodeLoadoutString } = await import('./loadoutCodec');
+    const selections = wclEntries.map(e => ({
+      nodeId: e.nodeID,
+      ranksPurchased: e.ranksPurchased,
+      choiceTalentId: bridge[e.selectionEntryID] ?? null,
+    }));
+    return await encodeLoadoutString(specId, tree, selections);
+  } catch (err) {
+    console.error('Talent string generation failed:', err);
+    return null;
+  }
+}
+
+// Per-player variant of the fallback: derive import entries from the player's own
+// fight telemetry and encode them. Used by the player cards when no saved profile
+// loadout matches the fight build (the 80% rule) — the generated string IS the fight
+// build, so it's strictly more faithful than any profile string would have been.
+export async function generatePlayerTalentString(
+  className: string,
+  specId: number,
+  telemetry: any,
+  skeletonMap: Array<{ nodeID: number; grantedRanks?: number; isChoice?: boolean; choiceAEntryId?: number | null; choiceBEntryId?: number | null }>
+): Promise<string | null> {
+  const raw = telemetry?.event?.talentTree;
+  if (!raw?.length) return null;
+  const entries = buildImportEntries(raw, skeletonMap, await loadEntryNodeMap());
+  if (entries.length === 0) return null;
+  return generateTalentString(className, specId, entries);
+}
+
 export interface MetaBuildPick {
   player: any;
   telemetry: any;
@@ -1455,7 +1568,11 @@ export async function resolveMetaBuildPick(
   cMap: Map<number, number>,
   skeletonMap: Array<{ nodeID: number; grantedRanks?: number }>,
   specId: number,
-  blizzardTokensByRegion: Map<string, string>
+  blizzardTokensByRegion: Map<string, string>,
+  // When given, a null profile-derived talentString falls back to encoding one
+  // directly from the pick's own WCL entries (see generateTalentString) — the
+  // fight build itself, so it can never disagree with what's on screen.
+  className?: string
 ): Promise<MetaBuildPick | null> {
   let bestScore = -1;
   let best: (typeof pool)[number] | null = null;
@@ -1476,7 +1593,11 @@ export async function resolveMetaBuildPick(
   if (!profileData) {
     profileData = await blizzardCharacterProfileFetch(best.player, blizzardTokensByRegion, 'specializations', 'spec');
   }
-  const { talentString } = deriveTalentStringAndProfileNodes(best.telemetry, profileData, specId);
+  let { talentString } = deriveTalentStringAndProfileNodes(best.telemetry, profileData, specId);
+
+  if (!talentString && className && wclEntries.length > 0) {
+    talentString = await generateTalentString(className, specId, wclEntries);
+  }
 
   return {
     player: best.player,

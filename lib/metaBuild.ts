@@ -5,7 +5,7 @@ import {
   mapConcurrent, normalizeTalentTree, type WclImportEntry,
   blizzardCharacterProfileFetch, selectPlayersWithValidTelemetry,
   resolveMetaBuildPick, getRankingsCachedSWR,
-  harvestEntryTalentPairs, deriveTalentStringAndProfileNodes,
+  harvestEntryTalentPairs, deriveTalentStringAndProfileNodes, harvestLoadoutStrings,
 } from './wow';
 import { logPointsUsage, ensureRedisHeadroom } from './persistentCache';
 
@@ -159,15 +159,15 @@ async function getMetaBuildInner(
     profileData: blizzardProfiles[idx],
   }));
 
-  // Teach the trait→talent bridge (see harvestEntryTalentPairs) from this combo's
-  // profiled players — the weekly crawl and daily warm sweep both pass through here
-  // for every combo, so bridge coverage builds fleet-wide without user interaction.
-  await harvestEntryTalentPairs(
-    pickPool.slice(0, DISPLAY_N).map(({ telemetry, profileData }) => ({
-      telemetry,
-      profileNodes: deriveTalentStringAndProfileNodes(telemetry, profileData, treeInfo.specId).profileNodes,
-    }))
+  // Teach the trait→talent bridge and the loadout-string format (hash/selectors/apex
+  // caps — see harvestLoadoutStrings) from this combo's profiled players. The weekly
+  // crawl and daily warm sweep both pass through here for every combo, so both
+  // knowledge bases build fleet-wide without user interaction.
+  const derivedForHarvest = pickPool.slice(0, DISPLAY_N).map(({ telemetry, profileData }) =>
+    ({ telemetry, ...deriveTalentStringAndProfileNodes(telemetry, profileData, treeInfo.specId) })
   );
+  await harvestEntryTalentPairs(derivedForHarvest);
+  await harvestLoadoutStrings(className, derivedForHarvest.map(d => d.talentString));
 
   const allFightTrees = allTelemetryData.map(t => normalizeTalentTree(t?.event?.talentTree || []));
   const validTrees = allFightTrees.filter(t => t.length > 0);
@@ -183,7 +183,7 @@ async function getMetaBuildInner(
   const consensusMap = computeConsensus(validTrees, 0.5);
   const metaFrequencyPct = computeFrequencyPct(validTrees);
 
-  const overallPick = await resolveMetaBuildPick(pickPool, consensusMap, skeletonMap, treeInfo.specId, blizzardTokensByRegion);
+  const overallPick = await resolveMetaBuildPick(pickPool, consensusMap, skeletonMap, treeInfo.specId, blizzardTokensByRegion, className);
   const variants: MetaBuildVariant[] = [{
     id: null,
     name: 'Overall',
@@ -211,7 +211,7 @@ async function getMetaBuildInner(
     const pool = pickPool.filter((p) =>
       getActiveHeroTreeId(p.telemetry?.event?.talentTree || [], skeletonMap) === id
     );
-    const htPick = await resolveMetaBuildPick(pool, htMap, skeletonMap, treeInfo.specId, blizzardTokensByRegion);
+    const htPick = await resolveMetaBuildPick(pool, htMap, skeletonMap, treeInfo.specId, blizzardTokensByRegion, className);
     variants.push({
       id, name, count: pool.length,
       talentString: htPick?.talentString ?? null,

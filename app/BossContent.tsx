@@ -8,7 +8,7 @@ import {
   computeConsensus, getActiveHeroTreeId, makeTelemetry, computeFrequencyPct, computeRankDistribution,
   mapConcurrent, normalizeTalentTree, deriveTalentStringAndProfileNodes, blizzardCharacterProfileFetch,
   selectPlayersWithValidTelemetry, resolveMetaBuildPick,
-  harvestEntryTalentPairs, translateEntryIds,
+  harvestEntryTalentPairs, translateEntryIds, harvestLoadoutStrings, generatePlayerTalentString,
   SPEC_IDS, ENCHANT_SLOT_LABELS, ENCHANT_SLOT_ORDER,
 } from '../lib/wow';
 
@@ -943,15 +943,20 @@ export default async function BossContent({
     }
 
     // ── Build detailedRankingsBase (renderUrl = null; filled in gear phase) ─
-    const detailedRankingsBase = consensusRankings.map((player: any, idx: number) => {
+    const detailedRankingsBase = await Promise.all(consensusRankings.map(async (player: any, idx: number) => {
       const telemetryData = allTelemetryData[idx];
       const profileData = blizzardProfiles[idx];
-      const { talentString, profileNodes } = deriveTalentStringAndProfileNodes(telemetryData, profileData, treeInfo.specId);
+      let { talentString, profileNodes } = deriveTalentStringAndProfileNodes(telemetryData, profileData, treeInfo.specId);
+      // No matching saved loadout? Encode the fight build itself (see
+      // generatePlayerTalentString) — null only when codec knowledge is missing.
+      if (!talentString && idx < DISPLAY_N) {
+        talentString = await generatePlayerTalentString(className, treeInfo.specId, telemetryData, skeletonMap);
+      }
       // _tp/_tg are server-side cache compaction (see getWclRankings) — spreading them
       // into client props would bloat the RSC payload by tens of KB per player.
       const { _tp, _tg, ...playerClean } = player;
       return { ...playerClean, telemetry: telemetryData, talentString, renderUrl: null, profileNodes };
-    });
+    }));
 
     // Bridge trait-space entry ids to Blizzard-talent space (see harvestEntryTalentPairs
     // in lib/wow.ts): learn pairs from this render's own profiled players first — so a
@@ -959,6 +964,8 @@ export default async function BossContent({
     // per-node chosen-entry map so their card's choice nodes render the option they
     // actually took (previously always option A, whatever they picked).
     const entryTalentBridge = await harvestEntryTalentPairs(detailedRankingsBase);
+    // Same self-teaching pass for the loadout-string codec (hash/selectors/apex caps).
+    await harvestLoadoutStrings(className, detailedRankingsBase.map((p: any) => p.talentString));
     for (const p of detailedRankingsBase as any[]) {
       const ids: Record<number, number> = {};
       for (const row of p.telemetry?.event?.talentTree ?? []) {
@@ -1055,7 +1062,7 @@ export default async function BossContent({
       // the DISPLAY_N players whose profile happened to be eagerly fetched) so the real
       // closest-to-consensus player is never passed over just because their profile
       // wasn't in the initial batch — resolveMetaBuildPick fetches it on demand instead.
-      const overallPick = await resolveMetaBuildPick(pickPool, consensusMap, skeletonMap, treeInfo.specId, blizzardTokensByRegion);
+      const overallPick = await resolveMetaBuildPick(pickPool, consensusMap, skeletonMap, treeInfo.specId, blizzardTokensByRegion, className);
       metaTalentString = overallPick?.talentString ?? null;
       // Translated to Blizzard-talent space so NewFeature's comparison against the
       // layout's choiceA/BEntryId can actually match; where the popup's own profile-
@@ -1090,7 +1097,7 @@ export default async function BossContent({
           const htPool = pickPool.filter((p) =>
             getActiveHeroTreeId(p.telemetry?.event?.talentTree || [], skeletonMap) === id
           );
-          const htPick = await resolveMetaBuildPick(htPool, htMap, skeletonMap, treeInfo.specId, blizzardTokensByRegion);
+          const htPick = await resolveMetaBuildPick(htPool, htMap, skeletonMap, treeInfo.specId, blizzardTokensByRegion, className);
           htStr = htPick?.talentString ?? null;
           htEntryIds = translateEntryIds(htPick?.entryIds ?? {}, entryTalentBridge);
         }
