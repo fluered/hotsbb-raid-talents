@@ -1707,10 +1707,20 @@ local function PopulateCard(card, entry, encounterData)
     return 62
   end
 
-  card.badge:SetText((encounterData.sampleSize or variants[1].sampleSize or 0) .. " top parses")
+  -- Builds that fell back to Heroic (Mythic parses too thin for this boss yet) are
+  -- labelled so a Mythic raider knows what they're looking at; the weekly crawl swaps in
+  -- the Mythic build on its own once it exists.
+  local badge = (encounterData.sampleSize or variants[1].sampleSize or 0) .. " top parses"
+  local fellBack = encounterData.difficulty and META and META.raidDifficulty and encounterData.difficulty ~= META.raidDifficulty
+  if fellBack then
+    local label = (encounterData.difficulty == 4 and "Heroic") or (encounterData.difficulty == 5 and "Mythic") or ("difficulty " .. encounterData.difficulty)
+    badge = badge .. " · |cffffa040" .. label .. "|r"
+  end
+  card.badge:SetText(badge)
   if encounterData.fetchedAt then
     local days = math.floor(((GetServerTime and GetServerTime() or time()) - encounterData.fetchedAt / 1000) / 86400)
-    card.sub:SetText((entry.zone and (entry.zone .. " · ") or "") .. "Parses from " .. (days <= 0 and "today" or (days .. "d ago")))
+    card.sub:SetText((entry.zone and (entry.zone .. " · ") or "") .. "Parses from " .. (days <= 0 and "today" or (days .. "d ago"))
+      .. (fellBack and " · not enough Mythic kills yet, showing the Heroic build" or ""))
   else
     card.sub:SetText(entry.zone or "")
   end

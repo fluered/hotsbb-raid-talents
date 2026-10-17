@@ -33,6 +33,10 @@ from the top Warcraft Logs parses each week — inside the game. `/hbt` opens th
   Journal boss/dungeon pages that have a build for your spec, a draggable minimap button
   (middle-click hides it; `/hbt minimap` toggles), the AddOn Compartment, and a keybinding
   under *AddOns* in the Keybindings UI.
+- **Heroic fallback.** Raid builds come from the season's default difficulty (Mythic once
+  it has parses). A boss that is still thin on Mythic for a spec is crawled on Heroic
+  instead and its card is tagged "Heroic" with a one-line explanation; the next weekly
+  crawl swaps in the Mythic build as soon as it exists. Nothing to flip by hand.
 - **Data freshness** shows on the tab row ("Data updated N days ago"), turning orange after
   a week and red after two with an "update the addon" hint, since releases are weekly.
 - **Settings:** gear icon in the title bar (context menu), `/hbt config`, or the HotsBB

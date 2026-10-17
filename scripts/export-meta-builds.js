@@ -92,7 +92,7 @@ async function buildJobs() {
   for (const [className, specs] of Object.entries(SPEC_IDS)) {
     for (const [specName, specID] of Object.entries(specs)) {
       for (const boss of raidBosses) {
-        jobs.push({ className, specName, specID, encounterId: boss.id, encounterName: boss.name, difficulty: raidDifficulty });
+        jobs.push({ className, specName, specID, encounterId: boss.id, encounterName: boss.name, difficulty: raidDifficulty, isRaid: true });
       }
       for (const dungeon of dungeons) {
         jobs.push({ className, specName, specID, encounterId: dungeon.id, encounterName: dungeon.name, difficulty: MPLUS_DIFFICULTY });
@@ -198,6 +198,30 @@ async function fetchJob(job) {
   }
 }
 
+// Per-boss difficulty fallback. The season's default raid difficulty is Mythic once it has
+// parses, but the last bosses of a tier stay thin on Mythic for weeks (The Coiled Altar,
+// Ula'tek, Kith'ix in Season 2). A spec/boss combo that returns no_data or
+// insufficient_data on Mythic is retried on Heroic and tagged with the difficulty it
+// actually used, so the addon can label the card "Heroic". Once Mythic parses exist the
+// next crawl replaces it automatically — no human flips anything.
+const HEROIC_DIFFICULTY = 4;
+let fallbackCount = 0;
+async function fetchJobWithFallback(job) {
+  const result = await fetchJob(job);
+  const thin = result.json.status === 'no_data' || result.json.status === 'insufficient_data';
+  if (thin && job.isRaid && job.difficulty !== HEROIC_DIFFICULTY) {
+    const heroic = await fetchJob({ ...job, difficulty: HEROIC_DIFFICULTY });
+    if (heroic.json.status === 'ok') {
+      fallbackCount++;
+      heroic.json.data.difficulty = HEROIC_DIFFICULTY;
+      return heroic;
+    }
+    return result; // keep the original (more specific) status for the stats breakdown
+  }
+  if (result.json.status === 'ok') result.json.data.difficulty = job.difficulty;
+  return result;
+}
+
 async function mapConcurrent(items, limit, fn) {
   const results = new Array(items.length);
   let next = 0;
@@ -258,7 +282,8 @@ function luaEntries(entries) {
   const activeJobs = LIMIT ? jobs.slice(0, LIMIT) : jobs;
   console.log(`Total combos: ${jobs.length}. Running: ${activeJobs.length} (base=${BASE}, concurrency=${CONCURRENCY})`);
 
-  const results = await mapConcurrent(activeJobs, CONCURRENCY, fetchJob);
+  const results = await mapConcurrent(activeJobs, CONCURRENCY, fetchJobWithFallback);
+  if (fallbackCount > 0) console.log(`Heroic fallback used for ${fallbackCount} raid combo(s) that were thin on Mythic.`);
 
   const statusCounts = {};
   const bySpec = new Map(); // specID -> encounterName -> data
@@ -387,6 +412,9 @@ function luaEntries(entries) {
       lines.push(`    [${luaStr(encounterName)}] = {`);
       lines.push(`      sampleSize = ${data.sampleSize},`);
       lines.push(`      fetchedAt = ${data.fetchedAt},`);
+      // Raid only: the WCL difficulty these parses came from (5 Mythic, 4 Heroic). Core.lua
+      // labels the card when it differs from HotsBBTalentsMeta.raidDifficulty.
+      if (data.difficulty != null && data.difficulty !== MPLUS_DIFFICULTY) lines.push(`      difficulty = ${data.difficulty},`);
       lines.push('      variants = {');
       for (const v of data.variants) {
         lines.push('        {');
