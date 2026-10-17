@@ -56,7 +56,7 @@ jobs:
       - name: Check for changes
         id: check
         run: |
-          normalize() { sed -e '/^-- Generated /d' -e 's/fetchedAt = [0-9]*,/fetchedAt = 0,/'; }
+          normalize() { sed -e '/^-- Generated /d' -e 's/fetchedAt = [0-9]*,/fetchedAt = 0,/' -e 's/generatedAt = [0-9]*,/generatedAt = 0,/'; }
           if git diff --quiet -- addon/HotsBBTalents/Data.lua; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "No changes to Data.lua — export produced identical data or made no progress."

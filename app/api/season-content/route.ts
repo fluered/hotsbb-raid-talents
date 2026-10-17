@@ -25,11 +25,16 @@ export async function GET(request: NextRequest) {
       getSeasonState(),
     ]);
 
+    // journalId is Blizzard's JournalEncounter ID (WCL exposes it as `journalID`). The
+    // addon uses it in-game for localized boss names, boss portraits, and to recognise
+    // the pulled boss (EJ_GetEncounterInfo maps it to the ENCOUNTER_START dungeonEncounterID),
+    // none of which an English name string can do on a non-English client.
     const raidBosses = zones
       .filter((z: any) => z.name in MIDNIGHT_RAIDS)
       .flatMap((z: any) =>
-        (z.encounters ?? []).map((enc: any) => ({ id: enc.id, name: enc.name, zone: z.name }))
+        (z.encounters ?? []).map((enc: any) => ({ id: enc.id, name: enc.name, zone: z.name, journalId: enc.journalID ?? null }))
       );
+    const raidZones = zones.filter((z: any) => z.name in MIDNIGHT_RAIDS).map((z: any) => z.name);
 
     // The one seasonal change that still needs a human (see SeasonState.drift) —
     // surfaced here so every crawl/warm-sweep log prints it where it gets read.
@@ -38,8 +43,13 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(
       {
         status: 'ok',
-        dungeons: dungeons.map(d => ({ id: d.id, name: d.name })),
+        // blizzardInstanceId is the JournalInstance ID (same one the site uses for
+        // splash art) — in-game it gives localized dungeon names, the loading-screen
+        // art, and matches EJ_GetInstanceForMap(current map) for zone detection.
+        dungeons: dungeons.map(d => ({ id: d.id, name: d.name, blizzardInstanceId: d.blizzardInstanceId ?? null })),
         raidBosses,
+        raidZones,
+        expansionName: season.expansionName,
         // Resolved live (see getSeasonState): the crawl inherits the same raid
         // difficulty the site is currently defaulting to — Heroic during launch
         // weeks, Mythic once it opens — with no constant to keep in sync.
