@@ -5,7 +5,7 @@ import { unstable_cache } from 'next/cache';
 import BossContent from '../BossContent';
 import DungeonCardImage from '../../components/DungeonCardImage';
 import ClassNav from '../../components/ClassNav';
-import SiteFooter, { ADDON_RELEASES_URL } from '../../components/SiteFooter';
+import SiteFooter from '../../components/SiteFooter';
 import { ogImageMeta } from '../../lib/ogImage';
 import {
   getWclToken, getBlizzardToken, getDungeonRoster,
@@ -206,12 +206,10 @@ export default async function DungeonsPage(props: PageProps) {
               href={`/tier-list${activeRegion !== 'global' ? `?region=${activeRegion}` : ''}`}
               className="hidden sm:inline-flex px-2.5 py-1 rounded-md text-xs font-bold text-zinc-400 hover:text-zinc-200 transition-colors whitespace-nowrap"
             >Tier Lists</Link>
-            <a
-              href={ADDON_RELEASES_URL}
-              target="_blank"
-              rel="noopener noreferrer"
+            <Link
+              href="/addon"
               className="hidden sm:inline-flex px-2.5 py-1 rounded-md text-xs font-bold text-amber-500/80 hover:text-amber-400 transition-colors whitespace-nowrap"
-            >Addon ↗</a>
+            >Addon</Link>
             {/* Region toggle — Global pools every region WCL has (including CN); US+EU
                 narrows to just those two for anyone who wants a Western-only view. */}
             <div className="flex items-center gap-1 bg-zinc-900 rounded-lg p-0.5 border border-zinc-800/80">

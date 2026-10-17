@@ -15,6 +15,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     // Standalone sections — until 2026-10 nothing linked to these from the finder
     // and they weren't listed here either, so crawlers had no path to them at all.
     { url: `${BASE_URL}/dungeons`, changeFrequency: 'daily', priority: 0.8 },
+    { url: `${BASE_URL}/addon`, changeFrequency: 'weekly', priority: 0.7 },
     { url: `${BASE_URL}/tier-list`, changeFrequency: 'daily', priority: 0.8 },
     { url: `${BASE_URL}/tier-list/tanks`, changeFrequency: 'daily', priority: 0.7 },
     { url: `${BASE_URL}/tier-list/healers`, changeFrequency: 'daily', priority: 0.7 },

@@ -365,12 +365,10 @@ export default async function Home(props: PageProps) {
             href={`/tier-list?difficulty=${activeDifficulty}${activeRegion !== 'global' ? `&region=${activeRegion}` : ''}`}
             className="hidden sm:inline-flex px-2.5 py-1 rounded-md text-xs font-bold text-zinc-400 hover:text-zinc-200 transition-colors whitespace-nowrap"
           >Tier Lists</Link>
-          <a
-            href={ADDON_RELEASES_URL}
-            target="_blank"
-            rel="noopener noreferrer"
+          <Link
+            href="/addon"
             className="hidden sm:inline-flex px-2.5 py-1 rounded-md text-xs font-bold text-amber-500/80 hover:text-amber-400 transition-colors whitespace-nowrap"
-          >Addon ↗</a>
+          >Addon</Link>
           {/* Region toggle — Global pools every region WCL has (including CN); US+EU
               narrows to just those two for anyone who wants a Western-only view. */}
           <div className="flex items-center gap-1 bg-zinc-900 rounded-lg p-0.5 border border-zinc-800/80">
@@ -515,7 +513,7 @@ export default async function Home(props: PageProps) {
                         rel="noopener noreferrer"
                         className="px-3 py-1.5 rounded-full border border-amber-500/40 bg-amber-500/10 text-xs font-bold text-amber-300 hover:bg-amber-500/20 transition-colors"
                       >Download addon ↗</a>
-                      <span className="text-[11px] text-zinc-500">or add <span className="font-mono text-zinc-400">fluered/hotsbb-raid-talents</span> as a GitHub install in WowUp for auto-updates.</span>
+                      <Link href="/addon" className="text-[11px] font-bold text-zinc-400 hover:text-zinc-200 underline underline-offset-2 transition-colors">How to install with WowUp →</Link>
                     </div>
                   </div>
                 </div>
