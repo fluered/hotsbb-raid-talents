@@ -5,12 +5,14 @@ import { unstable_cache } from 'next/cache';
 import type { Metadata } from 'next';
 import BossContent from './BossContent';
 import BossPicker from './BossPicker';
-import DungeonCardImage from '../components/DungeonCardImage';
+import ClassNav from '../components/ClassNav';
+import SiteFooter, { ADDON_RELEASES_URL } from '../components/SiteFooter';
 import { ogImageMeta } from '../lib/ogImage';
 import {
   getWclToken, getBlizzardToken, getRaidStructure, getDungeonRoster,
   POPULAR_SPECS, SPEC_IDS, MIDNIGHT_RAIDS, CLASS_IDS,
   MPLUS_DIFFICULTY, HEALER_SPECS, getSeasonState,
+  parseRaidDifficulty,
 } from '../lib/wow';
 
 // BossContent awaits up to 50 concurrent WCL telemetry fetches + 25 Blizzard profile
@@ -32,7 +34,7 @@ export async function generateMetadata({ searchParams }: PageProps): Promise<Met
   const cls = sp.class;
   const spec = sp.spec;
   const bossName = sp.bossName;
-  const diff = sp.difficulty ? parseInt(sp.difficulty) : season.defaultRaidDifficulty;
+  const diff = parseRaidDifficulty(sp.difficulty, season.defaultRaidDifficulty);
   const diffLabel = diff === 4 ? 'Heroic' : 'Mythic';
 
   let title: string;
@@ -131,7 +133,7 @@ export default async function Home(props: PageProps) {
   const activeDungeonName = searchParams.dungeonName || null;
   const activeClass = searchParams.class || null;
   const activeSpec = searchParams.spec || null;
-  const activeDifficulty = searchParams.difficulty ? parseInt(searchParams.difficulty) : season.defaultRaidDifficulty;
+  const activeDifficulty = parseRaidDifficulty(searchParams.difficulty, season.defaultRaidDifficulty);
   const activeRegion = (searchParams.region === 'us-eu' ? 'us-eu' : 'global') as 'global' | 'us-eu';
   const isHealer = HEALER_SPECS.some(h => h.class === activeClass && h.spec === activeSpec);
   const activeMetric: 'hps' | 'dps' = searchParams.metric === 'dps' ? 'dps' : searchParams.metric === 'hps' ? 'hps' : (isHealer ? 'hps' : 'dps');
@@ -251,29 +253,29 @@ export default async function Home(props: PageProps) {
       })).then(() => {}),
     ];
 
-    if (activeClass) {
-      const classSpecs = POPULAR_SPECS.find(c => c.class === activeClass)?.specs ?? [];
-      fetches.push(
-        Promise.all(classSpecs.map(async (spec) => {
-          const id = SPEC_IDS[activeClass]?.[spec];
-          if (!id) return;
-          const iconUrl = await unstable_cache(
-            async () => {
-              const r = await fetch(
-                `https://us.api.blizzard.com/data/wow/media/playable-specialization/${id}?namespace=static-us`,
-                { headers: { 'Authorization': `Bearer ${blizzardToken}` } }
-              );
-              if (!r.ok) throw new Error(`Blizzard spec icon fetch failed: ${r.status}`);
-              return (await r.json()).assets?.[0]?.value ?? '';
-            },
-            [`blizzard-spec-icon-${id}`],
-            { revalidate: 86400 }
-          )().catch(() => '');
-          if (iconUrl) specIconMap[spec] = iconUrl;
-        })).then(() => {})
-      );
-
-    }
+    // Spec icons for EVERY class (not just the active one): the sidebar's hover flyout
+    // lists each class's specs. Keyed "Class/Spec" because spec names repeat across
+    // classes (Holy, Protection, Restoration, Frost). All cached a day, so this is
+    // ~39 cheap hits only on a cold cache.
+    fetches.push(
+      Promise.all(POPULAR_SPECS.flatMap(cls => cls.specs.map(async (spec) => {
+        const id = SPEC_IDS[cls.class]?.[spec];
+        if (!id) return;
+        const iconUrl = await unstable_cache(
+          async () => {
+            const r = await fetch(
+              `https://us.api.blizzard.com/data/wow/media/playable-specialization/${id}?namespace=static-us`,
+              { headers: { 'Authorization': `Bearer ${blizzardToken}` } }
+            );
+            if (!r.ok) throw new Error(`Blizzard spec icon fetch failed: ${r.status}`);
+            return (await r.json()).assets?.[0]?.value ?? '';
+          },
+          [`blizzard-spec-icon-${id}`],
+          { revalidate: 86400 }
+        )().catch(() => '');
+        if (iconUrl) specIconMap[`${cls.class}/${spec}`] = iconUrl;
+      }))).then(() => {})
+    );
 
     await Promise.all(fetches);
   } catch {}
@@ -331,7 +333,9 @@ export default async function Home(props: PageProps) {
             <Link href="/" className="font-black text-amber-400 tracking-widest uppercase text-xs hover:text-amber-300 transition-colors whitespace-nowrap">
               HotsBB Talents
             </Link>
-            {activeClass && (
+            {/* Only once an encounter is chosen — with both rosters on one page there is
+                no "mode" to name before that. */}
+            {activeClass && (activeBossId || activeDungeonId) && (
               <>
                 <span className="text-zinc-700">/</span>
                 <span className="text-[11px] font-bold text-zinc-400 uppercase tracking-widest whitespace-nowrap">
@@ -354,6 +358,19 @@ export default async function Home(props: PageProps) {
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0">
+          {/* Cross-links — the tier lists and the addon are otherwise unreachable from
+              the finder. Hidden below sm (the toggles already fill a phone header);
+              the homepage blocks and the footer cover small screens. */}
+          <Link
+            href={`/tier-list?difficulty=${activeDifficulty}${activeRegion !== 'global' ? `&region=${activeRegion}` : ''}`}
+            className="hidden sm:inline-flex px-2.5 py-1 rounded-md text-xs font-bold text-zinc-400 hover:text-zinc-200 transition-colors whitespace-nowrap"
+          >Tier Lists</Link>
+          <a
+            href={ADDON_RELEASES_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="hidden sm:inline-flex px-2.5 py-1 rounded-md text-xs font-bold text-amber-500/80 hover:text-amber-400 transition-colors whitespace-nowrap"
+          >Addon ↗</a>
           {/* Region toggle — Global pools every region WCL has (including CN); US+EU
               narrows to just those two for anyone who wants a Western-only view. */}
           <div className="flex items-center gap-1 bg-zinc-900 rounded-lg p-0.5 border border-zinc-800/80">
@@ -397,25 +414,22 @@ export default async function Home(props: PageProps) {
 
         {/* Sidebar — vertical on md+, horizontal scrollable strip on mobile */}
         <aside className="shrink-0 border-b md:border-b-0 md:border-r border-zinc-800/60 bg-black/30 overflow-x-auto md:overflow-x-hidden md:overflow-y-auto md:w-48">
-          <nav className="flex md:flex-col p-2 gap-1 md:gap-0 md:space-y-0.5 md:pt-3 w-max md:w-auto">
-            {POPULAR_SPECS.map(cls => {
-              const iconUrl = classIconMap[cls.class];
-              return (
-                <Link
-                  key={cls.class}
-                  href={activeMode === 'dungeons' ? getDungeonUrl({ class: cls.class, spec: null, dungeon: null }) : getFilterUrl({ class: cls.class, spec: null, boss: null, metric: null })}
-                  className={`flex items-center gap-2.5 whitespace-nowrap px-3 py-2 rounded-lg text-sm font-medium transition-all ${
-                    activeClass === cls.class
-                      ? `${cls.activeBg} ${cls.color} font-black`
-                      : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/50'
-                  }`}
-                >
-                  {iconUrl && <Image src={iconUrl} alt="" width={20} height={20} className="w-5 h-5 rounded-sm flex-shrink-0" />}
-                  {cls.class}
-                </Link>
-              );
-            })}
-          </nav>
+          <ClassNav
+            classes={POPULAR_SPECS.map(cls => ({
+              name: cls.class,
+              href: getFilterUrl({ class: cls.class, spec: null, boss: null, metric: null }),
+              iconUrl: classIconMap[cls.class] ?? '',
+              color: cls.color,
+              activeBg: cls.activeBg,
+              specs: cls.specs.map(spec => ({
+                name: spec,
+                href: getFilterUrl({ class: cls.class, spec, boss: null, metric: null }),
+                iconUrl: specIconMap[`${cls.class}/${spec}`] ?? '',
+              })),
+            }))}
+            activeClass={activeClass}
+            activeSpec={activeSpec}
+          />
         </aside>
 
         {/* Main */}
@@ -454,7 +468,7 @@ export default async function Home(props: PageProps) {
                       return (
                         <Link
                           key={cls.class}
-                          href={activeMode === 'dungeons' ? getDungeonUrl({ class: cls.class, spec: null, dungeon: null }) : getFilterUrl({ class: cls.class, spec: null, boss: null, metric: null })}
+                          href={getFilterUrl({ class: cls.class, spec: null, boss: null, metric: null })}
                           className={`flex flex-col items-center gap-2.5 p-3.5 rounded-xl border border-zinc-800/60 bg-zinc-900/20 hover:bg-zinc-900/60 hover:border-zinc-700 transition-all group`}
                         >
                           {iconUrl
@@ -469,32 +483,53 @@ export default async function Home(props: PageProps) {
                     })}
                   </div>
                 </div>
+                {/* Tier lists + addon — both existed for months with no way to reach
+                    them from here. */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-w-2xl mx-auto">
+                  <div className="rounded-xl border border-zinc-800/60 bg-zinc-900/20 p-4 space-y-2.5">
+                    <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Which spec is strongest?</p>
+                    <p className="text-sm text-zinc-400">Spec tier lists ranked from the same top parses, overall and per boss.</p>
+                    <div className="flex flex-wrap gap-2">
+                      {([
+                        ['DPS', '/tier-list'],
+                        ['Tanks', '/tier-list/tanks'],
+                        ['Healers', '/tier-list/healers'],
+                      ] as const).map(([label, path]) => (
+                        <Link
+                          key={path}
+                          href={`${path}?difficulty=${activeDifficulty}${activeRegion !== 'global' ? `&region=${activeRegion}` : ''}`}
+                          className="px-3 py-1.5 rounded-full border border-zinc-800 text-xs font-bold text-zinc-300 hover:text-white hover:border-zinc-600 transition-colors"
+                        >{label} tier list</Link>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-4 space-y-2.5">
+                    <p className="text-[10px] font-black text-amber-500/80 uppercase tracking-widest">In-game addon</p>
+                    <p className="text-sm text-zinc-400">
+                      <span className="font-bold text-zinc-200">HotsBB Talents</span> puts every build on this site inside WoW: type <span className="font-mono text-zinc-200">/hbt</span> and import the meta build for your boss or dungeon with one click.
+                    </p>
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                      <a
+                        href={ADDON_RELEASES_URL}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-3 py-1.5 rounded-full border border-amber-500/40 bg-amber-500/10 text-xs font-bold text-amber-300 hover:bg-amber-500/20 transition-colors"
+                      >Download addon ↗</a>
+                      <span className="text-[11px] text-zinc-500">or add <span className="font-mono text-zinc-400">fluered/hotsbb-raid-talents</span> as a GitHub install in WowUp for auto-updates.</span>
+                    </div>
+                  </div>
+                </div>
               </div>
             ) : (
               <>
-                {/* Mode toggle */}
-                <div className="flex items-center gap-1 bg-zinc-900/60 rounded-xl p-1 border border-zinc-800/60 w-fit">
-                  <Link
-                    href={getFilterUrl({ boss: null })}
-                    className={`px-5 py-1.5 rounded-lg text-sm font-bold transition-colors ${activeMode === 'raids' ? 'bg-zinc-700/60 text-zinc-100' : 'text-zinc-500 hover:text-zinc-300'}`}
-                  >
-                    Raid Talents
-                  </Link>
-                  <Link
-                    href={getDungeonUrl({ dungeon: null })}
-                    className={`px-5 py-1.5 rounded-lg text-sm font-bold transition-colors ${activeMode === 'dungeons' ? 'bg-zinc-700/60 text-zinc-100' : 'text-zinc-500 hover:text-zinc-300'}`}
-                  >
-                    Dungeon Talents
-                  </Link>
-                </div>
-
-                {/* Spec pills */}
+                {/* Spec pills. No Raid/Dungeon mode toggle any more: picking a spec shows
+                    every raid boss AND every dungeon at once (below), so the only click
+                    left is the encounter itself. ?mode=dungeons still exists in URLs —
+                    it just says which kind of encounter is selected. */}
                 <div className="flex flex-wrap gap-2">
                   {currentClassObj?.specs.map(spec => {
-                    const iconUrl = specIconMap[spec];
-                    const href = activeMode === 'dungeons'
-                      ? getDungeonUrl({ spec, dungeon: null })
-                      : getFilterUrl({ spec, boss: null, metric: null });
+                    const iconUrl = specIconMap[`${activeClass}/${spec}`];
+                    const href = getFilterUrl({ spec, boss: null, metric: null });
                     return (
                       <Link
                         key={spec}
@@ -532,92 +567,88 @@ export default async function Home(props: PageProps) {
                   </div>
                 )}
 
-                {activeMode === 'raids' ? (
-                  <>
-                    {activeSpec && (
-                      <BossPicker
-                        raids={activeRaids.map((raid: any) => ({
-                          id: raid.id,
+                {/* Encounter picker: every raid boss, then every dungeon. The raid and
+                    dungeon rosters (and card art) were already fetched on every load for
+                    both modes, so showing both costs nothing — only the selected
+                    encounter's build streams in below. */}
+                {activeSpec && (() => {
+                  const selectedDungeon = activeMode === 'dungeons' && activeDungeonId
+                    ? dungeons.find(d => d.id === activeDungeonId) ?? null
+                    : null;
+                  const selectedRaidBoss = activeMode === 'raids' && activeBossId ? activeBossId : null;
+                  const activeKey = selectedRaidBoss != null
+                    ? `${activeZone?.id ?? 'raid'}:${selectedRaidBoss}`
+                    : selectedDungeon ? `dungeons:${selectedDungeon.id}` : null;
+                  return (
+                    <BossPicker
+                      groups={[
+                        ...activeRaids.map((raid: any) => ({
+                          id: raid.id as number,
                           displayName: MIDNIGHT_RAIDS[raid.name] ?? raid.name,
                           bosses: raid.encounters.map((boss: any) => ({
                             id: boss.id,
                             name: boss.name,
                             href: getFilterUrl({ boss: boss.id, bossName: boss.name }),
                             imageUrl: bossImageMap[boss.id] ?? '',
+                            kind: 'boss' as const,
                             tags: bossTagMap[boss.id] ?? [],
                           })),
-                        }))}
-                        activeBossId={activeBossId}
-                        activeBossName={activeBossName}
-                        activeBossImageUrl={activeBossId ? (bossImageMap[activeBossId] ?? null) : null}
-                      />
-                    )}
-                    {activeSpec && !activeBossId && (
-                      <p className="text-xs text-zinc-600 text-center py-3">Select a boss above to view the meta talent build</p>
-                    )}
-                    {activeBossId && activeSpec && (
-                      <Suspense fallback={<BossLoadingSkeleton />}>
-                        <BossContent
-                          bossId={activeBossId}
-                          className={activeClass}
-                          spec={activeSpec}
-                          difficulty={activeDifficulty}
-                          nodeColors={nodeColors}
-                          region={activeRegion}
-                          wclZoneId={wclZoneId}
-                          metric={activeMetric}
-                        />
-                      </Suspense>
-                    )}
-                  </>
-                ) : (
-                  <>
-                    {activeSpec && (
-                      <div className="space-y-2">
-                        <p className="text-[10px] font-black text-zinc-600 uppercase tracking-widest">{season.expansionName} {season.seasonLabel} Dungeons</p>
-                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
-                          {dungeons.map(dungeon => {
-                            const isSelected = activeDungeonId === dungeon.id;
-                            return (
-                              <Link
-                                key={dungeon.id}
-                                href={getDungeonUrl({ dungeon: dungeon.id, dungeonName: dungeon.name })}
-                                className={`relative h-20 rounded-xl overflow-hidden flex items-end transition-all border ${isSelected ? 'border-amber-500/70 ring-2 ring-amber-500/25' : 'border-zinc-800/60 hover:border-zinc-600'}`}
-                              >
-                                <DungeonCardImage
-                                  primary={dungeonImageMap[dungeon.id]}
-                                  fallback={dungeon.wclCdnId ? `https://assets.rpglogs.com/img/warcraft/bosses/${dungeon.wclCdnId}-icon.jpg` : undefined}
-                                />
-                                <span className={`absolute inset-0 ${isSelected ? 'bg-gradient-to-t from-amber-950/90 via-black/50 to-transparent' : 'bg-gradient-to-t from-black/90 via-black/40 to-transparent'}`} />
-                                <span className={`relative px-2.5 py-2 text-[11px] font-bold leading-tight ${isSelected ? 'text-amber-300' : 'text-zinc-200'}`}>
-                                  {dungeon.name}
-                                </span>
-                              </Link>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
-                    {activeSpec && !activeDungeonId && (
-                      <p className="text-xs text-zinc-600 text-center py-3">Select a dungeon above to view the meta talent build</p>
-                    )}
-                    {activeDungeonId && activeSpec && (
-                      <Suspense fallback={<BossLoadingSkeleton />}>
-                        <BossContent
-                          bossId={activeDungeonId}
-                          className={activeClass}
-                          spec={activeSpec}
-                          difficulty={MPLUS_DIFFICULTY}
-                          nodeColors={nodeColors}
-                          region={activeRegion}
-                          wclZoneId={season.mplusZoneId}
-                        />
-                      </Suspense>
-                    )}
-                  </>
+                        })),
+                        ...(dungeons.length > 0 ? [{
+                          id: 'dungeons',
+                          displayName: `${season.expansionName} ${season.seasonLabel} Dungeons · Mythic+`,
+                          bosses: dungeons.map(dungeon => ({
+                            id: dungeon.id,
+                            name: dungeon.name,
+                            href: getDungeonUrl({ dungeon: dungeon.id, dungeonName: dungeon.name }),
+                            imageUrl: dungeonImageMap[dungeon.id] ?? '',
+                            imageFallbackUrl: dungeon.wclCdnId ? `https://assets.rpglogs.com/img/warcraft/bosses/${dungeon.wclCdnId}-icon.jpg` : undefined,
+                            kind: 'dungeon' as const,
+                            tags: [],
+                          })),
+                        }] : []),
+                      ]}
+                      activeKey={activeKey}
+                      activeName={selectedRaidBoss != null ? activeBossName : (selectedDungeon?.name ?? activeDungeonName)}
+                      activeImageUrl={selectedRaidBoss != null
+                        ? (bossImageMap[selectedRaidBoss] ?? null)
+                        : selectedDungeon ? (dungeonImageMap[selectedDungeon.id] ?? null) : null}
+                    />
+                  );
+                })()}
+                {activeSpec && !activeBossId && !activeDungeonId && (
+                  <p className="text-xs text-zinc-600 text-center py-3">Select a boss or dungeon above to view the meta talent build</p>
+                )}
+                {activeMode === 'raids' && activeBossId && activeSpec && (
+                  <Suspense fallback={<BossLoadingSkeleton />}>
+                    <BossContent
+                      bossId={activeBossId}
+                      className={activeClass}
+                      spec={activeSpec}
+                      difficulty={activeDifficulty}
+                      nodeColors={nodeColors}
+                      region={activeRegion}
+                      wclZoneId={wclZoneId}
+                      metric={activeMetric}
+                    />
+                  </Suspense>
+                )}
+                {activeMode === 'dungeons' && activeDungeonId && activeSpec && (
+                  <Suspense fallback={<BossLoadingSkeleton />}>
+                    <BossContent
+                      bossId={activeDungeonId}
+                      className={activeClass}
+                      spec={activeSpec}
+                      difficulty={MPLUS_DIFFICULTY}
+                      nodeColors={nodeColors}
+                      region={activeRegion}
+                      wclZoneId={season.mplusZoneId}
+                    />
+                  </Suspense>
                 )}
               </>
             )}
+            <SiteFooter difficulty={activeDifficulty} />
           </div>
         </main>
       </div>

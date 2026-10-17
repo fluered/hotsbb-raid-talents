@@ -2,51 +2,61 @@
 
 import { useState, useEffect, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
+import DungeonCardImage from '../components/DungeonCardImage';
 
-interface Boss {
+interface Card {
   id: number;
   name: string;
   href: string;
   imageUrl: string;
+  // Dungeon art is a wide tile that reads best as a dimmed cover image (with a
+  // client-side fallback when Blizzard's journal image 404s); boss art is a square
+  // portrait that sits at the right edge.
+  kind?: 'boss' | 'dungeon';
+  imageFallbackUrl?: string;
   tags: string[];
 }
 
-interface Raid {
-  id: number;
+interface Group {
+  // Raids use their WCL zone id; the dungeon group uses a string key. Selection is
+  // matched on `${group.id}:${card.id}` so the two id spaces can never collide.
+  id: number | string;
   displayName: string;
-  bosses: Boss[];
+  bosses: Card[];
 }
 
 export default function BossPicker({
-  raids,
-  activeBossId,
-  activeBossName,
-  activeBossImageUrl,
+  groups,
+  activeKey,
+  activeName,
+  activeImageUrl,
 }: {
-  raids: Raid[];
-  activeBossId: number | null;
-  activeBossName: string | null;
-  activeBossImageUrl: string | null;
+  groups: Group[];
+  activeKey: string | null;
+  activeName: string | null;
+  activeImageUrl: string | null;
 }) {
-  const [expanded, setExpanded] = useState(!activeBossId);
-  const [pendingBossId, setPendingBossId] = useState<number | null>(null);
+  const [expanded, setExpanded] = useState(!activeKey);
+  const [pendingKey, setPendingKey] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
   const router = useRouter();
 
   useEffect(() => {
-    setExpanded(!activeBossId);
-    if (!isPending) setPendingBossId(null);
-  }, [activeBossId, isPending]);
+    setExpanded(!activeKey);
+    if (!isPending) setPendingKey(null);
+  }, [activeKey, isPending]);
 
   return (
     <div className="space-y-5">
-      {/* Mobile collapsed chip — shown when a boss is selected and picker is closed */}
-      {activeBossId && !expanded && (
+      {/* Mobile collapsed chip — shown when something is selected and the picker is
+          closed. With raids AND dungeons stacked the open picker is ~9 rows on a phone,
+          so this matters more than it used to. */}
+      {activeKey && !expanded && (
         <div className="md:hidden flex items-center gap-2.5 px-3 py-2 bg-zinc-900/60 border border-zinc-700/50 rounded-xl">
-          {activeBossImageUrl && (
-            <img src={activeBossImageUrl} alt="" className="w-7 h-7 rounded-lg object-cover flex-shrink-0" />
+          {activeImageUrl && (
+            <img src={activeImageUrl} alt="" className="w-7 h-7 rounded-lg object-cover flex-shrink-0" />
           )}
-          <span className="text-sm font-bold text-amber-300 flex-1 truncate">{activeBossName}</span>
+          <span className="text-sm font-bold text-amber-300 flex-1 truncate">{activeName}</span>
           <button
             onClick={() => setExpanded(true)}
             className="text-[11px] font-semibold text-zinc-500 hover:text-zinc-300 transition-colors whitespace-nowrap"
@@ -56,27 +66,29 @@ export default function BossPicker({
         </div>
       )}
 
-      {/* Full grid — always on desktop, conditionally on mobile */}
-      <div className={activeBossId && !expanded ? 'hidden md:block' : 'space-y-5'}>
-        {raids.map(raid => (
-          <div key={raid.id}>
+      {/* Full grids — always on desktop, conditionally on mobile */}
+      <div className={activeKey && !expanded ? 'hidden md:block space-y-5' : 'space-y-5'}>
+        {groups.map(group => (
+          <div key={group.id}>
             <div className="flex items-center gap-3 mb-3">
               <span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest whitespace-nowrap">
-                {raid.displayName}
+                {group.displayName}
               </span>
               <div className="flex-1 h-px bg-zinc-800/60" />
             </div>
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2">
-              {raid.bosses.map(boss => {
-                const isSelected = activeBossId === boss.id;
+              {group.bosses.map(boss => {
+                const key = `${group.id}:${boss.id}`;
+                const isSelected = activeKey === key;
+                const isDungeon = boss.kind === 'dungeon';
                 return (
                   <a
-                    key={boss.id}
+                    key={key}
                     href={boss.href}
                     onMouseEnter={() => router.prefetch(boss.href)}
                     onClick={(e) => {
                       e.preventDefault();
-                      setPendingBossId(boss.id);
+                      setPendingKey(key);
                       startTransition(() => router.push(boss.href));
                       setExpanded(false);
                     }}
@@ -86,21 +98,28 @@ export default function BossPicker({
                         : 'border-zinc-800/60 hover:border-zinc-600'
                     }`}
                   >
-                    <div
-                      className="absolute inset-0 bg-zinc-900"
-                      style={boss.imageUrl ? {
-                        backgroundImage: `url(${boss.imageUrl})`,
-                        backgroundSize: 'contain',
-                        backgroundRepeat: 'no-repeat',
-                        backgroundPosition: 'right center',
-                      } : undefined}
-                    />
+                    {isDungeon ? (
+                      <>
+                        <div className="absolute inset-0 bg-zinc-900" />
+                        <DungeonCardImage primary={boss.imageUrl || undefined} fallback={boss.imageFallbackUrl} />
+                      </>
+                    ) : (
+                      <div
+                        className="absolute inset-0 bg-zinc-900"
+                        style={boss.imageUrl ? {
+                          backgroundImage: `url(${boss.imageUrl})`,
+                          backgroundSize: 'contain',
+                          backgroundRepeat: 'no-repeat',
+                          backgroundPosition: 'right center',
+                        } : undefined}
+                      />
+                    )}
                     <span className={`absolute inset-0 ${
                       isSelected
                         ? 'bg-gradient-to-t from-amber-950/95 via-black/50 to-black/10'
                         : 'bg-gradient-to-t from-black/90 via-black/40 to-black/10'
                     }`} />
-                    {isPending && pendingBossId === boss.id && (
+                    {isPending && pendingKey === key && (
                       <span className="absolute top-2 right-2 w-3 h-3 rounded-full border-2 border-amber-400 border-t-transparent animate-spin" />
                     )}
                     <div className="relative px-2.5 py-2 flex flex-col gap-1 min-w-0">

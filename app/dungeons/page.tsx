@@ -4,6 +4,8 @@ import type { Metadata } from 'next';
 import { unstable_cache } from 'next/cache';
 import BossContent from '../BossContent';
 import DungeonCardImage from '../../components/DungeonCardImage';
+import ClassNav from '../../components/ClassNav';
+import SiteFooter, { ADDON_RELEASES_URL } from '../../components/SiteFooter';
 import { ogImageMeta } from '../../lib/ogImage';
 import {
   getWclToken, getBlizzardToken, getDungeonRoster,
@@ -130,26 +132,25 @@ export default async function DungeonsPage(props: PageProps) {
         )().catch(() => '');
         if (iconUrl) classIconMap[className] = iconUrl;
       }),
-      // Spec icons for selected class
-      ...(activeClass
-        ? (POPULAR_SPECS.find(c => c.class === activeClass)?.specs ?? []).map(async (spec) => {
-            const id = SPEC_IDS[activeClass]?.[spec];
-            if (!id) return;
-            const iconUrl = await unstable_cache(
-              async () => {
-                const r = await fetch(
-                  `https://us.api.blizzard.com/data/wow/media/playable-specialization/${id}?namespace=static-us`,
-                  { headers: { Authorization: `Bearer ${blizzardToken}` } }
-                );
-                if (!r.ok) throw new Error(`Blizzard spec icon fetch failed: ${r.status}`);
-                return (await r.json()).assets?.[0]?.value ?? '';
-              },
-              [`blizzard-spec-icon-${id}`],
-              { revalidate: 604800 }
-            )().catch(() => '');
-            if (iconUrl) specIconMap[spec] = iconUrl;
-          })
-        : []),
+      // Spec icons for EVERY class — the sidebar's hover flyout lists each class's
+      // specs. Keyed "Class/Spec" since spec names repeat across classes.
+      ...POPULAR_SPECS.flatMap(cls => cls.specs.map(async (spec) => {
+        const id = SPEC_IDS[cls.class]?.[spec];
+        if (!id) return;
+        const iconUrl = await unstable_cache(
+          async () => {
+            const r = await fetch(
+              `https://us.api.blizzard.com/data/wow/media/playable-specialization/${id}?namespace=static-us`,
+              { headers: { Authorization: `Bearer ${blizzardToken}` } }
+            );
+            if (!r.ok) throw new Error(`Blizzard spec icon fetch failed: ${r.status}`);
+            return (await r.json()).assets?.[0]?.value ?? '';
+          },
+          [`blizzard-spec-icon-${id}`],
+          { revalidate: 604800 }
+        )().catch(() => '');
+        if (iconUrl) specIconMap[`${cls.class}/${spec}`] = iconUrl;
+      })),
     ]);
   } catch {}
 
@@ -201,6 +202,16 @@ export default async function DungeonsPage(props: PageProps) {
             <Link href="/" className="hidden sm:block text-[11px] font-bold text-zinc-500 hover:text-zinc-300 transition-colors uppercase tracking-widest px-2">
               Raid Talents
             </Link>
+            <Link
+              href={`/tier-list${activeRegion !== 'global' ? `?region=${activeRegion}` : ''}`}
+              className="hidden sm:inline-flex px-2.5 py-1 rounded-md text-xs font-bold text-zinc-400 hover:text-zinc-200 transition-colors whitespace-nowrap"
+            >Tier Lists</Link>
+            <a
+              href={ADDON_RELEASES_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="hidden sm:inline-flex px-2.5 py-1 rounded-md text-xs font-bold text-amber-500/80 hover:text-amber-400 transition-colors whitespace-nowrap"
+            >Addon ↗</a>
             {/* Region toggle — Global pools every region WCL has (including CN); US+EU
                 narrows to just those two for anyone who wants a Western-only view. */}
             <div className="flex items-center gap-1 bg-zinc-900 rounded-lg p-0.5 border border-zinc-800/80">
@@ -225,25 +236,22 @@ export default async function DungeonsPage(props: PageProps) {
 
         {/* Sidebar */}
         <aside className="shrink-0 border-b md:border-b-0 md:border-r border-zinc-800/60 bg-black/30 overflow-x-auto md:overflow-x-hidden md:overflow-y-auto md:w-48">
-          <nav className="flex md:flex-col p-2 gap-1 md:gap-0 md:space-y-0.5 md:pt-3 w-max md:w-auto">
-            {POPULAR_SPECS.map(cls => {
-              const iconUrl = classIconMap[cls.class];
-              return (
-                <Link
-                  key={cls.class}
-                  href={getFilterUrl({ class: cls.class, spec: null, dungeon: null })}
-                  className={`flex items-center gap-2.5 whitespace-nowrap px-3 py-2 rounded-lg text-sm font-medium transition-all ${
-                    activeClass === cls.class
-                      ? `${cls.activeBg} ${cls.color} font-black`
-                      : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/50'
-                  }`}
-                >
-                  {iconUrl && <img src={iconUrl} alt="" className="w-5 h-5 rounded-sm flex-shrink-0" />}
-                  {cls.class}
-                </Link>
-              );
-            })}
-          </nav>
+          <ClassNav
+            classes={POPULAR_SPECS.map(cls => ({
+              name: cls.class,
+              href: getFilterUrl({ class: cls.class, spec: null, dungeon: null }),
+              iconUrl: classIconMap[cls.class] ?? '',
+              color: cls.color,
+              activeBg: cls.activeBg,
+              specs: cls.specs.map(spec => ({
+                name: spec,
+                href: getFilterUrl({ class: cls.class, spec, dungeon: null }),
+                iconUrl: specIconMap[`${cls.class}/${spec}`] ?? '',
+              })),
+            }))}
+            activeClass={activeClass}
+            activeSpec={activeSpec}
+          />
         </aside>
 
         {/* Main */}
@@ -284,7 +292,7 @@ export default async function DungeonsPage(props: PageProps) {
                 {/* Spec pills */}
                 <div className="flex flex-wrap gap-2">
                   {currentClassObj?.specs.map(spec => {
-                    const iconUrl = specIconMap[spec];
+                    const iconUrl = specIconMap[`${activeClass}/${spec}`];
                     return (
                       <Link
                         key={spec}
@@ -367,6 +375,7 @@ export default async function DungeonsPage(props: PageProps) {
                 )}
               </>
             )}
+            <SiteFooter />
           </div>
         </main>
       </div>

@@ -1,9 +1,10 @@
 import React, { Suspense } from 'react';
 import Link from 'next/link';
 import type { Metadata } from 'next';
-import { getWclToken, getRaidStructure, MIDNIGHT_RAIDS, DPS_SPECS, getSeasonState } from '../../lib/wow';
+import { getWclToken, getRaidStructure, MIDNIGHT_RAIDS, DPS_SPECS, getSeasonState, parseRaidDifficulty } from '../../lib/wow';
 import TierListContent from './TierListContent';
 import OverallTierListContent from './OverallTierListContent';
+import SiteFooter from '../../components/SiteFooter';
 import { ogImageMeta } from '../../lib/ogImage';
 
 // See app/page.tsx for why: heavy concurrent WCL fetching across many specs can
@@ -18,7 +19,7 @@ export async function generateMetadata({ searchParams }: PageProps): Promise<Met
   const sp = await searchParams;
   const season = await getSeasonState();
   const bossName = sp.bossName;
-  const diff = sp.difficulty ? parseInt(sp.difficulty) : season.defaultRaidDifficulty;
+  const diff = parseRaidDifficulty(sp.difficulty, season.defaultRaidDifficulty);
   const diffLabel = diff === 4 ? 'Heroic' : 'Mythic';
   const title = bossName
     ? `${diffLabel} ${bossName} DPS Tier List | HotsBB`
@@ -41,7 +42,7 @@ export async function generateMetadata({ searchParams }: PageProps): Promise<Met
 export default async function TierListPage({ searchParams }: PageProps) {
   const sp = await searchParams;
   const season = await getSeasonState();
-  const activeDifficulty = sp.difficulty ? parseInt(sp.difficulty) : season.defaultRaidDifficulty;
+  const activeDifficulty = parseRaidDifficulty(sp.difficulty, season.defaultRaidDifficulty);
   const activeRegion = sp.region === 'us-eu' ? 'us-eu' : 'global';
   const activeBossId = sp.boss ? parseInt(sp.boss) : null;
 
@@ -168,6 +169,7 @@ export default async function TierListPage({ searchParams }: PageProps) {
             />
           </Suspense>
         )}
+        <SiteFooter difficulty={activeDifficulty} />
       </div>
     </div>
   );
