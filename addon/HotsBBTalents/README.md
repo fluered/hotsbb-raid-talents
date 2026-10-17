@@ -24,7 +24,11 @@ from the top Warcraft Logs parses each week — inside the game. `/hbt` opens th
   auto-switch (save only) and the replace behaviour.
 - **Copy** shows the raw Blizzard import string (paste into Talents › Import); **Link**
   posts Blizzard's native clickable talent-build link to chat. Shift-click Copy does the
-  same. These need no addon API at all and are the fallback if Import ever breaks.
+  same. Both are on every card and every hero-tree pill: when the data ships a string
+  it is used as-is, otherwise Core.lua encodes one from the talent entries
+  (`EncodeEntries`, the inverse of the decoder, with the current tree hash and a
+  synthesized hero-tree selector). These need no addon API and are the fallback if
+  Import ever breaks.
 - **Where am I.** Inside a dungeon the matching card is highlighted and scrolled to
   (matched by instance map ID, so it works on any client locale). In a raid, the last boss
   you pulled (`ENCOUNTER_START`) is highlighted — wipe, `/hbt`, and you're on the right card.

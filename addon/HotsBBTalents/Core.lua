@@ -507,6 +507,91 @@ local function IsSubTreeSelectionNode(configID, nodeID)
   return isSel
 end
 
+-- ── Loadout string encoder ───────────────────────────────────────────────────
+-- Inverse of the decoder above (mirrors ClassTalentImportExportMixin:WriteLoadoutHeader/
+-- WriteLoadoutContent) so a build that arrived as WCL rows only still gets a Blizzard
+-- import string for Copy / Link. Nodes are written in GetTreeNodes order; the hero-tree
+-- selection node is synthesized from the variant's hero tree when the rows lack it (WCL
+-- telemetry records the hero talents themselves, not the selector).
+local function EncodeEntries(entries, configID, treeID, heroTreeId)
+  if not (ExportUtil and ExportUtil.MakeExportDataStream and C_Traits.GetTreeNodes) then return nil end
+  local specID = GetCurrentSpecID()
+  if not specID then return nil end
+
+  local byNode = {}
+  for _, e in ipairs(entries) do
+    local s = byNode[e.nodeID]
+    if not s then
+      s = { purchased = 0, granted = 0, entry = e.selectionEntryID }
+      byNode[e.nodeID] = s
+    end
+    s.purchased = s.purchased + (e.ranksPurchased or 0)
+    s.granted = s.granted + (e.ranksGranted or 0)
+  end
+
+  -- Hero tree: explicit on the variant, else inferred from any hero node in the rows.
+  local heroID = heroTreeId
+  if not heroID then
+    for nodeID in pairs(byNode) do
+      local info = C_Traits.GetNodeInfo(configID, nodeID)
+      if info and info.subTreeID and info.subTreeID > 0 then heroID = info.subTreeID; break end
+    end
+  end
+
+  local stream = ExportUtil.MakeExportDataStream()
+  stream:AddValue(BIT_WIDTH_HEADER_VERSION, (C_Traits.GetLoadoutSerializationVersion and C_Traits.GetLoadoutSerializationVersion()) or 2)
+  stream:AddValue(BIT_WIDTH_SPEC_ID, specID)
+  local hash = C_Traits.GetTreeHash and C_Traits.GetTreeHash(treeID)
+  for i = 1, 16 do stream:AddValue(8, (type(hash) == "table" and hash[i]) or 0) end
+
+  local T = Enum.TraitNodeType
+  for _, nodeID in ipairs(C_Traits.GetTreeNodes(treeID)) do
+    local info = C_Traits.GetNodeInfo(configID, nodeID)
+    local s = byNode[nodeID]
+    if info and info.type == T.SubTreeSelection then
+      local idx
+      if heroID and info.entryIDs then
+        for i, entryID in ipairs(info.entryIDs) do
+          local ei = C_Traits.GetEntryInfo(configID, entryID)
+          if ei and ei.subTreeID == heroID then idx = i; break end
+        end
+      end
+      if idx then
+        stream:AddValue(1, 1)        -- selected
+        stream:AddValue(1, 1)        -- purchased
+        stream:AddValue(1, 0)        -- not partially ranked
+        stream:AddValue(1, 1)        -- choice node
+        stream:AddValue(2, idx - 1)
+      else
+        stream:AddValue(1, 0)
+      end
+    elseif info and s and (s.purchased > 0 or s.granted > 0) then
+      stream:AddValue(1, 1)
+      if s.purchased > 0 then
+        stream:AddValue(1, 1)
+        local maxRanks = info.maxRanks or 1
+        local partial = s.purchased < maxRanks
+        stream:AddValue(1, partial and 1 or 0)
+        if partial then stream:AddValue(BIT_WIDTH_RANKS_PURCHASED, s.purchased) end
+        local isChoice = info.type == T.Selection
+        stream:AddValue(1, isChoice and 1 or 0)
+        if isChoice then
+          local idx = 1
+          for i, entryID in ipairs(info.entryIDs or {}) do
+            if entryID == s.entry then idx = i; break end
+          end
+          stream:AddValue(2, idx - 1)
+        end
+      else
+        stream:AddValue(1, 0) -- granted only
+      end
+    else
+      stream:AddValue(1, 0)
+    end
+  end
+  return stream:GetExportString()
+end
+
 -- Purchased-rank map of an entries array: nodeID -> { ranks, entry }. Only purchased
 -- ranks count (granted ranks are free and identical in every build of the spec). Tiered
 -- nodes contribute several rows; their total rank is compared, not the entry.
@@ -610,6 +695,22 @@ local function DiffVariant(variant)
   variant._diff, variant._diffState, variant._diffEntries, variant._diffDropped = diff, current, entries, dropped
   return diff, entries, dropped
 end
+
+-- The Blizzard import string for a variant: the one shipped with the data when present,
+-- otherwise encoded from the resolved entries (cached per active config).
+local function StringForVariant(variant)
+  if variant.importString then return variant.importString end
+  local configID, treeID = GetActiveConfig()
+  if not configID then return nil end
+  if variant._encoded ~= nil and variant._encodedFor == configID then return variant._encoded or nil end
+  local entries = EntriesForVariant(variant, configID, treeID)
+  local ok, str = false, nil
+  if entries then ok, str = pcall(EncodeEntries, entries, configID, treeID, variant.heroTreeId) end
+  variant._encoded = (ok and type(str) == "string" and str ~= "") and str or false
+  variant._encodedFor = configID
+  return variant._encoded or nil
+end
+HBT.StringForVariant = StringForVariant
 
 -- ── Import & apply ───────────────────────────────────────────────────────────
 -- A small state machine driven by trait events, so the whole flow is one click:
@@ -815,7 +916,7 @@ function HBT.ImportBuild(bossName, variant)
 
   importState = {
     token = {}, name = name, specID = specID, configID = configID, treeID = treeID,
-    entries = entries, dropped = dropped, importString = variant.importString,
+    entries = entries, dropped = dropped, importString = StringForVariant(variant),
   }
 
   -- Prefer switching to a saved loadout that already equals the build (keeps that
@@ -1494,7 +1595,7 @@ local function RefreshCardButtons(card, variants)
   card.importBtn.label:SetText(db.autoApply and "Import & Apply" or "Import")
   card.importBtn:SetEnabled(not InCombatLockdown())
 
-  local importString = variant.importString
+  local importString = StringForVariant(variant)
   if importString then
     card.copyBtn:SetScript("OnClick", function()
       if IsModifiedClick and IsModifiedClick("CHATLINK") then PostChatLink(importString) else ShowCopyBox(importString) end
@@ -2336,5 +2437,6 @@ HBT._internal = {
   DiffVariant = DiffVariant, DiffStates = DiffStates, StateFromConfig = StateFromConfig,
   StateFromEntries = StateFromEntries, EntriesForVariant = EntriesForVariant,
   GetActiveConfig = GetActiveConfig, LoadoutNameFor = LoadoutNameFor, ParseEntries = ParseEntries,
+  EncodeEntries = EncodeEntries, DecodeLoadoutString = DecodeLoadoutString, StringForVariant = StringForVariant,
   ParseFreq = ParseFreq, DetectCurrentContent = DetectCurrentContent, cardPool = cardPool, frame = frame,
 }
