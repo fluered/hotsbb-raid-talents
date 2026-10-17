@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getWclToken, getDungeonRoster, getRaidStructure, getSeasonState, MIDNIGHT_RAIDS } from '../../../lib/wow';
+import { getWclToken, getDungeonRoster, getRaidStructure, getSeasonState, MIDNIGHT_RAIDS, RAID_JOURNAL_ID_FALLBACK } from '../../../lib/wow';
 import { isAuthorizedInternalCaller } from '../../../lib/internalAuth';
 
 export const dynamic = 'force-dynamic';
@@ -32,7 +32,12 @@ export async function GET(request: NextRequest) {
     const raidBosses = zones
       .filter((z: any) => z.name in MIDNIGHT_RAIDS)
       .flatMap((z: any) =>
-        (z.encounters ?? []).map((enc: any) => ({ id: enc.id, name: enc.name, zone: z.name, journalId: enc.journalID ?? null }))
+        (z.encounters ?? []).map((enc: any) => ({
+          id: enc.id,
+          name: enc.name,
+          zone: z.name,
+          journalId: (enc.journalID || RAID_JOURNAL_ID_FALLBACK[enc.id]) ?? null,
+        }))
       );
     const raidZones = zones.filter((z: any) => z.name in MIDNIGHT_RAIDS).map((z: any) => z.name);
 

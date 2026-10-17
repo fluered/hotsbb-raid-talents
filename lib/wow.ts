@@ -1656,6 +1656,25 @@ export const MIDNIGHT_RAIDS: Record<string, string> = {
   'The Venomous Abyss': 'The Venomous Abyss',
 };
 
+// WCL encounter ID → Blizzard JournalEncounter ID, used by /api/season-content when
+// WCL's own `journalID` field comes back 0 (it does for the whole Venomous Abyss zone).
+// The addon needs the journal ID for boss portraits and localized names; it also scans
+// the in-game Encounter Journal at login as a fallback, so a missing row here degrades
+// to "English name, no portrait" rather than breaking anything. Verified 2026-10-17
+// against Raider.IO's encounterJournalIds table for the same WCL IDs.
+export const RAID_JOURNAL_ID_FALLBACK: Record<number, number> = {
+  3470: 2888, // Nek'zali the Soulcoiler
+  3445: 2874, // Entombed Sentinels
+  3455: 2882, // Vashnik the Malignant
+  3497: 2894, // The Lost Explorers
+  3420: 2871, // Sszorak
+  3421: 2887, // The Twin Fangs
+  3429: 2883, // The Coiled Altar
+  3492: 2895, // Ula'tek
+  3379: 2849, // Nymrissa Wavecaller
+  3513: 2896, // Kith'ix
+};
+
 // Raid difficulty default and the current M+ zone are no longer hand-flipped
 // constants — getSeasonState() resolves both from live WCL data (Mythic-parse probe;
 // newest active "Mythic+ Season N" zone). MPLUS_ZONE_ID survives only as the

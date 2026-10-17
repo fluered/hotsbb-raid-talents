@@ -84,8 +84,9 @@ async function buildJobs() {
     expansionName: season.expansionName ?? null,
     raidDifficulty,
     raidZones: season.raidZones ?? [...new Set(raidBosses.map(b => b.zone).filter(Boolean))],
-    raidBosses: raidBosses.map(b => ({ name: b.name, wclId: b.id, journalId: b.journalId ?? null, zone: b.zone ?? null })),
-    dungeons: dungeons.map(d => ({ name: d.name, wclId: d.id, journalInstanceId: d.blizzardInstanceId ?? null })),
+    // WCL reports journalID 0 when it has none — emit nil so Core.lua treats it as missing.
+    raidBosses: raidBosses.map(b => ({ name: b.name, wclId: b.id, journalId: b.journalId || null, zone: b.zone ?? null })),
+    dungeons: dungeons.map(d => ({ name: d.name, wclId: d.id, journalInstanceId: d.blizzardInstanceId || null })),
   };
   const jobs = [];
   for (const [className, specs] of Object.entries(SPEC_IDS)) {
@@ -229,22 +230,27 @@ function luaStr(s) {
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, c => '\\' + c.charCodeAt(0)) + '"';
 }
 
-// Serializes a {nodeID: number} map (frequencyPct or entryIds) into a Lua table
-// literal keyed by numeric nodeID, e.g. { [94962] = 100, [94966] = 87, }
-function luaNumMap(obj) {
-  const keys = Object.keys(obj || {});
-  if (keys.length === 0) return '{}';
-  return '{ ' + keys.map(k => `[${k}] = ${obj[k]}`).join(', ') + ' }';
+// Compact string encodings, decoded lazily in Core.lua (ParseFreq / ParseEntries).
+// The previous nested-table form created ~100k tiny Lua tables at file load for
+// 1,500 variants — several MB of live memory and a noticeable login hitch — when a
+// given session only ever looks at one spec's ~17 encounters. A string costs one
+// allocation and is parsed only when its card is actually rendered or imported.
+
+// {nodeID: pct} → "nodeID:pct,nodeID:pct,…" (sorted by nodeID for stable diffs)
+function luaFreq(obj) {
+  const keys = Object.keys(obj || {}).map(Number).sort((a, b) => a - b);
+  if (keys.length === 0) return 'nil';
+  return '"' + keys.map(k => `${k}:${obj[k]}`).join(',') + '"';
 }
 
-// Serializes wclEntries — built entirely from WCL telemetry, no Blizzard character
-// profile involved — into a Lua array ready for C_ClassTalents.ImportLoadout, skipping
-// the string encode/decode round-trip the old importString path needed.
+// wclEntries — built entirely from WCL telemetry, no Blizzard character profile
+// involved — as "nodeID:selectionEntryID:ranksPurchased[:ranksGranted]" rows, order
+// preserved (Core.lua re-sorts into tree order anyway). ranksGranted is omitted when 0.
 function luaEntries(entries) {
   if (!entries || entries.length === 0) return 'nil';
-  return '{ ' + entries.map(e =>
-    `{nodeID=${e.nodeID},ranksGranted=${e.ranksGranted},ranksPurchased=${e.ranksPurchased},selectionEntryID=${e.selectionEntryID}}`
-  ).join(', ') + ' }';
+  return '"' + entries.map(e =>
+    `${e.nodeID}:${e.selectionEntryID}:${e.ranksPurchased}` + ((e.ranksGranted || 0) > 0 ? `:${e.ranksGranted}` : '')
+  ).join(',') + '"';
 }
 
 (async () => {
@@ -388,11 +394,11 @@ function luaEntries(entries) {
         lines.push(`          heroTreeName = ${luaStr(v.name)},`);
         lines.push(`          sampleSize = ${v.count},`);
         lines.push(`          importString = ${luaStr(v.talentString)},`);
-        // frequencyPct feeds the in-game "your build vs meta" diff (how contested each
-        // pick is). entryIds was dropped: fully redundant with wclEntries and nothing
-        // in Core.lua read it — ~15% of a 13MB file.
-        lines.push(`          frequencyPct = ${luaNumMap(v.frequencyPct)},`);
-        lines.push(`          wclEntries = ${luaEntries(v.wclEntries)},`);
+        // freq feeds the in-game "your build vs meta" diff (how contested each pick
+        // is). entryIds was dropped: fully redundant with the entries and nothing in
+        // Core.lua read it — ~15% of a 13MB file.
+        lines.push(`          freq = ${luaFreq(v.frequencyPct)},`);
+        lines.push(`          entries = ${luaEntries(v.wclEntries)},`);
         lines.push('        },');
       }
       lines.push('      },');

@@ -1,139 +1,152 @@
 # HotsBB Talents (addon)
 
-**Import confirmed working in-game.**
+Meta talent builds for your current spec, per raid boss and per Mythic+ dungeon, derived
+from the top Warcraft Logs parses each week — inside the game. `/hbt` opens the panel.
 
-## What this does
+## What it does
 
-`/hbt` opens a panel for your **currently active spec** (detected
-automatically), with **Raid** / **Dungeons** tabs across the top.
+- **One card per encounter** on Raid / Dungeons tabs, for the whole season roster. Cards
+  without enough parses yet read "No data yet" so coverage is honest ("Raid: 8 of 10 have
+  builds"). Boss portraits and dungeon icons come from the client's Encounter Journal.
+- **Hero-tree pills** when a spec runs more than one hero tree for an encounter, with each
+  tree's share of the sample and its icon. The pill matching your active hero tree is
+  selected by default; your choice is remembered per encounter.
+- **Build vs. your talents.** Every card shows "Active build" (green) or "N talents
+  differ". Hover for the list (take / drop / change, by talent name); click, or press
+  **Preview**, to light the differences up on the real talent tree (green/red/orange child
+  textures on Blizzard's talent buttons — nothing of Blizzard's is modified).
+- **Import & Apply** creates a loadout named `HBT <boss> <hero>` and switches to it in one
+  click. The flow: pre-flight checks (combat, inspect mode, Starter Build, unsaved talent
+  changes) → if a saved loadout already equals the build, just switch to it → otherwise
+  replace an older HBT loadout of the same name → `C_ClassTalents.ImportLoadout` →
+  wait for `TRAIT_CONFIG_CREATED` → `LoadConfig(id, autoApply)`. Every outcome is reported
+  as an on-screen banner plus (optionally) a chat line. Settings can turn off the
+  auto-switch (save only) and the replace behaviour.
+- **Copy** shows the raw Blizzard import string (paste into Talents › Import); **Link**
+  posts Blizzard's native clickable talent-build link to chat. Shift-click Copy does the
+  same. These need no addon API at all and are the fallback if Import ever breaks.
+- **Where am I.** Inside a dungeon the matching card is highlighted and scrolled to
+  (matched by instance map ID, so it works on any client locale). In a raid, the last boss
+  you pulled (`ENCOUNTER_START`) is highlighted — wipe, `/hbt`, and you're on the right card.
+- **Shortcuts:** a button above the loadout dropdown on Blizzard's Talents screen (stacks
+  above Raider.IO's when that addon is present), a "HotsBB build" button on Encounter
+  Journal boss/dungeon pages that have a build for your spec, a draggable minimap button
+  (middle-click hides it; `/hbt minimap` toggles), the AddOn Compartment, and a keybinding
+  under *AddOns* in the Keybindings UI.
+- **Data freshness** shows on the tab row ("Data updated N days ago"), turning orange after
+  a week and red after two with an "update the addon" hint, since releases are weekly.
+- **Settings:** gear icon in the title bar (context menu), `/hbt config`, or the HotsBB
+  Talents category in Interface Options. Panel is movable, resizable (grip bottom-right)
+  and scalable; position and size persist.
 
-Each tab lists the **full expected roster** for that content — all ~10 raid
-bosses or all 8 dungeons — not just whichever ones happen to have bundled
-data. Bosses/dungeons without enough parses yet show as a muted "No data
-yet" card, so the panel is honest about coverage instead of silently only
-showing a sparse handful and leaving you to wonder why. The subtitle also
-shows a running count, e.g. "Raid: 3 of 10 have data."
-
-Each populated card has:
-- **Hero-tree pills** (only shown when a spec has more than one build for
-  that encounter) — pick which variant the buttons below act on.
-- **Import** — decodes the build string client-side, then applies it via
-  `C_ClassTalents.ImportLoadout`. Confirmed working.
-- **Copy** — shows the raw import string in a selectable box, to paste into
-  the built-in Talents panel's own Import dialog by hand. Always works
-  regardless of Import's status, since it doesn't depend on any decode logic.
-
-**Auto-jump to your current zone**: opening `/hbt` while inside a dungeon or
-raid instance calls `GetInstanceInfo()` (a local client call, no data
-dependency) to pick the right tab automatically. For dungeons the instance
-name matches a roster entry directly, so it also scrolls straight to that
-card and highlights it gold. Raids can only auto-select the Raid tab, since
-the zone name doesn't map to one specific boss.
-
-**Visual style**: cards use the same border/background textures `GameTooltip`
-itself uses (`Interface\Tooltips\UI-Tooltip-Border/Background`) rather than a
-flat single-color rectangle, and the panel title shows your class + spec icon
-— both sourced directly from the client (`CLASS_ICON_TCOORDS` atlas,
-`GetSpecializationInfo`'s icon fileID), no network fetch involved. Looked
-into Blizzard's newer nine-slice panel system (`NineSliceUtil.ApplyLayout`,
-used by more modern screens like Renown/Delves) for an even more current
-look, but couldn't get fully verified real layout-name strings without
-guessing — went with the tooltip-border route instead since it's guaranteed
-correct. Worth revisiting if someone finds the right layout names.
-
-(Earlier version was one flat row per boss+hero-tree combo — unusable once
-real data covers 8-10 bosses and 8 dungeons per season, each with up to 3
-hero-tree variants. Redesigned around cards-per-encounter with pills for
-variants, plus the full roster placeholder above, specifically to handle
-that scale.)
-
-A build-compliance overlay (colored borders on the real Talents UI showing
-how your selections differ from a chosen meta build) was prototyped and
-removed — it touched Blizzard's protected Talents UI, which was judged not
-worth the risk/maintenance for the value it added. `Data.lua` still bundles
-`frequencyPct`/`entryIds` per node (harmless unused fields) in case that's
-revisited later; nothing in `Core.lua` reads them anymore.
+Slash commands: `/hbt`, `/hbt raid`, `/hbt dungeons`, `/hbt config`, `/hbt minimap`,
+`/hbt clean` (delete every `HBT …` loadout for this spec, with confirmation), `/hbt reset`.
 
 ## Install
 
-**Via WowUp (recommended — auto-updates):** in WowUp, use its GitHub
-install option and point it at `fluered/hotsbb-raid-talents`. WowUp tracks
-the repo's GitHub Releases and updates automatically whenever a new one
-goes out — no manual redownloading needed.
+**Via WowUp (recommended — auto-updates):** use WowUp's GitHub install option and point it
+at `fluered/hotsbb-raid-talents`. It tracks the repo's GitHub Releases.
 
-**Manual:** copy this whole `HotsBBTalents` folder into your WoW
-`_retail_/Interface/AddOns/` directory, then `/reload` or restart the
-client. Enable it at the character select AddOns list if it isn't
-already. You'll need to re-download and re-copy it yourself for every
-future update this way.
+**Manual:** copy this `HotsBBTalents` folder into `_retail_/Interface/AddOns/` and `/reload`.
 
-## Import status: confirmed working
+## Files
 
-First attempt: `ImportLoadout(configID, {}, name, importString)` reported
-success but produced a completely **empty** loadout. Root cause: `entries`
-(an array of `{nodeID, ranksGranted, ranksPurchased, selectionEntryID}`
-records) is what Blizzard's API actually uses to build the loadout —
-the raw `importString` argument is not auto-decoded internally as hoped.
-Passing `entries = {}` is exactly why nothing got selected.
+| File | Purpose |
+| --- | --- |
+| `Core.lua` | All UI and logic. No libraries, no shipped art. |
+| `Data.lua` | Generated by `scripts/export-meta-builds.js`. Never hand-edit. |
+| `Bindings.xml` | The toggle keybinding. Auto-loaded by the client; **not** listed in the TOC (listing it registers the binding twice). |
+| `HotsBBTalents.toc` | Saved variables `HotsBBTalentsDB` (account: settings, panel geometry) and `HotsBBTalentsCharDB` (per character: pill choices). |
 
-Second attempt (current `Core.lua`): the loadout string is decoded into real
-`entries` client-side before calling `ImportLoadout` — a faithful line-by-line
-Lua port of Blizzard's own decode logic (`ClassTalentImportExportMixin` in
-`Interface/AddOns/Blizzard_PlayerSpells/ClassTalents/Blizzard_ClassTalentImportExport.lua`),
-using `ExportUtil.MakeImportDataStream` (Blizzard's own built-in bitstream
-reader) rather than a custom base64 implementation. **Verified working
-in-game** on Hunter Beast Mastery — the correct talents were applied.
+## Data.lua schema (version 2)
 
-**Expected side effect, not a bug:** applying a substantially different
-build can leave empty slots on your action bars where abilities you no
-longer have used to sit. The game doesn't try to guess where changed/new
-spells should go. Your spellbook is unaffected — just re-drag what you want
-from the spellbook (`P`) back onto your bars. This happens with Blizzard's
-own built-in Import too on a big enough build change; it's not specific to
-this addon.
+```lua
+HotsBBTalentsMeta = { schemaVersion = 2, generatedAt = <epoch s>, seasonLabel = "Season 2",
+  expansionName = "Midnight", raidDifficulty = 5, raidDifficultyName = "Mythic", raidZones = {...} }
+HotsBBTalentsRoster = {
+  raid     = { { name = "Nek'zali the Soulcoiler", wclId = 3470, journalId = 2888, zone = "The Venomous Abyss" }, ... },
+  dungeons = { { name = "Altar of Fangs", wclId = 12993, journalInstanceId = 1322 }, ... },
+}
+HotsBBTalentsData = {
+  [specID] = {
+    ["<encounter name>"] = {
+      sampleSize = 50, fetchedAt = <epoch ms>,
+      variants = {
+        { heroTreeId = nil, heroTreeName = "Overall", sampleSize = 50,
+          importString = "C4DA…" or nil,          -- Blizzard string, when a clean one exists
+          freq    = "nodeID:pct,nodeID:pct,…",      -- share of top parses taking each node
+          entries = "nodeID:entryID:ranks[:granted],…" },  -- ImportLoadoutEntryInfo rows from WCL telemetry
+        { heroTreeId = 39, heroTreeName = "Sunfury", ... },
+      },
+    },
+  },
+}
+```
 
-## `.toc` Interface number
+The roster travels with the data on purpose: Core.lua used to hardcode the season's bosses
+and dungeons, and after the Season 2 rollover it kept the Season 1 names while Data.lua
+moved on, so every card read "No data yet" for weeks. `wclId` doubles as Blizzard's
+DungeonEncounter ID (what `ENCOUNTER_START` reports); `journalId` / `journalInstanceId`
+are Encounter Journal IDs for localized names, portraits and the journal shortcut. A
+missing `journalId` is filled in at login by scanning the journal's newest tier once.
 
-`## Interface: 120000` — confirmed working in-game (import tested
-successfully), so this is correct for the current client. If it ever shows
-as "out of date" after a future patch, check the real number with
-`/dump select(4, GetBuildInfo())` in-game and update the TOC accordingly.
+`freq` and `entries` are compact strings parsed on first use: the previous nested-table
+form created ~100k small Lua tables at load (13 MB file, visible login hitch) for data a
+session almost never touches. Core.lua also still accepts the old `frequencyPct` /
+`wclEntries` table fields.
 
-## Data
+## How Import works (and why it's not a plain `ImportLoadout` call)
 
-`Data.lua` is generated by `scripts/export-meta-builds.js`, which calls
-`/api/meta-build` across every class/spec x boss/dungeon combo — and,
-since it fetches the current season's dungeon/raid roster live from
-`/api/season-content` rather than a hardcoded list, it automatically
-follows whatever content a new season rotates in (see `MPLUS_ZONE_ID`/
-`MIDNIGHT_RAIDS` in `lib/wow.ts` — those are the only two values that need
-updating when a new season launches).
+`C_ClassTalents.ImportLoadout(configID, entries, name, importString)` uses only
+`entries` — the raw string is not decoded internally. `entries` are built one of two ways:
 
-This runs automatically via `.github/workflows/export-meta-builds.yml` —
-scheduled Tuesday evenings (after WoW's weekly patch/reset), or trigger it
-manually anytime from the repo's Actions tab. On success it commits the
-regenerated `Data.lua`, bumps the TOC version, and publishes a GitHub
-Release with the addon zipped up — that release is what WowUp picks up.
+1. **WCL telemetry rows** (`entries`), preferred: already `{nodeID, selectionEntryID,
+   ranksPurchased, ranksGranted}`. Each row is validated against the live tree
+   (`ResolveWclEntries`): a single-option node with a stale entry ID is corrected, a
+   multi-option node that no longer matches is dropped (and counted — the banner says so),
+   Tiered nodes (Benediction, Tigereye Brew…) are rebuilt from the total rank count in the
+   client's canonical entry order, and the result is sorted into `GetTreeNodes` order so
+   prerequisites precede their children.
+2. **Blizzard string** (`importString`), fallback: a line-by-line port of
+   `ClassTalentImportExportMixin` using `ExportUtil.MakeImportDataStream`.
 
-To run it by hand instead (e.g. for local testing against a dev server):
+The same two paths feed the diff badge, so what you see is what Import will do.
+
+Expected side effect, not a bug: applying a substantially different build can leave empty
+action-bar slots. Blizzard's own import does the same. If a saved loadout already equals
+the build, the addon switches to it instead of creating a new one, which keeps that
+loadout's bar layout.
+
+## Interface number
+
+`## Interface: 120100, 120105`. If the client flags the addon out of date after a patch,
+check `/dump select(4, GetBuildInfo())` and update the TOC.
+
+## Regenerating Data.lua
+
+`.github/workflows/export-meta-builds.yml` runs Tuesday evenings (after reset): it calls
+`scripts/export-meta-builds.js` against the live site, which pulls the season roster from
+`/api/season-content` and every spec × encounter from `/api/meta-build`, writes Data.lua,
+bumps the TOC version and publishes a GitHub Release (what WowUp picks up). A plain code
+change to Core.lua is released by `release-addon-code.yml` on push without a crawl.
+
+By hand, against a dev server:
 
 ```
 node scripts/export-meta-builds.js --base http://localhost:3000 --concurrency 2
 ```
 
-Keep concurrency low (2-ish) against localhost — each combo already fans
-out to ~75 sub-requests internally against Blizzard/WCL, so higher
-concurrency triggers rate limiting fast on a single dev-server instance.
-The scheduled/manual GitHub Actions runs target the live site directly at
-concurrency 6, which is fine there since production isn't bottlenecked by
-a single local dev server.
+Keep concurrency low locally: each combo fans out to ~75 WCL/Blizzard sub-requests.
 
-**Important:** `getWclRankings()` (in `lib/wow.ts`) has its own internal
-fetch-level cache separate from whatever `unstable_cache` wrapper the caller
-uses. Always pass its final `noCache` argument as `true` when wrapping it in
-your own cache (as this script's underlying API route does) — otherwise a
-boss/spec/difficulty combo that returned zero rankings once gets stuck
-reporting `no_data` for up to 7 days regardless of how often you regenerate,
-even after real parses exist. This bit the addon directly: a first export
-run showed only 1-2 of 18 encounters with data per spec; after the fix,
-most specs show 17-18 of 18.
+**Pipeline gotcha:** `getWclRankings()` (lib/wow.ts) has its own fetch-level cache; always
+pass `noCache = true` when wrapping it in another cache, or an encounter that once returned
+zero rankings stays `no_data` for a week regardless of regeneration.
+
+## Testing without the game
+
+There is no Lua interpreter on the dev machine. `luaparse` (npm) syntax-checks both Lua
+files; a `fengari` (Lua VM in JS) harness with a stubbed WoW API loads Data.lua and
+Core.lua, fires the login events, opens the panel, and runs the import state machine end
+to end. Both live in the Claude scratchpad, not the repo; `HotsBBTalents._internal`
+exposes the pieces the harness inspects. In-game behaviour of the Blizzard frame hooks
+(talent-screen button anchor, journal button, tree preview) still needs a real client.

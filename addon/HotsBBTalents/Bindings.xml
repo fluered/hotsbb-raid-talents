@@ -1,0 +1,6 @@
+<Bindings>
+  <!-- Loaded automatically by the client from the addon root; do NOT list this file in the
+       TOC as well, or every binding registers twice. Display strings are the
+       BINDING_HEADER_HOTSBBTALENTS / BINDING_NAME_HOTSBBTALENTS_TOGGLE globals in Core.lua. -->
+  <Binding name="HOTSBBTALENTS_TOGGLE" header="HOTSBBTALENTS" category="ADDONS">HotsBBTalents_Toggle()</Binding>
+</Bindings>
