@@ -3,6 +3,7 @@ import Link from 'next/link';
 import type { Metadata } from 'next';
 import SiteFooter, { ADDON_RELEASES_URL, ADDON_REPO_URL } from '../../components/SiteFooter';
 import SiteShell from '../../components/SiteShell';
+import SiteNavLinks from '../../components/SiteNavLinks';
 import { ogImageMeta } from '../../lib/ogImage';
 
 // Static install guide for the in-game addon. Linked from every page header, the
@@ -77,12 +78,15 @@ export default function AddonPage() {
             <span className="hidden sm:inline text-zinc-700">/</span>
             <span className="hidden sm:inline text-xs font-black text-zinc-300 uppercase tracking-widest">In-game Addon</span>
           </div>
-          <a
-            href={ADDON_RELEASES_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="px-3 py-1.5 rounded-full border border-amber-500/40 bg-amber-500/10 text-xs font-bold text-amber-300 hover:bg-amber-500/20 transition-colors whitespace-nowrap"
-          >Latest release ↗</a>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <SiteNavLinks active="addon" />
+            <a
+              href={ADDON_RELEASES_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-3 py-1.5 rounded-full border border-amber-500/40 bg-amber-500/10 text-xs font-bold text-amber-300 hover:bg-amber-500/20 transition-colors whitespace-nowrap"
+            >Latest release ↗</a>
+          </div>
         </div>
       </header>
 

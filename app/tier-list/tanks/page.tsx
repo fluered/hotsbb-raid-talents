@@ -6,6 +6,7 @@ import TierListContent from '../TierListContent';
 import OverallTierListContent from '../OverallTierListContent';
 import SiteFooter from '../../../components/SiteFooter';
 import SiteShell from '../../../components/SiteShell';
+import SiteNavLinks from '../../../components/SiteNavLinks';
 import { ogImageMeta } from '../../../lib/ogImage';
 
 // See app/page.tsx for why: heavy concurrent WCL fetching across many specs can
@@ -93,6 +94,7 @@ export default async function TankTierListPage({ searchParams }: PageProps) {
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0">
+            <SiteNavLinks active="tiers" difficulty={activeDifficulty} />
             {/* Difficulty */}
             <div className="flex items-center gap-1 bg-zinc-900 rounded-lg p-0.5 border border-zinc-800/80">
               <Link href={url({ difficulty: 4 })}
