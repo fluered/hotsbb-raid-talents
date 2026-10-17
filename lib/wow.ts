@@ -973,9 +973,51 @@ async function getWikiHeroTreeIconUrl(name: string): Promise<string> {
   }
 }
 
+// Blizzard's static-data API throttles in short bursts (per-second) on top of its hourly
+// budget. The two talent-tree endpoints below are the only Blizzard calls a page or the
+// addon crawl can't survive without, and from 2026-09 their 429s were the single
+// dominant entry in the production error log — every one a plain Error with no
+// isRateLimit flag, so /api/meta-build reported it as a generic failure, the export
+// script gave it two quick retries and moved on, and >1% of combos failing tripped
+// the partial-run guard: the weekly addon release failed 4 of 6 runs. Two fixes:
+// absorb the short burst throttles here with a couple of bounded, Retry-After-aware
+// retries, and when that's not enough throw the same isRateLimit shape WCL uses so
+// the crawl pauses and resumes instead of counting a failure.
+async function blizzardStaticFetch(url: string, accessToken: string, what: string, revalidate: number): Promise<Response> {
+  const MAX_ATTEMPTS = 3;
+  let response!: Response;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    response = await fetch(url, { headers: { 'Authorization': `Bearer ${accessToken}` }, next: { revalidate } });
+    if (response.status !== 429) return response;
+    // Honor Retry-After when Blizzard sends one, but never block a page render for
+    // long — anything beyond a few seconds is the hourly budget, not a burst: retrying
+    // would just burn more budget and sleep, so hand that straight to the caller's
+    // rate-limit path (the crawl pauses for the real Retry-After; pages show the
+    // "high demand" state).
+    const retryAfterSec = parseFloat(response.headers.get('retry-after') ?? '');
+    if (Number.isFinite(retryAfterSec) && retryAfterSec > 5) break;
+    if (attempt < MAX_ATTEMPTS) {
+      const waitMs = Number.isFinite(retryAfterSec) ? retryAfterSec * 1000 : 1000 * attempt;
+      await new Promise(r => setTimeout(r, waitMs));
+    }
+  }
+  const err: any = new Error(`${what} rate-limited by the Blizzard API (429).`);
+  err.isRateLimit = true;
+  err.retryAfter = response.headers.get('retry-after');
+  throw err;
+}
+
+// ?difficulty= from the URL → 4 (Heroic) | 5 (Mythic), or the season default. A bare
+// parseInt let any typo or crawler junk (`?difficulty=abc`) become NaN, which then
+// rode along in every link the page built.
+export function parseRaidDifficulty(raw: string | undefined, fallback: 4 | 5): 4 | 5 {
+  const n = raw ? parseInt(raw) : NaN;
+  return n === 4 || n === 5 ? n : fallback;
+}
+
 export async function getTalentTreeLayout(treeId: number, specId: number, accessToken: string) {
   const url = `https://us.api.blizzard.com/data/wow/talent-tree/${treeId}/playable-specialization/${specId}?namespace=static-us&locale=en_US`;
-  const response = await fetch(url, { headers: { 'Authorization': `Bearer ${accessToken}` }, next: { revalidate: 86400 } });
+  const response = await blizzardStaticFetch(url, accessToken, 'Talent tree fetch', 86400);
   if (!response.ok) throw new Error(`Talent tree fetch failed: ${response.status}`);
   const data = await response.json();
 
@@ -1168,10 +1210,10 @@ export function getCachedTalentLayout(treeId: number, specId: number, accessToke
 export async function getTalentTreeId(specName: string, className: string, accessToken: string): Promise<{ treeId: number; specId: number } | null> {
   const specId = SPEC_IDS[className]?.[specName];
   if (!specId) return null;
-  const response = await fetch('https://us.api.blizzard.com/data/wow/talent-tree/index?namespace=static-us&locale=en_US', {
-    headers: { 'Authorization': `Bearer ${accessToken}` },
-    next: { revalidate: 604800 },
-  });
+  const response = await blizzardStaticFetch(
+    'https://us.api.blizzard.com/data/wow/talent-tree/index?namespace=static-us&locale=en_US',
+    accessToken, 'Talent tree index', 604800,
+  );
   if (!response.ok) throw new Error(`Talent tree index failed: ${response.status}`);
   const trees: any[] = (await response.json()).spec_talent_trees || [];
   const match = trees.find((t: any) => {

@@ -5,7 +5,7 @@ const PAGES = [
   // Base shell routes with no params — cheap, and the point isn't fresh data here
   // (that's what the rest of this list + warm-talent-layouts handle), it's just
   // keeping each route's serverless function itself from going fully cold between
-  // visits. Free-tier Vercel caps cron jobs at once/day, so this weekly run is the
+  // visits. Free-tier Vercel caps cron jobs at once/day, so this daily run is the
   // only warming these routes get; it won't meaningfully prevent every cold start,
   // but it's the best available without paying for more frequent crons.
   '/',
