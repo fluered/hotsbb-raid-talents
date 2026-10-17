@@ -5,6 +5,7 @@ import { getWclToken, getRaidStructure, MIDNIGHT_RAIDS, TANK_SPECS, getSeasonSta
 import TierListContent from '../TierListContent';
 import OverallTierListContent from '../OverallTierListContent';
 import SiteFooter from '../../../components/SiteFooter';
+import SiteShell from '../../../components/SiteShell';
 import { ogImageMeta } from '../../../lib/ogImage';
 
 // See app/page.tsx for why: heavy concurrent WCL fetching across many specs can
@@ -107,6 +108,7 @@ export default async function TankTierListPage({ searchParams }: PageProps) {
         </div>
       </header>
 
+      <SiteShell difficulty={activeDifficulty}>
       <div className="max-w-screen-md mx-auto px-4 md:px-6 py-6 space-y-6">
         {/* Role tabs */}
         {(() => {
@@ -169,6 +171,7 @@ export default async function TankTierListPage({ searchParams }: PageProps) {
         )}
         <SiteFooter difficulty={activeDifficulty} />
       </div>
+      </SiteShell>
     </div>
   );
 }

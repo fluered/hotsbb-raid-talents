@@ -5,6 +5,7 @@ import { getWclToken, getRaidStructure, MIDNIGHT_RAIDS, HEALER_SPECS, getSeasonS
 import TierListContent from '../TierListContent';
 import OverallTierListContent from '../OverallTierListContent';
 import SiteFooter from '../../../components/SiteFooter';
+import SiteShell from '../../../components/SiteShell';
 import { ogImageMeta } from '../../../lib/ogImage';
 
 // See app/page.tsx for why: heavy concurrent WCL fetching across many specs can
@@ -23,10 +24,10 @@ export async function generateMetadata({ searchParams }: PageProps): Promise<Met
   const diffLabel = diff === 4 ? 'Heroic' : 'Mythic';
   const title = bossName
     ? `${diffLabel} ${bossName} Healer Tier List | HotsBB`
-    : `${season.expansionName} ${season.seasonLabel} Healer DPS Tier List — All Bosses | HotsBB`;
+    : `${season.expansionName} ${season.seasonLabel} Healer HPS Tier List — All Bosses | HotsBB`;
   const description = bossName
-    ? `Healer spec tier list for ${diffLabel} ${bossName} — ranked by avg DPS of top 50 parses.`
-    : `Overall healer spec tier list for WoW ${season.expansionName} ${season.seasonLabel} — avg DPS across all raid bosses, ranked from top parses.`;
+    ? `Healer spec tier list for ${diffLabel} ${bossName} — ranked by avg HPS of top 50 parses.`
+    : `Overall healer spec tier list for WoW ${season.expansionName} ${season.seasonLabel} — avg HPS across all raid bosses, ranked from top parses.`;
   return {
     title,
     description,
@@ -112,6 +113,7 @@ export default async function HealerTierListPage({ searchParams }: PageProps) {
         </div>
       </header>
 
+      <SiteShell difficulty={activeDifficulty}>
       <div className="max-w-screen-md mx-auto px-4 md:px-6 py-6 space-y-6">
         {/* Role tabs */}
         <div className="flex items-center gap-1 bg-zinc-900/60 rounded-xl p-1 border border-zinc-800/60 self-start w-fit">
@@ -146,8 +148,8 @@ export default async function HealerTierListPage({ searchParams }: PageProps) {
               region={activeRegion}
               wclToken={wclToken}
               specs={HEALER_SPECS}
-              metric="dps"
-              footerNote="Tiers by avg DPS relative to peak healer spec on this boss · excludes DPS and tank roles · click any row to view the consensus talent build"
+              metric="hps"
+              footerNote="Tiers by avg HPS relative to peak healer spec on this boss · excludes DPS and tank roles · click any row to view the consensus talent build"
             />
           </Suspense>
         ) : (
@@ -159,14 +161,15 @@ export default async function HealerTierListPage({ searchParams }: PageProps) {
               difficulty={activeDifficulty}
               region={activeRegion}
               role="healer"
-              metric="dps"
-              title={`${season.expansionName} ${season.seasonLabel} Raid Healer DPS Tier List`}
-              footerNote="Avg DPS per spec across all Midnight bosses · excludes DPS and tanks · click any row to view talent builds"
+              metric="hps"
+              title={`${season.expansionName} ${season.seasonLabel} Raid Healer HPS Tier List`}
+              footerNote="Avg HPS per spec across all Midnight bosses · excludes DPS and tanks · click any row to view talent builds"
             />
           </Suspense>
         )}
         <SiteFooter difficulty={activeDifficulty} />
       </div>
+      </SiteShell>
     </div>
   );
 }

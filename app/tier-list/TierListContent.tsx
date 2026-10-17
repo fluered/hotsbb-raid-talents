@@ -144,15 +144,19 @@ export default async function TierListContent({
 
   const diffLabel = difficulty === 5 ? 'Mythic' : 'Heroic';
 
+  // Healers rank by HPS (WCL metric: hps); everyone else by DPS. Same pipeline, same cache keys.
+
+  const metricLabel = metric === 'hps' ? 'HPS' : 'DPS';
+
   const schemaData = {
     '@context': 'https://schema.org',
     '@type': 'ItemList',
     name: `${diffLabel} ${bossName} Tier List`,
-    description: `${diffLabel} spec rankings for ${bossName} · avg DPS of top 50 parses · ${region.toUpperCase()}`,
+    description: `${diffLabel} spec rankings for ${bossName} · avg ${metricLabel} of top 50 parses · ${region.toUpperCase()}`,
     itemListElement: tiered.map(s => ({
       '@type': 'ListItem',
       position: s.globalRank,
-      name: `${s.spec} ${s.cls} — ${s.tier} tier · ${fmtDps(s.avgDps)} avg DPS`,
+      name: `${s.spec} ${s.cls} — ${s.tier} tier · ${fmtDps(s.avgDps)} avg ${metricLabel}`,
     })),
   };
 
@@ -162,7 +166,7 @@ export default async function TierListContent({
       <div>
         <h1 className="text-xl font-black text-white">{bossName}</h1>
         <p className="text-xs text-zinc-500 mt-1">
-          {diffLabel} · avg DPS of top 50 parses per spec · {region.toUpperCase()}
+          {diffLabel} · avg {metricLabel} of top 50 parses per spec · {region.toUpperCase()}
         </p>
       </div>
 

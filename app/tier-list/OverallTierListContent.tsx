@@ -212,6 +212,10 @@ export default async function OverallTierListContent({
 
   const diffLabel = difficulty === 5 ? 'Mythic' : 'Heroic';
 
+  // Healers rank by HPS (WCL metric: hps); everyone else by DPS. Same pipeline, same cache keys.
+
+  const metricLabel = metric === 'hps' ? 'HPS' : 'DPS';
+
   const schemaData = {
     '@context': 'https://schema.org',
     '@type': 'ItemList',
@@ -222,7 +226,7 @@ export default async function OverallTierListContent({
     itemListElement: tiered.map(s => ({
       '@type': 'ListItem',
       position: s.globalRank,
-      name: `${s.spec} ${s.cls} — ${s.tier} tier · ${fmtDps(s.avgDps)} avg DPS`,
+      name: `${s.spec} ${s.cls} — ${s.tier} tier · ${fmtDps(s.avgDps)} avg ${metricLabel}`,
     })),
   };
 
@@ -232,7 +236,7 @@ export default async function OverallTierListContent({
       {title && <h1 className="text-xl font-black text-zinc-100 tracking-tight">{title}</h1>}
       <div>
         <p className="text-xs text-zinc-500">
-          {diffLabel} · avg DPS across all bosses · GLOBAL · as of {new Date(cachedAt).toLocaleDateString('en-US', { month: 'long', day: 'numeric' })} · refreshed weekly on Mondays
+          {diffLabel} · avg {metricLabel} across all bosses · GLOBAL · as of {new Date(cachedAt).toLocaleDateString('en-US', { month: 'long', day: 'numeric' })} · refreshed weekly on Mondays
         </p>
       </div>
 

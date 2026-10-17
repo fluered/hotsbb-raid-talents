@@ -2,6 +2,7 @@ import React from 'react';
 import Link from 'next/link';
 import type { Metadata } from 'next';
 import SiteFooter, { ADDON_RELEASES_URL, ADDON_REPO_URL } from '../../components/SiteFooter';
+import SiteShell from '../../components/SiteShell';
 import { ogImageMeta } from '../../lib/ogImage';
 
 // Static install guide for the in-game addon. Linked from every page header, the
@@ -85,6 +86,7 @@ export default function AddonPage() {
         </div>
       </header>
 
+      <SiteShell>
       <div className="max-w-screen-md mx-auto px-4 md:px-6 py-8 space-y-10">
         {/* Intro */}
         <section className="space-y-3">
@@ -194,6 +196,7 @@ export default function AddonPage() {
 
         <SiteFooter />
       </div>
+      </SiteShell>
     </div>
   );
 }
