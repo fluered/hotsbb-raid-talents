@@ -5,6 +5,7 @@ import Image from 'next/image';
 import NewFeature from './NewFeature';
 import CopyBuildButton from './CopyBuildButton';
 import PlayerCard from './PlayerCard';
+import { useIsTouch } from './useIsTouch';
 import type { GearPhaseResult } from '../app/BossContent';
 import { loadMorePlayers } from '../app/actions/loadMorePlayers';
 
@@ -58,20 +59,35 @@ interface ItemTip {
   pct: number;
   playerCount: number;
   rect: DOMRect;
+  // Touch devices: opened by a tap, stays until an outside tap, and carries the
+  // Wowhead link the row's click would otherwise have opened (see useIsTouch).
+  pinned?: boolean;
+  href?: string;
 }
+type ItemTipData = Omit<ItemTip, 'rect' | 'pinned' | 'href'>;
 
-function ItemTooltip({ tip, accentHex }: { tip: ItemTip; accentHex: string }) {
+function ItemTooltip({ tip, accentHex, onClose }: { tip: ItemTip; accentHex: string; onClose: () => void }) {
   const TOOLTIP_W = 280;
   const MARGIN = 10;
   let left = tip.rect.left;
   if (left + TOOLTIP_W > window.innerWidth - MARGIN) left = tip.rect.right - TOOLTIP_W;
   if (left < MARGIN) left = MARGIN;
-  const above = tip.rect.top > 160;
-  const top = above ? tip.rect.top - 8 : tip.rect.bottom + 8;
+  // Pinned (touch) tooltips are modal — the backdrop blocks page scrolling — so they
+  // must fit the viewport on their own: anchor to the roomier side, cap the height to
+  // that room, scroll internally. Hover keeps the lighter original placement.
+  const { rect, pinned } = tip;
+  const above = pinned ? rect.top > window.innerHeight - rect.bottom : rect.top > 160;
+  const style: React.CSSProperties = pinned
+    ? above
+      ? { position: 'fixed', bottom: window.innerHeight - rect.top + 8, left, width: TOOLTIP_W, maxHeight: rect.top - 8 - MARGIN, overflowY: 'auto', zIndex: 9999 }
+      : { position: 'fixed', top: rect.bottom + 8, left, width: TOOLTIP_W, maxHeight: window.innerHeight - rect.bottom - 8 - MARGIN, overflowY: 'auto', zIndex: 9999 }
+    : { position: 'fixed', top: above ? rect.top - 8 : rect.bottom + 8, left, width: TOOLTIP_W, transform: above ? 'translateY(-100%)' : 'none', zIndex: 9999 };
   return createPortal(
+    <>
+    {pinned && <div style={{ position: 'fixed', inset: 0, zIndex: 9998 }} onClick={onClose} />}
     <div
-      style={{ position: 'fixed', top, left, width: TOOLTIP_W, transform: above ? 'translateY(-100%)' : 'none', zIndex: 9999 }}
-      className="bg-zinc-950 border border-zinc-700 rounded-lg shadow-2xl overflow-hidden pointer-events-none"
+      style={style}
+      className={`bg-zinc-950 border border-zinc-700 rounded-lg shadow-2xl ${pinned ? '' : 'overflow-hidden pointer-events-none'}`}
     >
       <div className="px-3 py-2.5 border-b border-zinc-800 flex items-center gap-2.5">
         {tip.iconUrl && <Image src={tip.iconUrl} alt="" width={48} height={48} className="w-12 h-12 rounded flex-shrink-0 border border-zinc-700" />}
@@ -86,7 +102,14 @@ function ItemTooltip({ tip, accentHex }: { tip: ItemTip; accentHex: string }) {
       {tip.description && (
         <p className="px-3 py-2.5 text-[11px] text-zinc-300 leading-relaxed whitespace-pre-line">{tip.description}</p>
       )}
-    </div>,
+      {tip.pinned && tip.href && (
+        <a href={tip.href} target="_blank" rel="noopener noreferrer"
+          className="block px-3 py-2 border-t border-zinc-800 text-[11px] font-bold text-amber-400 active:bg-zinc-900">
+          View on Wowhead ↗
+        </a>
+      )}
+    </div>
+    </>,
     document.body
   );
 }
@@ -140,6 +163,34 @@ function GearSection({
 }) {
   const { variantGear, variantPlayers } = use(gearPromise);
   const [activeTip, setActiveTip] = useState<ItemTip | null>(null);
+  const isTouch = useIsTouch();
+
+  // One set of handlers for every gear row. Desktop: hover previews the tooltip and a
+  // click opens Wowhead (when the row has an item). Touch: hover is ignored (a tap
+  // would flash the tooltip and immediately fire the click), and a tap pins a
+  // tooltip that carries the Wowhead link itself; the pinned tooltip's backdrop
+  // owns dismissal.
+  const tipHandlers = (tip: ItemTipData, href?: string) => ({
+    onMouseEnter: (e: React.MouseEvent) => {
+      if (isTouch) return;
+      const target = e.currentTarget as HTMLElement | null;
+      if (!target) return;
+      setActiveTip({ ...tip, rect: target.getBoundingClientRect() });
+    },
+    onMouseLeave: () => {
+      if (isTouch) return;
+      setActiveTip(prev => (prev?.pinned ? prev : null));
+    },
+    onClick: (e: React.MouseEvent) => {
+      if (!isTouch) {
+        if (href) window.open(href, '_blank', 'noopener,noreferrer');
+        return;
+      }
+      const target = e.currentTarget as HTMLElement | null;
+      if (!target) return;
+      setActiveTip({ ...tip, rect: target.getBoundingClientRect(), pinned: true, href });
+    },
+  });
 
   // Signal to BossView that gear sections are now in the DOM so IntersectionObservers can re-attach
   useEffect(() => { onReady(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -209,13 +260,10 @@ function GearSection({
                           <div key={i} className="flex items-center gap-2.5 cursor-pointer group"
                             role="button" tabIndex={0} aria-label={`${t.name} on Wowhead`}
                             onKeyDown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && t.itemId) { e.preventDefault(); window.open(`https://www.wowhead.com/item=${t.itemId}`, '_blank', 'noopener,noreferrer'); } }}
-                            onClick={() => t.itemId && window.open(`https://www.wowhead.com/item=${t.itemId}`, '_blank', 'noopener,noreferrer')}
-                            onMouseEnter={(e) => {
-                              const target = e.currentTarget as HTMLElement | null;
-                              if (!target) return;
-                              setActiveTip({ name: t.name, iconUrl: t.iconUrl, description: t.description, count: t.count, pct: t.pct, playerCount: gear!.playerCount, rect: target.getBoundingClientRect() });
-                            }}
-                            onMouseLeave={() => setActiveTip(null)}
+                            {...tipHandlers(
+                              { name: t.name, iconUrl: t.iconUrl, description: t.description, count: t.count, pct: t.pct, playerCount: gear!.playerCount },
+                              t.itemId ? `https://www.wowhead.com/item=${t.itemId}` : undefined,
+                            )}
                           >
                             {t.iconUrl ? <Image src={t.iconUrl} alt="" width={32} height={32} className="w-8 h-8 rounded flex-shrink-0 border border-zinc-700 group-hover:border-zinc-500 transition-colors" /> : <div className="w-8 h-8 rounded flex-shrink-0 bg-zinc-800 border border-zinc-700" />}
                             <div className="flex-1 min-w-0">
@@ -241,13 +289,10 @@ function GearSection({
                       <div className="space-y-3">
                         {gear!.embellishments.map((e, i) => (
                           <div key={i} className="flex items-center gap-2.5 cursor-pointer group"
-                            onClick={() => e.itemId && window.open(`https://www.wowhead.com/item=${e.itemId}`, '_blank', 'noopener,noreferrer')}
-                            onMouseEnter={(ev) => {
-                              const target = ev.currentTarget as HTMLElement | null;
-                              if (!target) return;
-                              setActiveTip({ name: e.name, iconUrl: e.iconUrl, description: e.description, count: e.count, pct: e.pct, playerCount: gear!.playerCount, rect: target.getBoundingClientRect() });
-                            }}
-                            onMouseLeave={() => setActiveTip(null)}
+                            {...tipHandlers(
+                              { name: e.name, iconUrl: e.iconUrl, description: e.description, count: e.count, pct: e.pct, playerCount: gear!.playerCount },
+                              e.itemId ? `https://www.wowhead.com/item=${e.itemId}` : undefined,
+                            )}
                           >
                             {e.iconUrl ? <Image src={e.iconUrl} alt="" width={32} height={32} className="w-8 h-8 rounded flex-shrink-0 border border-zinc-700 group-hover:border-zinc-500 transition-colors" /> : <div className="w-8 h-8 rounded flex-shrink-0 bg-zinc-800 border border-zinc-700" />}
                             <div className="flex-1 min-w-0">
@@ -334,13 +379,10 @@ function GearSection({
                           <div key={i} className="flex items-center gap-2 cursor-pointer group"
                             role="button" tabIndex={0} aria-label={`${item.name} on Wowhead`}
                             onKeyDown={(ev) => { if ((ev.key === 'Enter' || ev.key === ' ') && item.itemId) { ev.preventDefault(); window.open(`https://www.wowhead.com/item=${item.itemId}`, '_blank', 'noopener,noreferrer'); } }}
-                            onClick={() => item.itemId && window.open(`https://www.wowhead.com/item=${item.itemId}`, '_blank', 'noopener,noreferrer')}
-                            onMouseEnter={(ev) => {
-                              const target = ev.currentTarget as HTMLElement | null;
-                              if (!target) return;
-                              setActiveTip({ name: item.name, subtitle: item.avgIlvl ? `ilvl ${item.avgIlvl}` : undefined, iconUrl: item.iconUrl, description: item.description, count: item.count, pct: item.pct, playerCount, rect: target.getBoundingClientRect() });
-                            }}
-                            onMouseLeave={() => setActiveTip(null)}
+                            {...tipHandlers(
+                              { name: item.name, subtitle: item.avgIlvl ? `ilvl ${item.avgIlvl}` : undefined, iconUrl: item.iconUrl, description: item.description, count: item.count, pct: item.pct, playerCount },
+                              item.itemId ? `https://www.wowhead.com/item=${item.itemId}` : undefined,
+                            )}
                           >
                             {item.iconUrl ? <Image src={item.iconUrl} alt="" width={28} height={28} className="w-7 h-7 rounded flex-shrink-0 border border-zinc-700/60" /> : <div className="w-7 h-7 rounded flex-shrink-0 bg-zinc-800 border border-zinc-700/60" />}
                             <div className="flex-1 min-w-0">
@@ -373,12 +415,7 @@ function GearSection({
                         <div className="space-y-2">
                           {gear.gems.map((g, i) => (
                             <div key={i} className="flex items-center gap-2 cursor-default"
-                              onMouseEnter={(ev) => {
-                                const target = ev.currentTarget as HTMLElement | null;
-                                if (!target) return;
-                                setActiveTip({ name: g.name, iconUrl: g.iconUrl, description: g.description, count: g.count, pct: g.pct, playerCount, rect: target.getBoundingClientRect() });
-                              }}
-                              onMouseLeave={() => setActiveTip(null)}
+                              {...tipHandlers({ name: g.name, iconUrl: g.iconUrl, description: g.description, count: g.count, pct: g.pct, playerCount })}
                             >
                               {g.iconUrl ? <Image src={g.iconUrl} alt="" width={20} height={20} className="w-5 h-5 rounded flex-shrink-0 border border-zinc-700" /> : <div className="w-5 h-5 rounded flex-shrink-0 bg-zinc-800 border border-zinc-700" />}
                               <span className="text-sm text-zinc-300 truncate flex-1">{g.name}</span>
@@ -412,12 +449,7 @@ function GearSection({
                             const shortName = e.name.replace(/^enchant\s+\S+\s+-\s+/i, '').trim() || e.name;
                             return (
                               <div key={i} className="flex items-center justify-between gap-2"
-                                onMouseEnter={(ev) => {
-                                  const target = ev.currentTarget as HTMLElement | null;
-                                  if (!target) return;
-                                  setActiveTip({ name: shortName, subtitle: e.slot, iconUrl: '', description: e.description || e.name, count: e.count, pct: e.pct, playerCount, rect: target.getBoundingClientRect() });
-                                }}
-                                onMouseLeave={() => setActiveTip(null)}
+                                {...tipHandlers({ name: shortName, subtitle: e.slot, iconUrl: '', description: e.description || e.name, count: e.count, pct: e.pct, playerCount })}
                               >
                                 <div className="flex items-center gap-2 min-w-0">
                                   <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-500 shrink-0">{e.slot}</span>
@@ -494,7 +526,7 @@ function GearSection({
         </section>
       )}
 
-      {activeTip && <ItemTooltip tip={activeTip} accentHex={accentHex} />}
+      {activeTip && <ItemTooltip tip={activeTip} accentHex={accentHex} onClose={() => setActiveTip(null)} />}
     </>
   );
 }

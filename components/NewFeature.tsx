@@ -1,8 +1,9 @@
 'use client';
-import React, { useState, useCallback } from 'react';
+import React, { useState } from 'react';
 import { createPortal } from 'react-dom';
 import Image from 'next/image';
 import { normalizeTalentTree } from '../lib/talentNormalize';
+import { useIsTouch } from './useIsTouch';
 
 function makeColMap(nodes: any[]): Map<number, number> {
   const unique = [...new Set(nodes.map((n: any) => n.column as number))].sort((a, b) => a - b);
@@ -16,12 +17,15 @@ interface TooltipState {
   rect: DOMRect;
   freq?: number;
   rankDist?: Record<number, number>;
+  // Opened by a tap on a touch device: stays until an outside tap, and carries its own
+  // Wowhead link since the node's click can't double as one there (see useIsTouch).
+  pinned?: boolean;
 }
 
-function Tooltip({ tip, colors }: { tip: TooltipState; colors: { color: string } }) {
+function Tooltip({ tip, colors, onClose }: { tip: TooltipState; colors: { color: string }; onClose?: () => void }) {
   const TOOLTIP_W = 256;
   const MARGIN = 10;
-  const { node, rank, showRank, rect, freq, rankDist } = tip;
+  const { node, rank, showRank, rect, freq, rankDist, pinned } = tip;
   // Sorted descending (max rank first) so "4/4: 78%" reads before "3/4: 22%" — the
   // partial-investment ranks are what explain a talent that isn't uniformly maxed.
   const rankRows = rankDist
@@ -36,15 +40,26 @@ function Tooltip({ tip, colors }: { tip: TooltipState; colors: { color: string }
   if (left + TOOLTIP_W > window.innerWidth - MARGIN) left = rect.right - TOOLTIP_W;
   if (left < MARGIN) left = MARGIN;
 
-  // Vertical: show above if enough space, else below
-  const above = rect.top > 180;
-  const top = above ? rect.top - 8 : rect.bottom + 8;
-  const transform = above ? 'translateY(-100%)' : 'none';
+  // Vertical: show above if enough space, else below. Pinned (touch) tooltips are
+  // modal — the backdrop blocks page scrolling — so they must fit the viewport on
+  // their own: anchor to whichever side has more room, cap the height to that room,
+  // and scroll internally. Hover tooltips keep the lighter original placement.
+  const above = pinned ? rect.top > window.innerHeight - rect.bottom : rect.top > 180;
+  const style: React.CSSProperties = pinned
+    ? above
+      ? { position: 'fixed', bottom: window.innerHeight - rect.top + 8, left, width: TOOLTIP_W, maxHeight: rect.top - 8 - MARGIN, overflowY: 'auto', zIndex: 9999 }
+      : { position: 'fixed', top: rect.bottom + 8, left, width: TOOLTIP_W, maxHeight: window.innerHeight - rect.bottom - 8 - MARGIN, overflowY: 'auto', zIndex: 9999 }
+    : { position: 'fixed', top: above ? rect.top - 8 : rect.bottom + 8, left, width: TOOLTIP_W, transform: above ? 'translateY(-100%)' : 'none', zIndex: 9999 };
 
   return createPortal(
+    <>
+      {/* Pinned (touch) only: a full-screen layer so a tap anywhere else dismisses —
+          same reasoning as ChoicePopup's; during mouse hover it would steal the
+          node's own mouseleave/click. */}
+      {pinned && <div style={{ position: 'fixed', inset: 0, zIndex: 9998 }} onClick={onClose} />}
     <div
-      style={{ position: 'fixed', top, left, width: TOOLTIP_W, transform, zIndex: 9999 }}
-      className="bg-zinc-950 border border-zinc-700 rounded-lg shadow-2xl overflow-hidden pointer-events-none"
+      style={style}
+      className={`bg-zinc-950 border border-zinc-700 rounded-lg shadow-2xl ${pinned ? '' : 'overflow-hidden pointer-events-none'}`}
     >
       <div className="px-3 py-2 border-b border-zinc-800 flex items-center gap-2">
         {node.iconUrl && (
@@ -93,7 +108,18 @@ function Tooltip({ tip, colors }: { tip: TooltipState; colors: { color: string }
       {node.description && (
         <p className="px-3 py-2 text-[11px] text-zinc-300 leading-relaxed whitespace-pre-line">{node.description}</p>
       )}
-    </div>,
+      {pinned && node.spellId && (
+        <a
+          href={`https://www.wowhead.com/spell=${node.spellId}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="block px-3 py-2 border-t border-zinc-800 text-[11px] font-bold text-amber-400 active:bg-zinc-900"
+        >
+          View on Wowhead ↗
+        </a>
+      )}
+    </div>
+    </>,
     document.body
   );
 }
@@ -240,6 +266,10 @@ export default function NewFeature({
 }) {
   const searchNeedle = (searchQuery ?? '').trim().toLowerCase();
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
+  // Touch devices: hover handlers are ignored (a tap would otherwise flash the tooltip
+  // and immediately fire the click), and a tap toggles a pinned tooltip instead of
+  // jumping straight to Wowhead. Desktop keeps hover-to-preview / click-to-open.
+  const isTouch = useIsTouch();
   // pinned = opened via click/tap and stays open until an outside tap or re-click; unpinned = mouse-hover preview
   const [choiceHover, setChoiceHover] = useState<{ node: any; rect: DOMRect; aChosen: boolean; pinned: boolean } | null>(null);
   // Normalizing here (not just upstream) matters specifically for individual player
@@ -471,8 +501,11 @@ export default function NewFeature({
     return 1;
   }
 
-  const handleMouseEnter = useCallback((e: React.MouseEvent, node: any, rank: number, showRank: boolean, freq?: number) => {
-    if (!node.name) return;
+  // Plain functions, not useCallback: nothing downstream is memoized, so the
+  // callbacks bought nothing, and the react-hooks lint rules reject manual
+  // dependency lists (these now close over isTouch) that don't match inference.
+  const handleMouseEnter = (e: React.MouseEvent, node: any, rank: number, showRank: boolean, freq?: number) => {
+    if (isTouch || !node.name) return;
     const target = e.currentTarget as HTMLElement | null;
     // Suspense can replay a queued hover event after its target has already been
     // unmounted (e.g. a hero-tree variant swap mid-hover) — currentTarget is null then.
@@ -484,9 +517,24 @@ export default function NewFeature({
     // percentage can't show.
     const rankDist = node.maxRanks > 1 ? rankDistributionMap?.[node.nodeID] : undefined;
     setTooltip({ node, rank, showRank, rect, freq, rankDist });
-  }, [rankDistributionMap]);
+  };
 
-  const handleMouseLeave = useCallback(() => setTooltip(null), []);
+  const handleMouseLeave = () => {
+    if (isTouch) return;
+    setTooltip(prev => (prev?.pinned ? prev : null));
+  };
+
+  // Touch: a tap pins the tooltip for this node (it carries the Wowhead link).
+  // Dismissal is the backdrop's job — once pinned, it covers every node, so a
+  // second tap can only ever land on it.
+  const handleTouchPin = (e: React.MouseEvent, node: any, rank: number, showRank: boolean, freq?: number) => {
+    if (!node.name) return;
+    const target = e.currentTarget as HTMLElement | null;
+    if (!target) return;
+    const rect = target.getBoundingClientRect();
+    const rankDist = node.maxRanks > 1 ? rankDistributionMap?.[node.nodeID] : undefined;
+    setTooltip({ node, rank, showRank, rect, freq, rankDist, pinned: true });
+  };
 
   return (
     <>
@@ -645,6 +693,7 @@ export default function NewFeature({
               }}
               className={`relative transition-opacity ${colSpan > 1 ? 'flex justify-center' : ''} ${isSearchMiss ? 'opacity-20' : ''}`}
               onMouseEnter={(e) => {
+                if (isTouch) return;
                 if (isChoiceNode) {
                   const target = e.currentTarget as HTMLElement | null;
                   if (!target) return;
@@ -658,6 +707,7 @@ export default function NewFeature({
                 }
               }}
               onMouseLeave={() => {
+                if (isTouch) return;
                 if (isChoiceNode) {
                   setChoiceHover(prev => (prev && prev.node.nodeID === node.nodeID && !prev.pinned) ? null : prev);
                 } else {
@@ -665,7 +715,12 @@ export default function NewFeature({
                 }
               }}
               onClick={(e) => {
-                if (!isChoiceNode) return;
+                if (!isChoiceNode) {
+                  // Desktop's Wowhead click stays on the icon circle itself (below) so
+                  // the blank half of a span-2 cell doesn't open a tab.
+                  if (isTouch) handleTouchPin(e, displayNode, rank, showRank, freq);
+                  return;
+                }
                 const target = e.currentTarget as HTMLElement | null;
                 if (!target) return;
                 setChoiceHover(prev =>
@@ -706,7 +761,7 @@ export default function NewFeature({
                     ? 'ring-2 ring-sky-400 shadow-[0_0_10px_2px_rgba(56,189,248,0.55)]'
                     : node.isTieredApex ? 'ring-2 ring-violet-400/70' : ''
                 }`}
-                onClick={() => { if (!isChoiceNode && displayNode.spellId) window.open(`https://www.wowhead.com/spell=${displayNode.spellId}`, '_blank', 'noopener,noreferrer'); }}
+                onClick={() => { if (!isTouch && !isChoiceNode && displayNode.spellId) window.open(`https://www.wowhead.com/spell=${displayNode.spellId}`, '_blank', 'noopener,noreferrer'); }}
               >
                 {displayNode.iconUrl ? (
                   <Image
@@ -782,7 +837,7 @@ export default function NewFeature({
           onClose={() => setChoiceHover(null)}
         />
       )}
-      {tooltip && <Tooltip tip={tooltip} colors={colors} />}
+      {tooltip && <Tooltip tip={tooltip} colors={colors} onClose={() => setTooltip(null)} />}
     </>
   );
 }
