@@ -81,11 +81,15 @@ export default function AddonPage() {
           <div className="flex items-center gap-1.5 shrink-0">
             <SiteNavLinks active="addon" />
             <a
+              href="#wowup"
+              className="px-3 py-1.5 rounded-full border border-amber-500/40 bg-amber-500/10 text-xs font-bold text-amber-300 hover:bg-amber-500/20 transition-colors whitespace-nowrap"
+            >Install with WowUp</a>
+            <a
               href={ADDON_RELEASES_URL}
               target="_blank"
               rel="noopener noreferrer"
-              className="px-3 py-1.5 rounded-full border border-amber-500/40 bg-amber-500/10 text-xs font-bold text-amber-300 hover:bg-amber-500/20 transition-colors whitespace-nowrap"
-            >Latest release ↗</a>
+              className="hidden sm:inline-flex px-2.5 py-1 rounded-md text-xs font-bold text-zinc-400 hover:text-zinc-200 transition-colors whitespace-nowrap"
+            >Download manually on GitHub ↗</a>
           </div>
         </div>
       </header>
@@ -105,7 +109,7 @@ export default function AddonPage() {
         </section>
 
         {/* WowUp */}
-        <section className="space-y-5">
+        <section id="wowup" className="space-y-5 scroll-mt-16">
           <div className="space-y-1">
             <h2 className="text-lg font-black text-white tracking-tight">Install with WowUp <span className="text-zinc-500 font-semibold">(recommended)</span></h2>
             <p className="text-sm text-zinc-500">Takes about two minutes and keeps the addon updated for you.</p>

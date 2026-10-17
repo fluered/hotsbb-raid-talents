@@ -507,13 +507,16 @@ export default async function Home(props: PageProps) {
                       <span className="font-bold text-zinc-200">HotsBB Talents</span> puts every build on this site inside WoW: type <span className="font-mono text-zinc-200">/hbt</span> and import the meta build for your boss or dungeon with one click.
                     </p>
                     <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                      <Link
+                        href="/addon"
+                        className="px-3 py-1.5 rounded-full border border-amber-500/40 bg-amber-500/10 text-xs font-bold text-amber-300 hover:bg-amber-500/20 transition-colors"
+                      >Install with WowUp</Link>
                       <a
                         href={ADDON_RELEASES_URL}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="px-3 py-1.5 rounded-full border border-amber-500/40 bg-amber-500/10 text-xs font-bold text-amber-300 hover:bg-amber-500/20 transition-colors"
-                      >Download addon ↗</a>
-                      <Link href="/addon" className="text-[11px] font-bold text-zinc-400 hover:text-zinc-200 underline underline-offset-2 transition-colors">How to install with WowUp →</Link>
+                        className="text-[11px] font-bold text-zinc-400 hover:text-zinc-200 underline underline-offset-2 transition-colors"
+                      >Download manually on GitHub ↗</a>
                     </div>
                   </div>
                 </div>
