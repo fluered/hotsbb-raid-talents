@@ -48,7 +48,8 @@ export default function TimelineChart({ timeline }: { timeline: Timeline }) {
   const toneColor = { band: '#fde68a', on: '#34d399', off: '#f59e0b', none: '#a1a1aa', phase: '#a1a1aa' } as const;
 
   return (
-    <div ref={box} className="relative rounded-xl border border-zinc-800/70 bg-zinc-900/40 p-3 overflow-x-auto" onMouseMove={move} onMouseLeave={hide}>
+    <div ref={box} className="relative" onMouseMove={move} onMouseLeave={hide}>
+      <div className="rounded-xl border border-zinc-800/70 bg-zinc-900/40 p-3 overflow-x-auto">
       <svg viewBox={`0 0 ${W} ${H}`} width="100%" className="block min-w-[560px]" role="img" aria-label="Cooldown timeline">
         {phases.map((p, i) => {
           const x0 = x(p.fromSec), x1 = x(Math.min(p.toSec, dur));
@@ -123,6 +124,7 @@ export default function TimelineChart({ timeline }: { timeline: Timeline }) {
           );
         })}
       </svg>
+      </div>
       {hover && (
         <div className="pointer-events-none absolute z-20 max-w-xs rounded-lg border border-zinc-700 bg-zinc-950/95 px-3 py-2 text-xs shadow-xl"
           style={{ left: Math.max(0, Math.min(hover.x + 12, hover.maxLeft)), top: hover.y + 14 }}>
