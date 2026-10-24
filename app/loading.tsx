@@ -1,3 +1,5 @@
+import LoadingProgress, { BUILD_STAGES } from '../components/LoadingProgress';
+
 export default function Loading() {
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-zinc-100 font-sans antialiased">
@@ -42,10 +44,7 @@ export default function Loading() {
               </div>
             </div>
 
-            <div className="bg-zinc-900/40 border border-zinc-800/50 rounded-2xl p-8 flex items-center justify-center gap-3">
-              <div className="w-3 h-3 rounded-full bg-amber-500/40 animate-pulse" />
-              <span className="text-sm text-zinc-600">Fetching top parses…</span>
-            </div>
+            <LoadingProgress stages={BUILD_STAGES} />
           </div>
         </main>
       </div>

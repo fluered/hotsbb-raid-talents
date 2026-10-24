@@ -7,6 +7,7 @@ import OverallTierListContent from '../OverallTierListContent';
 import SiteFooter from '../../../components/SiteFooter';
 import SiteShell from '../../../components/SiteShell';
 import SiteNavLinks from '../../../components/SiteNavLinks';
+import TierListLoading from '../../../components/TierListLoading';
 import { ogImageMeta } from '../../../lib/ogImage';
 
 // See app/page.tsx for why: heavy concurrent WCL fetching across many specs can
@@ -142,7 +143,7 @@ export default async function HealerTierListPage({ searchParams }: PageProps) {
         </div>
 
         {selectedBoss ? (
-          <Suspense fallback={<TierListSkeleton />}>
+          <Suspense fallback={<TierListLoading accent="emerald" scope="boss" role="healer" specCount={HEALER_SPECS.length} rows={[1, 2, 2, 2]} />}>
             <TierListContent
               bossId={selectedBoss.id}
               bossName={selectedBoss.name}
@@ -155,7 +156,7 @@ export default async function HealerTierListPage({ searchParams }: PageProps) {
             />
           </Suspense>
         ) : (
-          <Suspense fallback={<TierListSkeleton />}>
+          <Suspense fallback={<TierListLoading accent="emerald" scope="overall" role="healer" specCount={HEALER_SPECS.length} bossCount={encounters.length} rows={[1, 2, 2, 2]} />}>
             <OverallTierListContent
               wclToken={wclToken}
               bossIds={encounters.map(e => e.id)}
@@ -176,21 +177,3 @@ export default async function HealerTierListPage({ searchParams }: PageProps) {
   );
 }
 
-function TierListSkeleton() {
-  return (
-    <div className="space-y-6 animate-pulse">
-      <div className="space-y-1">
-        <div className="h-6 w-40 bg-emerald-500/10 rounded" />
-        <div className="h-3 w-64 bg-zinc-800/60 rounded" />
-      </div>
-      {(['S', 'A', 'B', 'C'] as const).map((_, ti) => (
-        <div key={ti} className="space-y-1.5">
-          <div className={`h-9 rounded-xl ${ti === 0 ? 'w-11 bg-emerald-500/20' : 'w-9 bg-zinc-800'}`} />
-          {Array.from({ length: ti === 0 ? 1 : 2 }).map((_, i) => (
-            <div key={i} className="h-14 bg-zinc-900/40 border border-emerald-500/10 rounded-xl" />
-          ))}
-        </div>
-      ))}
-    </div>
-  );
-}

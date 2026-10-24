@@ -7,6 +7,7 @@ import DungeonCardImage from '../../components/DungeonCardImage';
 import ClassNav from '../../components/ClassNav';
 import SiteFooter from '../../components/SiteFooter';
 import { ogImageMeta } from '../../lib/ogImage';
+import LoadingProgress, { BUILD_STAGES } from '../../components/LoadingProgress';
 import {
   getWclToken, getBlizzardToken, getDungeonRoster,
   POPULAR_SPECS, SPEC_IDS, CLASS_IDS, MPLUS_DIFFICULTY, getSeasonState,
@@ -56,15 +57,18 @@ export async function generateMetadata({ searchParams }: PageProps): Promise<Met
 
 function LoadingSkeleton() {
   return (
-    <div className="space-y-8 animate-pulse">
-      <div className="flex gap-2">
-        {[1, 2, 3].map(i => <div key={i} className="h-9 w-28 rounded-full bg-zinc-800/60" />)}
-      </div>
-      <div className="h-px bg-zinc-800/50" />
-      <div className="space-y-3">
-        <div className="h-5 w-48 rounded bg-zinc-800/60" />
-        <div className="h-4 w-72 rounded bg-zinc-800/40" />
-        <div className="h-64 rounded-2xl bg-zinc-900/40 border border-zinc-800/50" />
+    <div className="space-y-8">
+      <LoadingProgress stages={BUILD_STAGES} />
+      <div className="space-y-8 animate-pulse" aria-hidden="true">
+        <div className="flex gap-2">
+          {[1, 2, 3].map(i => <div key={i} className="h-9 w-28 rounded-full bg-zinc-800/60" />)}
+        </div>
+        <div className="h-px bg-zinc-800/50" />
+        <div className="space-y-3">
+          <div className="h-5 w-48 rounded bg-zinc-800/60" />
+          <div className="h-4 w-72 rounded bg-zinc-800/40" />
+          <div className="h-64 rounded-2xl bg-zinc-900/40 border border-zinc-800/50" />
+        </div>
       </div>
     </div>
   );

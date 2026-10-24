@@ -8,6 +8,7 @@ import BossPicker from './BossPicker';
 import ClassNav from '../components/ClassNav';
 import SiteFooter, { ADDON_RELEASES_URL } from '../components/SiteFooter';
 import { ogImageMeta } from '../lib/ogImage';
+import LoadingProgress, { BUILD_STAGES } from '../components/LoadingProgress';
 import {
   getWclToken, getBlizzardToken, getRaidStructure, getDungeonRoster,
   POPULAR_SPECS, SPEC_IDS, MIDNIGHT_RAIDS, CLASS_IDS,
@@ -105,7 +106,9 @@ export async function generateMetadata({ searchParams }: PageProps): Promise<Met
 
 function BossLoadingSkeleton() {
   return (
-    <div className="space-y-8 animate-pulse">
+    <div className="space-y-8">
+      <LoadingProgress stages={BUILD_STAGES} />
+      <div className="space-y-8 animate-pulse" aria-hidden="true">
       <div className="flex gap-2">
         {[1, 2, 3].map(i => (
           <div key={i} className="h-9 w-28 rounded-full bg-zinc-800/60" />
@@ -120,6 +123,7 @@ function BossLoadingSkeleton() {
       <div className="space-y-3">
         <div className="h-5 w-32 rounded bg-zinc-800/60" />
         <div className="h-48 rounded-2xl bg-zinc-900/40 border border-zinc-800/50" />
+      </div>
       </div>
     </div>
   );

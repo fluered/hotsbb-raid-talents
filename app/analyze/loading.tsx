@@ -1,4 +1,4 @@
-import LoadingProgress from '../../components/LoadingProgress';
+import LoadingProgress, { REVIEW_STAGES } from '../../components/LoadingProgress';
 
 // Streams in place of the page while Warcraft Logs tables (and, on a cold boss/spec,
 // the top-player pool) are fetched — seconds when cached, a minute or two cold. An
@@ -26,7 +26,7 @@ export default function Loading() {
                 <div className="h-3 w-40 bg-zinc-900/70 rounded animate-pulse" />
               </div>
             </div>
-            <LoadingProgress />
+            <LoadingProgress stages={REVIEW_STAGES} />
             <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
               {Array.from({ length: 6 }).map((_, i) => (
                 <div key={i} className="h-16 rounded-xl bg-zinc-900/60 animate-pulse" style={{ animationDelay: `${i * 60}ms` }} />
