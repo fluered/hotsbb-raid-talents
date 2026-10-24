@@ -119,6 +119,20 @@ async function parseWclResponse(response: Response, context: string): Promise<an
   return json;
 }
 
+// Generic paced GraphQL call for callers that don't need bespoke response handling
+// (the log-review feature in lib/analyze.ts). Same 429/error discipline as every
+// other WCL call via parseWclResponse; `revalidate` rides on Next's fetch cache,
+// `null` means no-store.
+export async function wclQuery(token: string, query: string, context: string, revalidate: number | null = 86400): Promise<any> {
+  const response = await wclFetch('https://www.warcraftlogs.com/api/v2/client', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query }),
+    ...(revalidate == null ? { cache: 'no-store' } : { next: { revalidate } }),
+  });
+  return (await parseWclResponse(response, context)).data;
+}
+
 // Cheap diagnostic query (just one number back, no ranking/telemetry payload) used to
 // measure real points cost around a combo's WCL work — see logPointsUsage in
 // lib/metaBuild.ts. Not itself expected to meaningfully add to points/burst cost, but
