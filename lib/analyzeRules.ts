@@ -3,6 +3,7 @@ import { DIFFICULTY_LABELS, GEAR_SLOT_NAMES } from './analyze';
 import { lookupJournal, lookupLabel, MECHANIC_WORDS, type BossKnowledge, type MechanicType } from './bossMechanics';
 import { BASELINE_BY_CLASS, DEFENSIVES, REPLACED_BY, TWO_STEP, isMovement, isUtility, noChargeModel, chargesFromTalents, defensiveKey, defensivesAt, minReuseGap, wastedDoublePresses } from './defensives';
 import { LORRGS_CREDIT, MAJOR_CD_SEC, MAJOR_UNDER_60, type MajorSpell } from './lorrgsSpells';
+import { timesWord } from './summary';
 
 // ─── Log review: the rules ─────────────────────────────────────────────────────
 //
@@ -231,7 +232,11 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, bo
     const inter = phases.find(p => /intermission|transition/i.test(p.name) && Math.min(p.toSec, toSec) - Math.max(p.fromSec, fromSec) >= 0.5 * (toSec - fromSec));
     if (inter) return `the intermission (${inter.name.replace(/^Intermission:?s*/i, '').trim()}) ran ${fmtClock(inter.fromSec)}–${fmtClock(inter.toSec)}`;
     const hit = mechanicEvents.find(e => e.atSec >= fromSec - 3 && e.atSec <= toSec);
-    if (hit) return `${hit.text.replace(/^\S+ (hit by|gained|dispelled|interrupted|soaked|had)/, (_, v) => (v === 'hit by' ? 'you were hit by' : `you ${v}`)).replace(/^\S+: .*$/, 'you were in a mechanic window').replace(/ \(\d[^)]*absorbed\)/, '')} at ${fmtClock(hit.atSec)}`;
+    if (hit) {
+      const span = hit.text.match(/^\S+ had (.+?): (\d+:\d+) → (\d+:\d+)/);
+      if (span) return `you were carrying ${span[1]} from ${span[2]} to ${span[3]}`;
+      return `${hit.text.replace(/^\S+ (hit by|gained|dispelled|interrupted|soaked)/, (_, v) => (v === 'hit by' ? 'you were hit by' : `you ${v}`)).replace(/^\S+: .*$/, 'you were in a mechanic window').replace(/ \(\d[^)]*absorbed\)/, '').replace(/ \d+ times? for /, ' for ')} at ${fmtClock(hit.atSec)}`;
+    }
     const move = movementCasts.find(m => m.t >= fromSec - 2 && m.t <= toSec);
     if (move) return `you used ${move.name} at ${fmtClock(move.t)}`;
     return null;
@@ -250,7 +255,9 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, bo
   const aliveMinutes = Math.max(profile.aliveMs, 1000) / 60000;
   const judgeable = aliveSec >= MIN_JUDGE_SECONDS;
   const specLabel = `${player.spec} ${player.className}`;
-  const topWord = pool ? `the top ${pool.n} ${specLabel}s on this boss` : 'top players';
+  const topWordFull = pool ? `the top ${pool.n} ${specLabel}s on this boss` : 'top players';
+  // Said in full once (the output card); everywhere else "the top players" reads better.
+  const topWord = 'the top players';
   const outputWord = player.role === 'healer' ? 'healing' : 'damage';
   const killerNames = new Set(profile.deaths.map(d => d.killer));
   const myFamiliesAtPull = new Set(profile.buffs.filter(b => b.atPull).map(b => buffFamily(b.name)));
@@ -472,8 +479,8 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, bo
     const parts = (taken?.byId ?? []).filter(x => x.hits > 0).map(x => ({ ...x, avg: x.total / x.hits })).sort((a, b) => b.avg - a.avg);
     const hitNote = !taken || taken.hits <= 1 ? ''
       : parts.length > 1 && parts[1].avg < 0.25 * parts[0].avg
-        ? ` The big hits landed ${plural(parts[0].hits, 'time')} for ${fmtNum(parts[0].total)}; the other ${plural(parts.slice(1).reduce((s, x) => s + x.hits, 0), 'hit')} were small pulses from a second spell with the same name.`
-        : ` It hit you ${plural(taken.hits, 'time')} in total.`;
+        ? ` The big hits landed ${timesWord(parts[0].hits)} for ${fmtNum(parts[0].total)}; the other ${plural(parts.slice(1).reduce((s, x) => s + x.hits, 0), 'hit')} were small pulses from a second spell with the same name.`
+        : ` It hit you ${timesWord(taken.hits)} in total.`;
     const lead = d.killerDamage > 0
       ? `${d.killer} did ${fmtNum(d.killerDamage)} of the ${fmtNum(d.totalRecent)} damage you took in the seconds before you died${others}.`
       : `${d.killer} landed the killing blow after you had already taken ${fmtNum(d.totalRecent)} in a few seconds${others}.`;
@@ -847,7 +854,7 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, bo
         id: `timing-${row.name}`, severity: 'warn', category: 'cooldowns', icon: row.icon, spellId: row.spellId,
         impact: j.finding.impact,
         title: j.finding.title,
-        text: `${ucFirst(topWord)} ${j.finding.text}${why}`,
+        text: why ? `${ucFirst(why.trim())} ${ucFirst(topWord)} ${j.finding.text}` : `${ucFirst(topWord)} ${j.finding.text}`,
       });
     }
     timing.sort((a, b) => b.impact - a.impact);
@@ -1156,7 +1163,7 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, bo
     const healerNote = player.role === 'healer' ? ' Healing parses reward raids that take damage, so a low number here is not automatically a problem.' : '';
     findings.push({
       id: 'output', severity: ratio >= 0.85 ? 'good' : ratio >= 0.6 ? 'info' : 'warn', category: 'output', impact: 35,
-      title: `${fmtNum(perSec)} ${metricLabel}, ${pct(100 * ratio)} of what the top ${pool.n} average`,
+      title: `${fmtNum(perSec)} ${metricLabel}, ${pct(100 * ratio)} of what ${topWordFull} average`,
       text: (ratio >= 0.85
         ? `That is within touching distance of the best parses on this boss${pool.difficulty !== fight.difficulty ? ' (compared on a different difficulty, so take it loosely)' : ''}.`
         : ratio >= 0.6

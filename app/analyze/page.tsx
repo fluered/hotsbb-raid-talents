@@ -185,7 +185,10 @@ async function AnalyzeContent({ sp }: { sp: Awaited<PageProps['searchParams']> }
               const verdict = `${review.verdict}${pace ? `; the kill was ${pace}` : ''}`;
               // Problems rank by category cost; strengths rank the other way round (a survival
               // win says more than a build note).
-              const fromFindings = review.findings.filter(f => f.id !== 'output').map(f => ({ severity: f.severity, brief: f.title, cost: f.severity === 'good' ? 1 / Math.max(0.3, Math.abs(costOf(f.category, 'warn'))) : Math.abs(costOf(f.category, f.severity)) }));
+              // Strengths: an on-time cooldown set or a clean mechanics sheet says more than
+              // staying alive on a kill, which is the default.
+              const strengthCost = (f: Finding) => f.id === 'timing-good' ? 0.15 : f.id === 'clean-mechanics' ? 0.2 : f.id === 'alive' ? (fight.kill ? 0.7 : 0.3) : 1 / Math.max(0.3, Math.abs(costOf(f.category, 'warn')));
+              const fromFindings = review.findings.filter(f => f.id !== 'output').map(f => ({ severity: f.severity, brief: f.title, cost: f.severity === 'good' ? strengthCost(f) : Math.abs(costOf(f.category, f.severity)) }));
               const fromMechanics = mechanics.map(m => ({ severity: m.severity, brief: m.brief ?? m.title, cost: m.cost ?? 2 }));
               review.summary = composeSummary({ verdict, subject: 'you', problems: [...fromFindings, ...fromMechanics], strengths: [...fromFindings, ...fromMechanics] });
             }
@@ -364,7 +367,7 @@ async function loadMechanicInsights(token: string, code: string, fight: ReportFi
         const phases = sorted.map((p, i) => ({ name: names.get(p.id) ?? `Phase ${p.id}`, fromSec: Math.max(0, (p.startTime - ev.startTime) / 1000), toSec: ((sorted[i + 1]?.startTime ?? ev.endTime) - ev.startTime) / 1000 }));
         return { insights: evaluateInsights(fight, ev, players, config, errors), phases };
       },
-      [`analyze-wf-v15-${code}-${fight.id}`],
+      [`analyze-wf-v16-${code}-${fight.id}`],
       { revalidate: 7 * 86400 },
     )();
     return { config, insights, errors, phases };
@@ -379,7 +382,7 @@ async function loadMechanicInsights(token: string, code: string, fight: ReportFi
 // say what the best raids manage. Keyed by boss and difficulty, kept a week.
 async function loadMechanicComparison(token: string, fight: ReportFight, fights: Array<{ code: string; fightId: number; difficulty: number }>, config: WipefestFightConfig): Promise<MechanicComparison | null> {
   try {
-    return await getOrSetPersistent<MechanicComparison>(`analyze-wfcmp-v15-${fight.encounterID}-${fight.difficulty}`, 7 * 86400, async () => {
+    return await getOrSetPersistent<MechanicComparison>(`analyze-wfcmp-v16-${fight.encounterID}-${fight.difficulty}`, 7 * 86400, async () => {
       const runs = await mapConcurrent(fights, 2, async f => {
         const ps = await getFightPlayers(token, f.code, f.fightId);
         const stub: ReportFight = { id: f.fightId, encounterID: fight.encounterID, name: fight.name, difficulty: f.difficulty, kill: true, fightPercentage: 0, startTime: 0, endTime: 0, durationMs: 0 };
@@ -865,7 +868,7 @@ function DefensivesPanel({ rows }: { rows: Review['defensives'] }) {
               </span>
               <span className="text-xs font-mono text-zinc-500 shrink-0 hidden sm:inline">{fmtCd(r.cooldownSec)}{r.charges > 1 ? ` · ${r.charges} charges` : ''}</span>
               <span className={`text-xs font-mono shrink-0 tabular-nums ${short ? 'text-amber-300' : 'text-zinc-300'}`}>
-                {r.used}{r.possible != null ? ` / ~${r.possible}` : '×'}
+                {r.used}{r.possible != null ? <span className="text-zinc-500">{` of ~${r.possible}`}</span> : '×'}
               </span>
             </div>
           );

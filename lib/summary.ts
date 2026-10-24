@@ -21,6 +21,28 @@ export interface SummaryItem {
 const CATEGORY_COST: Record<string, number> = {
   survival: 6, mechanics: 4, cooldowns: 3, output: 2.5, rotation: 2.5, uptime: 2, prep: 1.5, gear: 1, buffs: 1, utility: 0.5, build: 0.3,
 };
+// Small counts and ratios read better as words inside a sentence; tables keep digits.
+const SMALL = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine'];
+export function timesWord(n: number): string {
+  if (n === 1) return 'once';
+  if (n === 2) return 'twice';
+  return n < 10 ? `${SMALL[n]} times` : `${n} times`;
+}
+export function countWord(n: number, noun: string): string {
+  const word = n < 10 ? SMALL[n] : String(n);
+  return `${word} ${noun}${n === 1 ? '' : 's'}`;
+}
+// 3.7 → "nearly four times", 2.3 → "more than twice", 1.5 → "half again", 12.4 → "12 times".
+export function ratioWords(r: number): string {
+  if (r < 1.3) return 'about the same as';
+  if (r < 1.7) return 'half again';
+  if (r >= 10) return `${Math.round(r)} times`;
+  const whole = Math.round(r);
+  const exact = whole === 2 ? 'twice' : `${SMALL[whole]} times`;
+  if (Math.abs(r - whole) < 0.15) return exact;
+  return r < whole ? `nearly ${exact}` : `more than ${exact}`;
+}
+
 export function costOf(category: string, severity: Severity): number {
   const base = CATEGORY_COST[category] ?? 1;
   return severity === 'bad' ? base * 2 : severity === 'warn' ? base : severity === 'good' ? -base : 0;

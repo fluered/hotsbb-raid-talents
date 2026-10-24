@@ -6,7 +6,7 @@ import { defensiveKey } from './defensives';
 import { buffFamily, classifyAbility, fmtClock, fmtNum, median, plural, ucFirst, type Severity } from './analyzeRules';
 import { lookupJournal, MECHANIC_WORDS, type BossKnowledge, type MechanicType } from './bossMechanics';
 import type { MechanicComparison, MechanicInsight } from './wipefestInsights';
-import { composeSummary, paceClause, type SummaryItem } from './summary';
+import { composeSummary, paceClause, timesWord, countWord, ratioWords, type SummaryItem } from './summary';
 import { defensivesAt, isDefensive, minReuseGap, noChargeModel, wastedDoublePresses } from './defensives';
 
 // ─── Raid review: the whole pull, not one player ───────────────────────────────
@@ -263,10 +263,10 @@ export function buildMechanicItems(insights: MechanicInsight[], comparison: Mech
       const muchWorse = !tiny && (cmp.higherIsBetter ? ratio < 1 / 3 : ratio >= 3);
       const better = cmp.higherIsBetter ? ratio >= 1 : ratio <= 1;
       severity = muchWorse && ins.totalEvents >= 3 ? 'bad' : worse ? 'warn' : better ? 'good' : 'info';
-      comparisonText = `${main.name}${main.unit ? ` ${main.unit}` : ''}: ${main.display} here · top raids ${cmp.display} (median of ${comparison!.n})${ins.phase ? ` · ${ins.phase.replace(/^P/, 'phase ')}` : ''}`;
+      comparisonText = `${main.name}${main.unit ? ` ${main.unit}` : ''}: ${main.display} here · top raids ${cmp.display} (median of ${comparison!.n})${phaseWords(ins.phase)}`;
     } else if (main && cmp && cmp.median === 0) {
       severity = main.value > 0 && !cmp.higherIsBetter ? 'warn' : ins.totalEvents === 0 ? 'good' : 'info';
-      comparisonText = `Top raids: none at all (median of ${comparison!.n})${ins.phase ? ` · ${ins.phase.replace(/^P/, 'phase ')}` : ''}`;
+      comparisonText = `Top raids: none at all (median of ${comparison!.n})${phaseWords(ins.phase)}`;
     }
     const parts: string[] = [];
     const dotRule = (ins.type === 'hitWithoutDebuff' || ins.type === 'hitWithDebuff') && (ins.tickShare ?? 0) >= 0.7;
@@ -275,7 +275,7 @@ export function buildMechanicItems(insights: MechanicInsight[], comparison: Mech
     else if (dotRule) parts.push('A damage-over-time effect: the count is how many times it was applied, and the damage figure is the whole burn.');
     else if (ins.rows.length && ins.rows[0].id != null) {
       const hitPlayers = ins.rows.filter(r => r.id != null).length;
-      if (/^hit/.test(ins.type)) parts.push(`${hitPlayers} of ${raidSize} players were hit; worst was ${ins.rows[0].name} (${ins.rows[0].value}).`);
+      if (/^hit/.test(ins.type)) parts.push(`${hitPlayers} of ${raidSize} players were hit; ${ins.rows[0].name} took the most (${ins.rows[0].value}).`);
       else if (ins.type === 'dispel' || ins.type === 'interrupt') parts.push(`Most by ${ins.rows[0].name} (${ins.rows[0].value}).`);
       else if (ins.type === 'debuffDuration' || ins.type === 'removeDebuff') {
         const who = new Set(ins.rows.map(r => r.name)).size;
@@ -291,10 +291,10 @@ export function buildMechanicItems(insights: MechanicInsight[], comparison: Mech
     if (main && cmp && cmp.median > 0) {
       const ratio = main.value / cmp.median;
       const worseBy = cmp.higherIsBetter ? (ratio > 0 ? 1 / ratio : Infinity) : ratio;
-      const figure = main.kind === 'damage' ? `did ${fmtNum(main.raw)}` : main.kind === 'duration' ? `took ${main.display}` : `happened ${plural(ins.totalEvents, 'time')}`;
+      const figure = main.kind === 'damage' ? `did ${fmtNum(main.raw)}` : main.kind === 'duration' ? `took ${main.display}` : `happened ${timesWord(ins.totalEvents)}`;
       if (severity === 'bad' || severity === 'warn') {
         brief = Number.isFinite(worseBy)
-          ? `${shortName} ${figure}, ${worseBy.toFixed(1)}× what the top raids ${main.kind === 'duration' ? 'need' : cmp.higherIsBetter ? 'manage' : 'take'}`
+          ? `${shortName} ${figure}, ${ratioWords(worseBy)} what the top raids ${main.kind === 'duration' ? 'need' : cmp.higherIsBetter ? 'manage' : 'take'}`
           : `${shortName} never happened, where the top raids manage ${cmp.display}${cmp.unit ? ` ${cmp.unit}` : ''}`;
         cost = Number.isFinite(worseBy) ? 2 + worseBy * (main.kind === 'damage' ? 1.3 : 1) : 3;
       } else if (severity === 'good' && (ins.totalEvents === 0 || main.raw === 0 || main.display === '0')) {
@@ -310,13 +310,13 @@ export function buildMechanicItems(insights: MechanicInsight[], comparison: Mech
         cost = onPar ? 0.97 : worseBy;
       }
     } else if (severity === 'warn' && cmp && cmp.median === 0) {
-      brief = `${shortName} ${main?.kind === 'damage' ? `did ${fmtNum(main.raw)}` : `happened ${plural(ins.totalEvents, 'time')}`}, which the top raids avoid entirely`;
+      brief = `${shortName} ${main?.kind === 'damage' ? `did ${fmtNum(main.raw)}` : `happened ${timesWord(ins.totalEvents)}`}, which the top raids avoid entirely`;
       cost = 4;
     }
     items.push({
       brief, cost,
       id: `wf-${ins.configId}`, severity, group: 'boss',
-      title: ins.title || ins.name,
+      title: (ins.title || ins.name).replace(/\.$/, ''),
       text: parts.join(' '),
       icon: ins.icon ?? undefined, spellId: ins.spellId ?? undefined,
       comparison: comparisonText,
@@ -359,7 +359,7 @@ export function buildPlayerMechanicItems(insights: MechanicInsight[], comparison
       if (!mine.length) {
         if (ins.goodForPlayer || avoided >= 3) continue;
         avoided++;
-        items.push({ ...base, severity: 'good', impact: 4, brief: `clean on ${short(ins.name)} while ${playerRows.length} raidmates were hit`, cost: 0.9, title: `Clean on ${short(ins.name)}`, text: `${ins.title} None of it was you: ${playerRows.length} of ${raidSize} raidmates were.`, rows: [], events: [] });
+        items.push({ ...base, severity: 'good', impact: 4, brief: `clean on ${short(ins.name)} while ${countWord(playerRows.length, 'raidmate')} ${playerRows.length === 1 ? 'was' : 'were'} hit`, cost: 0.9, title: `Clean on ${short(ins.name)}`, text: `${ins.title} None of it was you: ${playerRows.length} of ${raidSize} raidmates were.`, rows: [], events: [] });
         continue;
       }
       const my = mine[0];
@@ -377,21 +377,25 @@ export function buildPlayerMechanicItems(insights: MechanicInsight[], comparison
         }
       }
       const rank = playerRows.findIndex(r => r.id === playerId) + 1;
-      const verb = ins.goodForPlayer ? (rank === 1 ? 'You did the most of it.' : `You were #${rank} of ${playerRows.length}.`) : (rank === 1 ? 'You were the worst hit.' : `You were #${rank} of ${playerRows.length} hit.`);
+      const dmgRule = main?.kind === 'damage' || /^hit/.test(ins.type);
+      const mineLine = ins.goodForPlayer
+        ? `You did it ${timesWord(my.count)}${my.raw > 0 && dmgRule ? ` for ${fmtNum(my.raw)}` : ''}, ${rank === 1 ? 'the most in the raid' : `#${rank} of ${playerRows.length}`}.`
+        : `It hit you ${timesWord(my.count)}${my.raw > 0 ? ` for ${fmtNum(my.raw)}` : ', for no damage'}, ${rank === 1 ? 'the worst in the raid' : `#${rank} of ${playerRows.length} hit`}.`;
+      const verb = `${mineLine} Across the raid: ${ins.title.replace(/\.$/, '').replace(/^\w/, c => c.toLowerCase())}.`;
       const ratio = myValue != null && cmp && cmp.median > 0 ? myValue / cmp.median : null;
       let brief: string | undefined;
       let cost: number | undefined;
       if (severity === 'bad' || severity === 'warn') {
-        brief = `${short(ins.name)} hit you ${my.value}${ratio ? `, ${ratio.toFixed(1)}× what an average top-raid player takes` : ''}${rank === 1 ? ', the worst in the raid' : ''}`;
+        brief = `${short(ins.name)} hit you ${timesWord(my.count)}${my.raw > 0 ? ` for ${fmtNum(my.raw)}` : ''}${ratio && ratio >= 1.3 ? `, ${ratioWords(ratio)} what an average top-raid player takes` : ''}${rank === 1 ? ', the worst in the raid' : ''}`;
         cost = 2 + Math.min(ratio ?? 2, 8); // a death (12) still outranks any single mechanic
       } else if (severity === 'good') {
-        brief = ins.goodForPlayer ? `${rank === 1 ? 'you did the most of' : 'you helped with'} ${short(ins.name)} (${my.value})` : `${short(ins.name)} at ${my.value}, under what an average top-raid player takes`;
+        brief = ins.goodForPlayer ? `${rank === 1 ? 'you did the most of' : 'you helped with'} ${short(ins.name)}, ${timesWord(my.count)}` : `${short(ins.name)} hit you ${timesWord(my.count)}${my.raw > 0 ? ` for ${fmtNum(my.raw)}` : ''}, under what an average top-raid player takes`;
         cost = ins.goodForPlayer ? 0.6 : (ratio ?? 0.8);
       }
       items.push({
         ...base, brief, cost, severity, impact: severity === 'bad' ? 55 : severity === 'warn' ? 40 : severity === 'good' ? 8 : 15,
         title: `${short(ins.name)}: ${my.value}`,
-        text: `${ins.title} ${verb}`,
+        text: verb,
         comparison: comparisonText,
       });
     } else if (ins.type === 'dispel' || ins.type === 'interrupt') {
@@ -453,6 +457,15 @@ export interface RaidReview {
 }
 
 const SEV: Record<Severity, number> = { bad: 0, warn: 1, good: 2, info: 3 };
+
+// "P1P3" → " · phases 1 and 3"; "P2" → " · phase 2"; "PI" / "I1" → " · intermission".
+function phaseWords(phase: string | null | undefined): string {
+  if (!phase) return '';
+  const nums = [...phase.matchAll(/P(\d+)/g)].map(m => m[1]);
+  const inter = /PI|I\d/.test(phase);
+  const parts = [...(nums.length ? [nums.length === 1 ? `phase ${nums[0]}` : `phases ${nums.slice(0, -1).join(', ')} and ${nums[nums.length - 1]}`] : []), ...(inter ? ['intermission'] : [])];
+  return parts.length ? ` · ${parts.join(' and ')}` : '';
+}
 
 // The potion norm in words, from the top players' own logs; silent when there is no pool.
 function potionLine(norm: { n: number; spec: string; perPull: number; prePotShare: number } | null | undefined): string {

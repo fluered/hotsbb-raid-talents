@@ -450,7 +450,7 @@ function evaluateOne(ctx: Ctx, cfg: WipefestInsightConfig, req: string[], iv: Ar
         title: renderTitle(template(hitCount), { ability: dmgNames[0] ?? '', abilities: list(dmgNames), damageAbilities: list(dmgNames), damageAbilties: list(dmgNames), debuffAbilities: list(debNames), totalHits: hitCount, plural: hitCount === 1 ? '' : 's', totalDamage: k(totalDamage), averageDamage: k(castCount ? totalDamage / castCount : hits.length ? totalDamage / hits.length : 0), raidSize: ctx.raidSize, boss: ctx.bossName, total: hits.length }),
         stats: statsFor(ctx, cfg, { Hits: hitCount, Damage: totalDamage }, iv),
         rows: [...perPlayer.entries()].sort((a, b) => b[1].dmg - a[1].dmg || b[1].hits - a[1].hits).map(([id, v]) => playerRow(ctx, id, v.dmg > 0 ? `${k(v.dmg)} · ${v.hits} ${isDot ? (v.hits === 1 ? 'application' : 'applications') : (v.hits === 1 ? 'hit' : 'hits')}` : `${v.hits} hit${v.hits === 1 ? '' : 's'}, no damage`, v.dmg, v.hits)),
-        events: detail.filter(e => !isDot || !e.tick).map(e => ({ atSec: sec(ctx, e.timestamp), pid: e.targetID, text: `${nameOf(e.targetID)} hit by ${abilityName(e.abilityGameID, dmgNames[0] ?? '')} for ${k(e.amount ?? 0)}${e.absorbed ? ` (${k(e.absorbed)} absorbed)` : ''}${e.sourceInstance ? ` from ${nameOf(e.sourceID)} #${e.sourceInstance}` : ''}` })),
+        events: groupHits(detail.filter(e => !isDot || !e.tick)).map(g => ({ atSec: sec(ctx, g.t), pid: g.target, text: `${nameOf(g.target)} hit by ${abilityName(g.ability, dmgNames[0] ?? '')}${g.n > 1 ? ` ${g.n} times` : ''} for ${k(g.amount)}${g.absorbed ? ` (${k(g.absorbed)} absorbed)` : ''}${g.source ? ` from ${nameOf(g.source)}${g.inst ? ` #${g.inst}` : ''}` : ''}` })),
       });
       return finish(ins, primarySpell(ctx, req, isDamageCfg));
     }
@@ -620,6 +620,21 @@ function evaluateOne(ctx: Ctx, cfg: WipefestInsightConfig, req: string[], iv: Ar
     default:
       return null; // custom, reportComponent, heal, aggregate…: not evaluated here
   }
+}
+
+// Hits on the same player inside the same second become one line: "took three hits for
+// 583K" reads like a recap, three identical lines do not.
+function groupHits(evs: WfEvent[]): Array<{ t: number; target: number; ability: number; source: number; inst: number; n: number; amount: number; absorbed: number }> {
+  const out: Array<{ t: number; target: number; ability: number; source: number; inst: number; n: number; amount: number; absorbed: number }> = [];
+  for (const e of evs) {
+    const last = out[out.length - 1];
+    if (last && last.target === e.targetID && last.ability === e.abilityGameID && e.timestamp - last.t < 1000) {
+      last.n++; last.amount += e.amount ?? 0; last.absorbed += e.absorbed ?? 0;
+    } else {
+      out.push({ t: e.timestamp, target: e.targetID, ability: e.abilityGameID, source: e.sourceID, inst: e.sourceInstance ?? 0, n: 1, amount: e.amount ?? 0, absorbed: e.absorbed ?? 0 });
+    }
+  }
+  return out;
 }
 
 function isStackCfgPresent(ctx: Ctx, req: string[]): boolean {

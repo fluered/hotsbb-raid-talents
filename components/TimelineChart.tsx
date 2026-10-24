@@ -53,14 +53,16 @@ export default function TimelineChart({ timeline }: { timeline: Timeline }) {
         {phases.map((p, i) => {
           const x0 = x(p.fromSec), x1 = x(Math.min(p.toSec, dur));
           const inter = isIntermission(p.name);
-          const label = p.name.replace(/^(Stage|Phase) (One|Two|Three|Four|Five|\d+):\s*/i, m => m.replace(/:\s*$/, ' · ')).replace(/^Intermission:?\s*/i, 'Intermission · ');
+          const stageNo = p.name.match(/^(?:Stage|Phase) (One|Two|Three|Four|Five|Six|\d+)/i)?.[1];
+          const numbers: Record<string, string> = { one: '1', two: '2', three: '3', four: '4', five: '5', six: '6' };
+          const label = inter ? (x1 - x0 > 80 ? 'Intermission' : 'Int.') : stageNo ? `Stage ${numbers[stageNo.toLowerCase()] ?? stageNo}` : p.name;
           return (
             <g key={`${p.name}-${i}`}>
               <rect x={x0} y={6} width={Math.max(0, x1 - x0)} height={H - AXIS - 6} fill={inter ? '#f59e0b' : i % 2 ? '#ffffff' : '#000000'} opacity={inter ? 0.07 : i % 2 ? 0.03 : 0} />
               <line x1={x0} x2={x0} y1={6} y2={H - AXIS + 4} stroke={inter ? '#f59e0b' : '#3f3f46'} strokeWidth={1} opacity={inter ? 0.5 : 0.8} />
               <text x={x0 + 4} y={17} fill={inter ? '#fbbf24' : '#a1a1aa'} fontSize={9} fontFamily="var(--font-geist-mono), monospace" style={{ cursor: 'default' }}
                 onMouseLeave={hide} onMouseEnter={e => show(e, { tone: 'phase', title: p.name, lines: [`${fmtClock(p.fromSec)} – ${fmtClock(p.toSec)}`] })}>
-                {fit(label, x1 - x0 - 6)}
+                {fit(label, x1 - x0 - 6) || (inter ? 'I' : '')}
               </text>
             </g>
           );
