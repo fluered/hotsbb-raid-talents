@@ -707,16 +707,22 @@ export function buildRaidReview(opts: { fight: ReportFight; data: RaidFightData;
     text: `${potionLine(opts.potionNorm)}${noPotion.length ? ' Listed: everyone who used none.' : ' Everyone potted.'}`.trim(),
     rows: noPotion.map(x => ({ ...rowLink(x.p), value: '0', n: 0 })), rowsLabel: 'no potion',
   });
+  // Flask, food and rune as three cards: each is its own count, its own list, and its
+  // own severity (a missing flask matters more than a missing rune).
+  const prepCard = (id: string, label: string, missing: typeof cons, severity: Severity, impact: number) => {
+    items.push({
+      id, severity, group: 'prep', impact,
+      title: `${label}: ${n - missing.length} of ${n}`,
+      text: missing.length ? `Checked at the pull. Listed: everyone without one running when the fight started.` : `Everyone had one running at the pull.`,
+      rows: missing.map(x => ({ ...rowLink(x.p), value: `no ${label.toLowerCase()}`, n: 1 })), rowsLabel: `without a ${label.toLowerCase()}`,
+    });
+  };
   const noFlask = cons.filter(x => !x.c.flask);
   const noFood = cons.filter(x => !x.c.food);
   const noRune = cons.filter(x => !x.c.rune);
-  const prepRows = [...noFlask.map(x => ({ ...rowLink(x.p), value: 'no flask', n: 3 })), ...noFood.map(x => ({ ...rowLink(x.p), value: 'no food', n: 2 })), ...noRune.map(x => ({ ...rowLink(x.p), value: 'no rune', n: 1 }))];
-  items.push({
-    id: 'prep', severity: noFlask.length ? 'warn' : noFood.length > n / 3 ? 'warn' : 'good', group: 'prep', impact: 35 + noFlask.length * 3,
-    title: `Flasked ${n - noFlask.length} of ${n} · fed ${n - noFood.length} of ${n} · runed ${n - noRune.length} of ${n}`,
-    text: 'Checked at the pull: who had a flask, a food buff and an augment rune running when the fight started.',
-    rows: prepRows, rowsLabel: 'who was missing what',
-  });
+  prepCard('flask', 'Flask', noFlask, noFlask.length === 0 ? 'good' : noFlask.length >= n / 3 ? 'bad' : 'warn', 38 + noFlask.length * 3);
+  prepCard('food', 'Food', noFood, noFood.length === 0 ? 'good' : noFood.length > n / 3 ? 'warn' : 'info', 30 + noFood.length);
+  prepCard('rune', 'Rune', noRune, noRune.length === 0 ? 'good' : noRune.length === n ? 'info' : 'info', 20);
   // Enchants: slots most of the raid has enchanted are the expected ones.
   const geared = data.players.filter(p => p.gear);
   if (geared.length >= 5) {
