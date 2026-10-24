@@ -14,6 +14,9 @@ export async function GET(request: NextRequest) {
   const subtitle = (searchParams.get('s') ?? '').slice(0, 120);
   const kicker = (searchParams.get('k') ?? '').slice(0, 60);
   const accent = WOW_CLASS_HEX[searchParams.get('c') ?? ''] ?? '#f59e0b';
+  // Feature pills under the subtitle ("Raid builds · Mythic+ builds · …") for cards
+  // that stand for the whole site rather than one spec or boss.
+  const features = (searchParams.get('f') ?? '').split('|').map(x => x.trim().slice(0, 24)).filter(Boolean).slice(0, 5);
 
   return new ImageResponse(
     (
@@ -138,6 +141,31 @@ export async function GET(request: NextRequest) {
             }}
           >
             {subtitle}
+          </div>
+        )}
+
+        {features.length > 0 && (
+          <div style={{ display: 'flex', gap: 12, marginTop: 34 }}>
+            {features.map(f => (
+              <div
+                key={f}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  backgroundColor: 'rgba(255,255,255,0.04)',
+                  border: '1.5px solid rgba(255,255,255,0.1)',
+                  borderRadius: 999,
+                  padding: '9px 20px',
+                  color: '#d4d4d8',
+                  fontSize: 19,
+                  fontWeight: 600,
+                }}
+              >
+                <div style={{ display: 'flex', width: 8, height: 8, borderRadius: 4, backgroundColor: accent }} />
+                {f}
+              </div>
+            ))}
           </div>
         )}
 

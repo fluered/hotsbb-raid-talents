@@ -87,12 +87,16 @@ export async function generateMetadata({ searchParams }: PageProps): Promise<Met
     description,
     ...ogImageMeta({
       title, description,
-      imageTitle: cls && spec ? `${spec} ${cls}` : cls ? `${cls} Builds` : 'Raid Talents',
+      imageTitle: cls && spec ? `${spec} ${cls}` : cls ? `${cls} Builds` : 'HotsBB Talents',
       subtitle: bossName
         ? 'Consensus talent build & meta gear from top parses'
-        : `Meta builds for every ${diffLabel} raid boss, per spec`,
-      kicker: bossName ? `${diffLabel} · ${bossName}` : diffLabel,
+        : cls
+          ? `Meta builds for every ${diffLabel} raid boss, per spec`
+          : 'Meta talent builds and spec tier lists from top parses, per boss, per dungeon, per spec',
+      kicker: bossName ? `${diffLabel} · ${bossName}` : cls ? diffLabel : [season.expansionName, season.seasonLabel].filter(Boolean).join(' · '),
       className: cls,
+      // The site-wide card lists what the site does; a class or boss card stays about that build.
+      features: cls ? undefined : ['Raid builds', 'Mythic+ builds', 'Tier lists', 'In-game addon'],
     }),
   };
 }

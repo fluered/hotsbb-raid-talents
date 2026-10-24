@@ -22,19 +22,20 @@ export const WOW_CLASS_HEX: Record<string, string> = {
   'Warrior': '#C69B6D',
 };
 
-export function ogImageUrl(params: { title: string; subtitle?: string; kicker?: string; className?: string }): string {
+export function ogImageUrl(params: { title: string; subtitle?: string; kicker?: string; className?: string; features?: string[] }): string {
   const q = new URLSearchParams();
   q.set('t', params.title.slice(0, 80));
   if (params.subtitle) q.set('s', params.subtitle.slice(0, 120));
   if (params.kicker) q.set('k', params.kicker.slice(0, 60));
   if (params.className && WOW_CLASS_HEX[params.className]) q.set('c', params.className);
+  if (params.features?.length) q.set('f', params.features.slice(0, 5).join('|'));
   return `/api/og?${q.toString()}`;
 }
 
 // Drop-in openGraph/twitter metadata fragments. Spread into the object
 // generateMetadata returns; resolves against metadataBase (set in app/layout.tsx).
-export function ogImageMeta(params: { title: string; description: string; imageTitle: string; subtitle?: string; kicker?: string; className?: string }) {
-  const url = ogImageUrl({ title: params.imageTitle, subtitle: params.subtitle, kicker: params.kicker, className: params.className });
+export function ogImageMeta(params: { title: string; description: string; imageTitle: string; subtitle?: string; kicker?: string; className?: string; features?: string[] }) {
+  const url = ogImageUrl({ title: params.imageTitle, subtitle: params.subtitle, kicker: params.kicker, className: params.className, features: params.features });
   return {
     openGraph: {
       title: params.title,

@@ -1,6 +1,6 @@
 import { ImageResponse } from 'next/og';
 
-export const alt = 'HotsBB Raid Talents — Meta talent builds for every WoW Mythic boss';
+export const alt = 'HotsBB Talents — meta talent builds, spec tier lists and an in-game addon for WoW raids and Mythic+';
 export const size = { width: 1200, height: 630 };
 export const contentType = 'image/png';
 
@@ -84,7 +84,7 @@ export default function Image() {
           display: 'flex',
         }}
       >
-        Raid Talents
+        HotsBB Talents
       </div>
 
       {/* Amber divider */}
@@ -111,7 +111,31 @@ export default function Image() {
           flexWrap: 'wrap',
         }}
       >
-        Consensus talent builds & meta gear from top Mythic parses — per boss, per spec.
+        Meta talent builds and spec tier lists from top parses, per boss, per dungeon, per spec.
+      </div>
+
+      {/* What the site does */}
+      <div style={{ display: 'flex', gap: 12, marginTop: 34 }}>
+        {['Raid builds', 'Mythic+ builds', 'Tier lists', 'In-game addon'].map(f => (
+          <div
+            key={f}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+              backgroundColor: 'rgba(255,255,255,0.04)',
+              border: '1.5px solid rgba(255,255,255,0.1)',
+              borderRadius: 999,
+              padding: '9px 20px',
+              color: '#d4d4d8',
+              fontSize: 19,
+              fontWeight: 600,
+            }}
+          >
+            <div style={{ display: 'flex', width: 8, height: 8, borderRadius: 4, backgroundColor: '#f59e0b' }} />
+            {f}
+          </div>
+        ))}
       </div>
 
       {/* Bottom domain */}
