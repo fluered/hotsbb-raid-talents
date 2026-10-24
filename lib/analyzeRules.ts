@@ -1264,7 +1264,7 @@ function judgeTiming(row: TimelineRowInternal, aliveSec: number, preCast: { pool
   const n = members.length;
   const mine = row.mine.map(([s]) => s).sort((a, b) => a - b);
   const bands: Array<{ k: number; med: number; lo: number; hi: number; agree: boolean }> = [];
-  for (let k = 0; k < 6; k++) {
+  for (let k = 0; k < 40; k++) { // every press the top players make, not just the first few
     const kth = members.map(s => s[k]).filter((x): x is number => x != null).sort((a, b) => a - b);
     if (kth.length < n * TIMING_MIN_SHARE) break;
     const lo = kth[Math.floor(kth.length * 0.25)];
