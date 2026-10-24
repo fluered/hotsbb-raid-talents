@@ -1677,7 +1677,10 @@ local function RefreshCardButtons(card, variants)
       card.importBtn:SetEnabled(false)
     else
       card.diffBadge.label:SetText(diff.total .. " talent" .. (diff.total == 1 and "" or "s") .. " differ")
-      card.diffBadge.label:SetTextColor(COLOR_TEXT_MUTED[1], COLOR_TEXT_MUTED[2], COLOR_TEXT_MUTED[3])
+      -- Tinted by distance so the list scans at a glance: a few swaps (green), a
+      -- noticeable rework (amber), a different build entirely (red).
+      local tint = (diff.total <= 3 and COLOR_GREEN) or (diff.total <= 12 and COLOR_ORANGE) or COLOR_RED
+      card.diffBadge.label:SetTextColor(tint[1], tint[2], tint[3])
     end
     card.diffBadge:SetWidth(math.max(60, (card.diffBadge.label:GetStringWidth() or 60) + 8))
   end
