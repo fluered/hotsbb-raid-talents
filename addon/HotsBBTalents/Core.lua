@@ -1138,27 +1138,6 @@ end
 
 -- ── Copy popup & chat link ───────────────────────────────────────────────────
 
-StaticPopupDialogs["HOTSBB_TALENTS_COPY"] = {
-  text = "Ctrl+C to copy, then paste into Talents > Import",
-  button1 = CLOSE or "Close",
-  hasEditBox = true,
-  editBoxWidth = 340,
-  -- StaticPopup frames are shared with every other dialog in the game, so no SetScript on
-  -- their edit box — the dialog-level EditBoxOn* fields are the supported hooks.
-  OnShow = function(dialog, data)
-    local editBox = dialog.editBox or dialog.EditBox
-    if editBox then
-      editBox:SetMaxLetters(0)
-      editBox:SetText(data or "")
-      editBox:SetFocus()
-      editBox:HighlightText()
-    end
-  end,
-  EditBoxOnEscapePressed = function(self) self:GetParent():Hide() end,
-  EditBoxOnEnterPressed = function(self) self:GetParent():Hide() end,
-  timeout = 0, whileDead = true, hideOnEscape = true, preferredIndex = 3,
-}
-
 StaticPopupDialogs["HOTSBB_TALENTS_CLEAN"] = {
   text = "Delete every \"" .. LOADOUT_PREFIX .. "…\" talent loadout for your current spec?",
   button1 = YES or "Yes", button2 = NO or "No",
@@ -1166,8 +1145,79 @@ StaticPopupDialogs["HOTSBB_TALENTS_CLEAN"] = {
   timeout = 0, whileDead = true, hideOnEscape = true, preferredIndex = 3,
 }
 
+-- Copy box: the addon's own small panel rather than a shared StaticPopup, so it can
+-- watch for Ctrl+C and close itself the moment the string is copied. (Addons cannot
+-- read the clipboard; the key chord is the signal that the copy happened.)
+local copyFrame = CreatePanel(UIParent, "HotsBBTalentsCopyFrame")
+copyFrame:SetSize(460, 118)
+copyFrame:SetPoint("CENTER", 0, 120)
+copyFrame:SetFrameStrata("DIALOG")
+copyFrame:SetMovable(true)
+copyFrame:EnableMouse(true)
+copyFrame:SetClampedToScreen(true)
+copyFrame:RegisterForDrag("LeftButton")
+copyFrame:SetScript("OnDragStart", copyFrame.StartMoving)
+copyFrame:SetScript("OnDragStop", copyFrame.StopMovingOrSizing)
+copyFrame:Hide()
+Paint(copyFrame.bg, COLOR_BG, 0.98)
+AddBorder(copyFrame, COLOR_TEXT, 0.12)
+tinsert(UISpecialFrames, "HotsBBTalentsCopyFrame")
+
+local copyStrip = copyFrame:CreateTexture(nil, "ARTWORK")
+copyStrip:SetPoint("TOPLEFT"); copyStrip:SetPoint("TOPRIGHT"); copyStrip:SetHeight(3)
+Paint(copyStrip, COLOR_ACCENT, 0.9)
+
+copyFrame.title = copyFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+copyFrame.title:SetPoint("TOPLEFT", 14, -14)
+copyFrame.title:SetText("Copy build string")
+copyFrame.title:SetTextColor(COLOR_TEXT[1], COLOR_TEXT[2], COLOR_TEXT[3])
+
+copyFrame.hint = copyFrame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+copyFrame.hint:SetPoint("TOPLEFT", copyFrame.title, "BOTTOMLEFT", 0, -4)
+copyFrame.hint:SetText("Press Ctrl+C — the box closes once it's copied. Paste into Talents > Import.")
+copyFrame.hint:SetTextColor(COLOR_TEXT_MUTED[1], COLOR_TEXT_MUTED[2], COLOR_TEXT_MUTED[3])
+
+local copyClose = CreateFlatButton(copyFrame, "Close", "flat", 58, 22)
+copyClose:SetPoint("TOPRIGHT", -12, -12)
+copyClose:SetScript("OnClick", function() copyFrame:Hide() end)
+
+local copyBoxBg = CreatePanel(copyFrame)
+copyBoxBg:SetPoint("BOTTOMLEFT", 14, 14)
+copyBoxBg:SetPoint("BOTTOMRIGHT", -14, 14)
+copyBoxBg:SetHeight(28)
+Paint(copyBoxBg.bg, COLOR_TITLEBAR)
+AddBorder(copyBoxBg, COLOR_TEXT, 0.08)
+
+local copyBox = CreateFrame("EditBox", nil, copyBoxBg)
+copyBox:SetPoint("TOPLEFT", 8, 0)
+copyBox:SetPoint("BOTTOMRIGHT", -8, 0)
+copyBox:SetAutoFocus(false)
+copyBox:SetFontObject(GameFontNormalSmall)
+copyBox:SetTextColor(COLOR_TEXT[1], COLOR_TEXT[2], COLOR_TEXT[3])
+copyBox:SetMaxLetters(0)
+copyBox:SetScript("OnEscapePressed", function() copyFrame:Hide() end)
+copyBox:SetScript("OnEnterPressed", function() copyFrame:Hide() end)
+copyBox:SetScript("OnMouseUp", function(self) self:HighlightText() end)
+-- Read-only: any edit snaps the text back so a stray keystroke can't corrupt the string.
+copyBox:SetScript("OnTextChanged", function(self, userInput)
+  if userInput and copyFrame.current and self:GetText() ~= copyFrame.current then
+    self:SetText(copyFrame.current)
+    self:HighlightText()
+  end
+end)
+copyBox:SetScript("OnKeyUp", function(self, key)
+  if key == "C" and IsControlKeyDown() then
+    copyFrame:Hide()
+    Succeed("Build string copied — paste it into Talents > Import.")
+  end
+end)
+
 local function ShowCopyBox(importString)
-  StaticPopup_Show("HOTSBB_TALENTS_COPY", nil, nil, importString)
+  copyFrame.current = importString or ""
+  copyBox:SetText(copyFrame.current)
+  copyFrame:Show()
+  copyBox:SetFocus()
+  copyBox:HighlightText()
 end
 
 -- Blizzard's native clickable talent-build link (opens the import preview for anyone
