@@ -1,4 +1,6 @@
-import React from 'react';
+import React, { Suspense } from 'react';
+import Loading from './loading';
+import LinkPending from '../../components/LinkPending';
 import Link from 'next/link';
 import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
@@ -46,8 +48,21 @@ const ABILITY_ICON = (icon: string) => `https://assets.rpglogs.com/img/warcraft/
 const BOSS_ICON = (encounterId: number) => `https://assets.rpglogs.com/img/warcraft/bosses/${encounterId}-icon.jpg`;
 const classColor = (className: string) => POPULAR_SPECS.find(c => c.class === className)?.color ?? 'text-zinc-200';
 
+// A change of search params is the same route segment, so loading.tsx alone never shows
+// for a click from the pull list to a pull, or from a pull to a player: the old page
+// just sits there while the server works. A Suspense boundary keyed on the params
+// streams the loading screen first on every such navigation.
 export default async function AnalyzePage({ searchParams }: PageProps) {
   const sp = await searchParams;
+  const key = [sp.report, sp.fight, sp.player, sp.view].map(v => v ?? '').join('|');
+  return (
+    <Suspense key={key} fallback={<Loading />}>
+      <AnalyzeContent sp={sp} />
+    </Suspense>
+  );
+}
+
+async function AnalyzeContent({ sp }: { sp: Awaited<PageProps['searchParams']> }) {
   const raw = sp.report ?? '';
   const ref = raw ? parseReportInput(raw) : null;
 
@@ -538,7 +553,7 @@ function FightList({ overview }: { overview: ReportOverview }) {
                       </span>
                       {!f.kill && <span className="text-sm text-zinc-300">{Math.round(f.fightPercentage)}% left</span>}
                     </span>
-                    <span className="text-xs font-mono text-zinc-500 shrink-0">{fmtClock(f.durationMs / 1000)}</span>
+                    <span className="flex items-center gap-3 shrink-0"><LinkPending label="opening" /><span className="text-xs font-mono text-zinc-500">{fmtClock(f.durationMs / 1000)}</span></span>
                   </Link>
                 </li>
               ))}
@@ -585,7 +600,7 @@ function PlayerList({ overview, fight, players }: { overview: ReportOverview; fi
                     <span className={`font-bold ${classColor(p.className)}`}>{p.name}</span>
                     <span className="block text-xs text-zinc-500 truncate">{p.spec} {p.className}{p.server ? ` · ${p.server}` : ''}</span>
                   </span>
-                  {p.ilvl > 0 && <span className="text-xs font-mono text-zinc-500 shrink-0">{Math.round(p.ilvl)} ilvl</span>}
+                  <span className="flex items-center gap-3 shrink-0"><LinkPending label="reviewing" />{p.ilvl > 0 && <span className="text-xs font-mono text-zinc-500">{Math.round(p.ilvl)} ilvl</span>}</span>
                 </Link>
               </li>
             ))}
