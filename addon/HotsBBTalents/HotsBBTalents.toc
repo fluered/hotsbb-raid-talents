@@ -2,7 +2,7 @@
 ## Title: HotsBB Talents
 ## Notes: Meta talent builds per raid boss and dungeon for your spec, from top Warcraft Logs parses. One-click import, diff against your talents, preview on the tree. /hbt
 ## Author: HotsBB
-## Version: 2026.10.24-2
+## Version: 2026.10.28-1
 ## IconTexture: Interface\Icons\INV_Misc_Book_09
 ## SavedVariables: HotsBBTalentsDB
 ## SavedVariablesPerCharacter: HotsBBTalentsCharDB
