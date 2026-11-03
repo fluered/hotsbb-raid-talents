@@ -34,6 +34,8 @@ export interface FightEvents {
   startTime: number;
   endTime: number;
   phases: Array<{ id: number; startTime: number }>;
+  // WCL's own names for this encounter's phases, by phase id ("Stage One: …").
+  phaseNames: Record<number, string>;
   npcs: Array<{ id: number; gameID: number; name: string; instanceCount: number }>;
   abilities: Record<number, { name: string; icon: string }>;
   byConfig: Record<string, WfEvent[]>;
@@ -76,6 +78,7 @@ export async function fetchFightEvents(token: string, code: string, fight: Repor
   const fid = fight.id;
   const meta = await wclQuery(token, `{ reportData { report(code: "${code}") {
     fights(fightIDs: [${fid}]) { id startTime endTime enemyNPCs { id gameID instanceCount } phaseTransitions { id startTime } }
+    phases { encounterID phases { id name isIntermission } }
     masterData { actors(type: "NPC") { id gameID name } abilities { gameID name icon } }
   } } }`, 'wipefest-meta', null);
   const rep = meta?.reportData?.report ?? {};
@@ -87,18 +90,30 @@ export async function fetchFightEvents(token: string, code: string, fight: Repor
   const startTime = f.startTime ?? fight.startTime;
   const endTime = f.endTime ?? fight.endTime;
   const phases = (f.phaseTransitions ?? []).map((p: any) => ({ id: p.id, startTime: p.startTime }));
+  const phaseNames: Record<number, string> = {};
+  for (const z of rep.phases ?? []) if (z?.encounterID === fight.encounterID) for (const p of z.phases ?? []) if (p?.id != null && p.name) phaseNames[p.id] = String(p.name);
 
   // One query per distinct need; several definitions can share one.
   const pending = new Map<string, Pending>();
   const need = (key: string, args: string) => { if (!pending.has(key)) pending.set(key, { alias: `e${pending.size}`, args }); return key; };
   const npcByGame = new Map<number, number>(npcs.map((n: any) => [n.gameID, n.id]));
   const wants: Array<{ cfg: WipefestEventConfig; keys: string[] }> = [];
+  const byConfigSeed: Record<string, WfEvent[]> = {};
+  // Player deaths, once, for the `death` insight type (the killing blow names the spell).
+  if (config.insightConfigs.some(c => c.type === 'death' && String(c.group) !== 'raid')) need('pdeaths', 'dataType: Deaths');
   for (const cfg of config.eventConfigs) {
     if (cfg.group === 'raid') continue;
+    // A definition for another difficulty has nothing to find in this log.
+    if (cfg.difficulties?.length && !cfg.difficulties.includes(fight.difficulty)) continue;
     const fl = cfg.filter ?? {};
     const types = filterTypes(fl);
     const ids = filterAbilityIds(fl);
     const keys: string[] = [];
+    if (cfg.eventType === 'phase' || types.includes('phase')) {
+      // A phase definition keyed to a WCL phase id or the pull needs no events; one keyed
+      // to a cast or a death is fetched like that event (its `index`/`first` trims it).
+      if (fl.phase?.id != null || fl.timestamp != null || (!ids.length && !fl.actor && !fl.query)) { wants.push({ cfg, keys }); continue; }
+    }
     if (fl.query) {
       keys.push(need(`q:${fl.query}`, `filterExpression: ${JSON.stringify(fl.query)}`));
     } else if (types.some(t => t === 'damage' || t === 'miss')) {
@@ -159,8 +174,9 @@ export async function fetchFightEvents(token: string, code: string, fight: Repor
 
   // File events under each definition, applying its own filters.
   const playerIds = new Set(players.map(p => p.id));
+  if (results.has('pdeaths')) byConfigSeed['raid:deaths'] = (results.get('pdeaths') ?? []).map(e => ({ ...e, abilityGameID: Number((e as any).killingAbilityGameID ?? e.abilityGameID ?? 0) }));
   const roleById = new Map(players.map(p => [p.id, (p.role ?? '').toLowerCase()]));
-  const byConfig: Record<string, WfEvent[]> = {};
+  const byConfig: Record<string, WfEvent[]> = byConfigSeed;
   for (const { cfg, keys } of wants) {
     const fl = cfg.filter ?? {};
     const types = new Set(filterTypes(fl));
@@ -206,13 +222,29 @@ export async function fetchFightEvents(token: string, code: string, fight: Repor
       evs = evs.filter(e => roles.includes(roleById.get(e.targetID) ?? '') || roles.includes(roleById.get(e.sourceID) ?? ''));
     }
     evs.sort((a, b) => a.timestamp - b.timestamp);
+    // Trimming options, in Wipefest's order: the first event, the Nth event, one per
+    // spawn, the stack that counts.
+    if (fl.first && evs.length) evs = [evs[0]];
+    if (fl.index != null) evs = evs.length > fl.index ? [evs[fl.index]] : [];
+    if (fl.firstPerInstance || fl.firstPerInstancePerActor) {
+      const seen = new Set<string>();
+      evs = evs.filter(e => { const key = `${fl.firstPerInstancePerActor ? e.targetID + ':' : ''}${e.sourceInstance ?? 0}`; if (seen.has(key)) return false; seen.add(key); return true; });
+    }
+    if (fl.firstPerInstancePerTarget) {
+      const seen = new Set<string>();
+      evs = evs.filter(e => { const key = `${e.targetID}:${e.targetInstance ?? 0}`; if (seen.has(key)) return false; seen.add(key); return true; });
+    }
+    if (fl.stack) evs = evs.filter(e => e.stack === fl.stack);
     // Windows, as Wipefest applies them: `range` groups every event inside the window
     // into one (damage summed, so no damage is lost — a scream that hits 28 players is
     // one hit for 2.4M); `rangePer` does the same per target, source or instance.
     // `minimum` drops windows with fewer events (a "splash" needs two players hit).
-    const win = fl.range ?? fl.rangePer?.range;
+    const win = fl.range ?? fl.rangePer?.range ?? fl.rangePerActor;
     if (win && win > 0) {
       const keyOf = (e: WfEvent): string => {
+        // Per actor: a window for whoever the event belongs to (the player hit, or the
+        // caster for a cast), as Wipefest keys it by source or target.
+        if (fl.rangePerActor && !fl.rangePer) return playerIds.has(e.targetID) ? `t${e.targetID}` : `s${e.sourceID}`;
         if (!fl.rangePer) return 'all';
         const parts: string[] = [];
         if (fl.rangePer.target) parts.push(`t${e.targetID}`);
@@ -245,7 +277,7 @@ export async function fetchFightEvents(token: string, code: string, fight: Repor
     }
     byConfig[cfg.id] = evs;
   }
-  return { startTime, endTime, phases, npcs, abilities, byConfig };
+  return { startTime, endTime, phases, phaseNames, npcs, abilities, byConfig };
 }
 
 // ─── Evaluating ───────────────────────────────────────────────────────────────
@@ -263,14 +295,39 @@ const sec = (ctx: Ctx, t: number) => Math.max(0, (t - ctx.ev.startTime) / 1000);
 const k = (n: number) => fmtNum(n);
 const roleOf = (r: string | undefined) => (r ?? '').toLowerCase();
 
+// When each of the boss's phase definitions began in this pull. A definition is a
+// Warcraft Logs phase id, the pull itself (timestamp 0 or an empty filter), or an event
+// such as the Nth cast of a spell (its events are filed under the definition's id like
+// any other). Phases that never came are absent. Sorted by start.
+export function phaseStarts(ctx: Pick<Ctx, 'ev' | 'cfgById'>): Array<{ id: string; name: string; start: number }> {
+  const ps = ctx.ev.phases.slice().sort((a, b) => a.startTime - b.startTime);
+  const out: Array<{ id: string; name: string; start: number }> = [];
+  for (const c of ctx.cfgById.values()) {
+    if (c.eventType !== 'phase' && c.filter?.type !== 'phase') continue;
+    const fl = c.filter ?? {};
+    let start: number | null = null;
+    if (fl.phase?.id != null) {
+      const p = ps.find(x => x.id === fl.phase!.id);
+      // Phase 1 is the pull when the log carries no transition for it.
+      start = p ? p.startTime : fl.phase.id === 1 && !ps.some(x => x.id === 1) ? ctx.ev.startTime : null;
+    } else if (fl.timestamp != null) start = ctx.ev.startTime + fl.timestamp;
+    else if (!fl.type && !fl.ability && !fl.actor && !fl.query) start = ctx.ev.startTime;
+    else { const first = (ctx.ev.byConfig[c.id] ?? [])[0]; start = first ? first.timestamp : null; }
+    if (start != null) out.push({ id: c.id, name: c.name, start });
+  }
+  return out.sort((a, b) => a.start - b.start);
+}
+
+// "P1P3" → the time spans of those phase definitions in this pull; [] when none of them
+// came; null when the insight names no phase (or none can be resolved) and covers the pull.
 function phaseInterval(ctx: Ctx, phases: string | undefined): Array<[number, number]> | null {
   if (!phases) return null;
-  const want = [...phases.matchAll(/P?(\d+)/gi)].map(m => Number(m[1])).filter(n => Number.isFinite(n));
+  const want = requireIds(phases).filter(id => ctx.cfgById.has(id));
   if (!want.length) return null;
-  const ps = ctx.ev.phases.slice().sort((a, b) => a.startTime - b.startTime);
+  const starts = phaseStarts(ctx);
+  if (!starts.length) return null; // no phase data at all: nothing can be said either way
   const out: Array<[number, number]> = [];
-  for (let i = 0; i < ps.length; i++) if (want.includes(ps[i].id)) out.push([ps[i].startTime, ps[i + 1]?.startTime ?? ctx.ev.endTime]);
-  if (!ps.length && want.includes(1)) return null; // no phase data: treat the fight as phase 1
+  starts.forEach((p, i) => { if (want.includes(p.id)) out.push([p.start, starts[i + 1]?.start ?? ctx.ev.endTime]); });
   return out;
 }
 const inInterval = (iv: Array<[number, number]> | null, t: number) => !iv || iv.some(([s, e]) => t >= s && t < e);
@@ -405,7 +462,8 @@ function evaluateOne(ctx: Ctx, cfg: WipefestInsightConfig, req: string[], iv: Ar
     case 'hit': case 'hitHard': case 'hitUnlessRole': case 'hitWithoutDebuff': case 'hitWithDebuff': {
       const dmgNames = cfgNames(ctx, req, isDamageCfg);
       const debNames = cfgNames(ctx, req, c => isDebuffApplyCfg(c) && !isDamageCfg(c));
-      const filters: Array<(e: WfEvent) => boolean> = [e => e.type === 'damage'];
+      const hitTypes = new Set(['damage', ...req.flatMap(id => { const c = ctx.cfgById.get(id); return c && isDamageCfg(c) ? filterTypes(c.filter) : []; })]);
+      const filters: Array<(e: WfEvent) => boolean> = [e => hitTypes.has(e.type)];
       if (cfg.type === 'hitHard') filters.push(e => (e.amount ?? 0) + (e.overkill ?? 0) > (cfg.threshold ?? 0));
       if (cfg.type === 'hitUnlessRole') filters.push(e => roleOf(ctx.players.get(e.targetID)?.role) !== roleOf(cfg.role));
       if (cfg.type === 'hitWithoutDebuff' || cfg.type === 'hitWithDebuff') {
@@ -421,8 +479,24 @@ function evaluateOne(ctx: Ctx, cfg: WipefestInsightConfig, req: string[], iv: Ar
         }
         for (const [id, t] of open) (windows.get(id) ?? windows.set(id, []).get(id)!).push([t, ctx.ev.endTime]);
         const grace = cfg.gracePeriod ?? cfg.debuffApplicationTimeRelativeToDamageTime ?? 0;
-        const covered = (e: WfEvent) => (windows.get(e.targetID) ?? []).some(([s, en]) => e.timestamp >= s - grace && e.timestamp <= en + grace);
+        // With no remove definition, Wipefest excuses a hit only when that target gained
+        // the debuff inside the grace period before it (Wipefest.Core HitWithoutDebuff);
+        // with one, the debuff's whole window counts, padded by the grace period.
+        const hasRemove = req.some(id => { const c = ctx.cfgById.get(id); return !!c && isDebuffRemoveCfg(c); });
+        const covered = hasRemove
+          ? (e: WfEvent) => (windows.get(e.targetID) ?? []).some(([s, en]) => e.timestamp >= s - grace && e.timestamp <= en + grace)
+          : (e: WfEvent) => applies.some(a => a.targetID === e.targetID && a.timestamp <= e.timestamp && a.timestamp + Math.max(grace, 0) > e.timestamp);
         filters.push(e => (cfg.type === 'hitWithoutDebuff' ? !covered(e) : covered(e)));
+      }
+      if (cfg.excludeCastTarget) {
+        // The player the boss aimed the cast at is meant to be hit (Ravage, Corrosive Spit);
+        // only the others count. The relevant cast is the last one before the hit.
+        const casts = eventsFor(ctx, req, isCastCfg, null).filter(e => e.type === 'cast' || e.type === 'begincast');
+        filters.push(e => {
+          let last: WfEvent | null = null;
+          for (const c of casts) { if (c.timestamp <= e.timestamp + 100) last = c; else break; }
+          return !last || last.targetID !== e.targetID;
+        });
       }
       const passes = (e: WfEvent) => filters.every(f => f(e));
       // Totals and the hit count come from the definition's (possibly merged) events; who
@@ -433,7 +507,8 @@ function evaluateOne(ctx: Ctx, cfg: WipefestInsightConfig, req: string[], iv: Ar
       // A damage-over-time effect logs a tick every second or two; counting those as hits
       // says nothing. For one, a hit is an application (a non-tick event) and the damage
       // figure is the whole burn.
-      const isDot = detail.length > 0 && detail.filter(e => e.tick).length / detail.length >= 0.7;
+      const merged = req.some(id => { const c = ctx.cfgById.get(id); return !!c && isDamageCfg(c) && !!(c.filter.range || c.filter.rangePer || c.filter.rangePerActor); });
+      const isDot = !merged && detail.length > 0 && detail.filter(e => e.tick).length / detail.length >= 0.7;
       const counts = (e: WfEvent) => (isDot ? (e.tick ? 0 : 1) : 1);
       const perPlayer = new Map<number, { hits: number; dmg: number }>();
       let totalDamage = 0;
@@ -443,7 +518,8 @@ function evaluateOne(ctx: Ctx, cfg: WipefestInsightConfig, req: string[], iv: Ar
         cur.hits += counts(e); cur.dmg += e.amount ?? 0;
         perPlayer.set(e.targetID, cur);
       }
-      const hitCount = isDot ? hits.filter(e => !e.tick).length : hits.length;
+      // A title that counts "ticks" wants the ticks; any other counts applications of a DoT.
+      const hitCount = isDot && !/tick/i.test(cfg.title ?? '') ? hits.filter(e => !e.tick).length : hits.length;
       const ins = base({
         totalEvents: hitCount,
         tickShare: detail.length ? detail.filter(e => e.tick).length / detail.length : 0,
@@ -507,7 +583,9 @@ function evaluateOne(ctx: Ctx, cfg: WipefestInsightConfig, req: string[], iv: Ar
         spans.push({ key, id: e?.targetID ?? id, inst: e?.targetInstance ?? inst, start: o.t, end: e ? e.timestamp : ctx.ev.endTime, stack: o.stack });
       }
       const threshold = cfg.threshold ?? 0;
-      const kept = spans.filter(s => s.end - s.start >= threshold);
+      // Every span counts towards the average; the threshold only picks out the long ones.
+      const kept = spans.slice();
+      const overThreshold = threshold > 0 ? spans.filter(s => s.end - s.start > threshold).length : kept.length;
       const durs = kept.map(s => s.end - s.start);
       const avg = durs.length ? durs.reduce((a, b) => a + b, 0) / durs.length : 0;
       const total = durs.reduce((a, b) => a + b, 0);
@@ -517,8 +595,8 @@ function evaluateOne(ctx: Ctx, cfg: WipefestInsightConfig, req: string[], iv: Ar
       const label = (s: typeof kept[number]) => isNpc ? `${nameOf(s.id)}${s.inst ? ` #${s.inst}` : ''}` : nameOf(s.id);
       const ins = base({
         totalEvents: kept.length,
-        title: renderTitle(template(kept.length), { ability: names[0] ?? '', abilities: list(names), averageDuration: `${(avg / 1000).toFixed(1)}s`, totalDuration: `${(total / 1000).toFixed(1)}s`, averageMaxStack: Math.round(avgStack * 10) / 10, averageMaxStackPlural: Math.round(avgStack * 10) / 10 === 1 ? '' : 's', totalFrequency: kept.length, total: kept.length, plural: kept.length === 1 ? '' : 's', raidSize: ctx.raidSize, boss: ctx.bossName }),
-        stats: statsFor(ctx, cfg, { 'Average Duration': avg, 'Total Duration': total, 'Average Max Stack': avgStack }, iv),
+        title: renderTitle(template(kept.length), { ability: names[0] ?? '', abilities: list(names), averageDuration: `${(avg / 1000).toFixed(1)}s`, totalDuration: `${(total / 1000).toFixed(1)}s`, averageMaxStack: Math.round(avgStack * 10) / 10, averageMaxStackPlural: Math.round(avgStack * 10) / 10 === 1 ? '' : 's', totalFrequency: kept.length, totalFrequencyOverThreshold: overThreshold, threshold: `${(threshold / 1000).toFixed(threshold % 1000 ? 1 : 0)}s`, total: kept.length, plural: kept.length === 1 ? '' : 's', raidSize: ctx.raidSize, boss: ctx.bossName }),
+        stats: statsFor(ctx, cfg, { 'Average Duration': avg, 'Total Duration': total, 'Average Max Stack': avgStack, 'Frequency Over Threshold': overThreshold }, iv),
         rows: kept.slice().sort((a, b) => (b.end - b.start) - (a.end - a.start)).map(s => ({ id: ctx.players.has(s.id) ? s.id : null, name: label(s), className: ctx.players.get(s.id)?.className ?? '', count: 1, value: `${((s.end - s.start) / 1000).toFixed(1)}s${isStackCfgPresent(ctx, req) ? ` · ${s.stack} stack${s.stack === 1 ? '' : 's'}` : ''}`, raw: s.end - s.start })),
         events: kept.map(s => ({ atSec: sec(ctx, s.start), pid: ctx.players.has(s.id) ? s.id : undefined, text: `${label(s)} had ${names[0] ?? cfg.name}: ${fmtClock(sec(ctx, s.start))} → ${fmtClock(sec(ctx, s.end))} (${((s.end - s.start) / 1000).toFixed(1)}s${isStackCfgPresent(ctx, req) ? `, ${s.stack} stack${s.stack === 1 ? '' : 's'}` : ''})` })),
       });
@@ -590,20 +668,18 @@ function evaluateOne(ctx: Ctx, cfg: WipefestInsightConfig, req: string[], iv: Ar
       return finish(ins, primarySpell(ctx, req, () => true));
     }
     case 'soak': {
-      // Players hit per boss cast: each cast opens a window until the next one.
-      let casts = eventsFor(ctx, req, isCastCfg, iv).filter(e => e.type === 'cast');
+      // Hits within 1.5s of a cluster's first hit are one soak (Wipefest.Core Soak); the
+      // boss's cast is only used to name the event when it is defined.
       const hits = eventsFor(ctx, req, isDamageCfg, iv);
-      if (!casts.length) {
-        // No cast to anchor on: hits within 1.5s of each other are one soak.
-        const clusters: WfEvent[] = [];
-        for (const h of hits) if (!clusters.length || h.timestamp > clusters[clusters.length - 1].timestamp + 1500) clusters.push(h);
-        casts = clusters;
+      const castsDefined = eventsFor(ctx, req, isCastCfg, iv).filter(e => e.type === 'cast');
+      const clusters: WfEvent[][] = [];
+      for (const h of hits) {
+        const last = clusters[clusters.length - 1];
+        if (last && h.timestamp < last[0].timestamp + 1500) last.push(h); else clusters.push([h]);
       }
-      if (!casts.length) return null;
-      const counts = casts.map((c, i) => {
-        const end = casts[i + 1]?.timestamp ?? ctx.ev.endTime;
-        return new Set(hits.filter(h => h.timestamp >= c.timestamp - 500 && h.timestamp < end).map(h => h.targetID)).size;
-      });
+      if (!clusters.length) return null;
+      const casts = clusters.map(c => castsDefined.find(x => Math.abs(x.timestamp - c[0].timestamp) <= 3000) ?? c[0]);
+      const counts = clusters.map(c => c.length);
       const avg = counts.reduce((a, b) => a + b, 0) / counts.length;
       const names = cfgNames(ctx, req, isDamageCfg);
       const per = new Map<number, number>();
@@ -617,8 +693,91 @@ function evaluateOne(ctx: Ctx, cfg: WipefestInsightConfig, req: string[], iv: Ar
       });
       return finish(ins, primarySpell(ctx, req, isDamageCfg));
     }
+    case 'death': {
+      // "Died to {abilities} N times": player deaths whose killing blow was one of the
+      // named spells (Wipefest.Core Death), from the deaths already fetched.
+      const ids = new Set(req.flatMap(id => filterAbilityIds(ctx.cfgById.get(id)?.filter ?? {})));
+      const deaths = (ctx.ev.byConfig['raid:deaths'] ?? []).filter(e => e.type === 'death' && ctx.players.has(e.targetID) && inInterval(iv, e.timestamp) && (ids.size === 0 || ids.has(e.abilityGameID)));
+      const names = cfgNames(ctx, req, () => true);
+      const per = new Map<number, number>();
+      for (const e of deaths) per.set(e.targetID, (per.get(e.targetID) ?? 0) + 1);
+      const ins = base({
+        totalEvents: deaths.length,
+        title: renderTitle(template(deaths.length) || 'Died to {abilities} {totalEvents} time{plural}.', { ability: names[0] ?? '', abilities: list(names), totalEvents: deaths.length, totalFrequency: deaths.length, total: deaths.length, totalHits: deaths.length, plural: deaths.length === 1 ? '' : 's', raidSize: ctx.raidSize, boss: ctx.bossName }),
+        stats: statsFor(ctx, cfg, { Deaths: deaths.length }, iv),
+        rows: [...per.entries()].sort((a, b) => b[1] - a[1]).map(([id, n]) => playerRow(ctx, id, `${n}×`, n, n)),
+        events: deaths.map(e => ({ atSec: sec(ctx, e.timestamp), pid: e.targetID, text: `${nameOf(e.targetID)} died to ${abilityName(e.abilityGameID, names[0] ?? '')}` })),
+      });
+      if (!cfg.statistics?.length) { ins.stats = [{ name: 'Deaths', value: deaths.length, raw: deaths.length, higherIsBetter: false, display: String(deaths.length), kind: 'count', unit: '' }]; ins.mainStat = 'Deaths'; }
+      return finish(ins, [...ids][0] ?? null);
+    }
+    case 'stackThreshold': {
+      // "Gained {stacks} stacks of X N times": stack events that reached the count.
+      const want = cfg.stacks ?? cfg.threshold ?? 0;
+      const evs = eventsFor(ctx, req, c => isStackCfg(c) || isDebuffApplyCfg(c), iv).filter(e => (e.stack ?? 1) === want || (want <= 1 && !e.stack));
+      const names = cfgNames(ctx, req, () => true);
+      const per = new Map<number, number>();
+      for (const e of evs) per.set(e.targetID, (per.get(e.targetID) ?? 0) + 1);
+      const ins = base({
+        totalEvents: evs.length,
+        title: renderTitle(template(evs.length) || 'Gained {stacks} stacks of {abilities} {totalFrequency} time{plural}.', { ability: names[0] ?? '', abilities: list(names), stacks: want, totalFrequency: evs.length, totalEvents: evs.length, total: evs.length, totalHits: evs.length, plural: evs.length === 1 ? '' : 's', raidSize: ctx.raidSize, boss: ctx.bossName }),
+        stats: statsFor(ctx, cfg, { Frequency: evs.length, Hits: evs.length }, iv),
+        rows: [...per.entries()].sort((a, b) => b[1] - a[1]).map(([id, n]) => playerRow(ctx, id, `${n}×`, n, n)),
+        events: evs.map(e => ({ atSec: sec(ctx, e.timestamp), pid: e.targetID, text: `${nameOf(e.targetID)} reached ${want} stacks of ${abilityName(e.abilityGameID, names[0] ?? '')}` })),
+      });
+      if (!cfg.statistics?.length) { ins.stats = [{ name: 'Frequency', value: evs.length, raw: evs.length, higherIsBetter: false, display: String(evs.length), kind: 'count', unit: '' }]; ins.mainStat = 'Frequency'; }
+      return finish(ins, primarySpell(ctx, req, () => true));
+    }
+    case 'phaseDuration': {
+      // "Had an average {phase} duration of X": each run of the named phase definition,
+      // measured to the next phase start (Wipefest.Core PhaseDuration).
+      const starts = phaseStarts(ctx);
+      const wantName = cfg.phase ?? '';
+      const wantIds = new Set(req);
+      const runs = starts.map((p, i) => ({ p, dur: (starts[i + 1]?.start ?? ctx.ev.endTime) - p.start })).filter(x => x.p.name === wantName || wantIds.has(x.p.id));
+      if (!runs.length) return null;
+      const avg = runs.reduce((s, r) => s + r.dur, 0) / runs.length;
+      const ins = base({
+        totalEvents: runs.length,
+        title: renderTitle(template(runs.length) || 'Had an average {phase} duration of {averageDuration}.', { phase: runs[0].p.name, averageDuration: fmtClock(avg / 1000), totalDuration: fmtClock(runs.reduce((s, r) => s + r.dur, 0) / 1000), total: runs.length, plural: runs.length === 1 ? '' : 's', raidSize: ctx.raidSize, boss: ctx.bossName }),
+        stats: statsFor(ctx, cfg, { 'Average Duration': avg }, iv),
+        events: runs.map(r => ({ atSec: sec(ctx, r.p.start), text: `${r.p.name}: ${fmtClock(sec(ctx, r.p.start))} → ${fmtClock(sec(ctx, r.p.start + r.dur))} (${fmtClock(r.dur / 1000)})` })),
+      });
+      if (!cfg.statistics?.length) { ins.stats = [{ name: 'Average Duration', value: avg, raw: avg, higherIsBetter: false, display: fmtStat(avg, 'duration'), kind: 'duration', unit: '' }]; ins.mainStat = 'Average Duration'; }
+      return ins;
+    }
+    case 'hitFriendly': case 'debuffFriendly': {
+      // Player-sourced damage or debuffs on players ("Hit friendlies with X N times").
+      const evs = eventsFor(ctx, req, () => true, iv).filter(e => ctx.players.has(e.sourceID) && ctx.players.has(e.targetID) && (cfg.type === 'hitFriendly' ? e.type === 'damage' : /debuff/.test(e.type)));
+      const names = cfgNames(ctx, req, () => true);
+      const bySource = new Map<number, number>();
+      for (const e of evs) bySource.set(e.sourceID, (bySource.get(e.sourceID) ?? 0) + 1);
+      const ins = base({
+        totalEvents: evs.length,
+        title: renderTitle(template(evs.length) || (cfg.type === 'hitFriendly' ? 'Hit friendlies with {abilities} {totalHits} time{plural}.' : 'Gave friendlies {abilities} {totalHits} time{plural}.'), { ability: names[0] ?? '', abilities: list(names), totalHits: evs.length, totalFrequency: evs.length, totalEvents: evs.length, total: evs.length, plural: evs.length === 1 ? '' : 's', raidSize: ctx.raidSize, boss: ctx.bossName }),
+        stats: statsFor(ctx, cfg, { Hits: evs.length }, iv),
+        rows: [...bySource.entries()].sort((a, b) => b[1] - a[1]).map(([id, n]) => playerRow(ctx, id, `${n}×`, n, n)),
+        events: evs.map(e => ({ atSec: sec(ctx, e.timestamp), pid: e.sourceID, text: `${nameOf(e.sourceID)} ${cfg.type === 'hitFriendly' ? 'hit' : 'debuffed'} ${nameOf(e.targetID)} with ${abilityName(e.abilityGameID, names[0] ?? '')}` })),
+      });
+      return finish(ins, primarySpell(ctx, req, () => true));
+    }
+    case 'aggregate': {
+      // Across pulls Wipefest totals these; on one pull it is a plain count of the events.
+      const evs = eventsFor(ctx, req, () => true, iv);
+      if (!evs.length && !cfg.titleWhenNoEvents) return null;
+      const names = cfgNames(ctx, req, () => true);
+      const per = new Map<number, number>();
+      for (const e of evs) { const who = ctx.players.has(e.targetID) ? e.targetID : e.sourceID; per.set(who, (per.get(who) ?? 0) + 1); }
+      const ins = base({
+        totalEvents: evs.length,
+        title: renderTitle(template(evs.length) || '{abilities}: {totalEvents} time{plural}.', { ability: names[0] ?? '', abilities: list(names), totalEvents: evs.length, totalFrequency: evs.length, totalHits: evs.length, total: evs.length, plural: evs.length === 1 ? '' : 's', raidSize: ctx.raidSize, boss: ctx.bossName }),
+        stats: statsFor(ctx, cfg, { Frequency: evs.length, Hits: evs.length, Damage: evs.reduce((s, e) => s + (e.amount ?? 0), 0) }, iv),
+        rows: [...per.entries()].sort((a, b) => b[1] - a[1]).map(([id, n]) => playerRow(ctx, id, `${n}×`, n, n)),
+      });
+      return finish(ins, primarySpell(ctx, req, () => true));
+    }
     default:
-      return null; // custom, reportComponent, heal, aggregate…: not evaluated here
+      return null; // custom, reportComponent, causticGlobule…: hosted code, not reproducible from the definitions
   }
 }
 

@@ -10,19 +10,22 @@ import SiteShell from '../../components/SiteShell';
 import SiteNavLinks from '../../components/SiteNavLinks';
 import TimelineChart from '../../components/TimelineChart';
 import { getWclToken, getBlizzardToken, getTalentTreeId, getCachedTalentLayout, loadEntryTalentMap, getRaidStructure, getSeasonState, mapConcurrent, POPULAR_SPECS } from '../../lib/wow';
-import { getBossKnowledge, getItemOnUse, getSpellInfo, isCombatPotion, isHealingPotionSpell, type BossKnowledge } from '../../lib/bossMechanics';
+import { getBossKnowledge, getItemOnUse, getSpellInfo, isCombatPotion, isHealingPotionSpell, lookupLabel, lookupNote, type BossKnowledge } from '../../lib/bossMechanics';
 import { isDefensive, defensiveKey, registerHealingPotionNames } from '../../lib/defensives';
 import {
-  parseReportInput, getReportOverview, getFightPlayers, getPlayerProfile, getPoolSummary, getRaidMechanicStats,
+  parseReportInput, getReportOverview, getFightPlayers, getPlayerProfile, getPoolSummary, getRaidMechanicStats, fetchBossCastEvents,
   DIFFICULTY_LABELS, type ReportFight, type ReportOverview, type FightPlayer, type PoolSummary, type RaidMechanicStats,
 } from '../../lib/analyze';
-import { reviewPlayer, registerPotionNames, buffFamily, fmtClock, median, type Finding, type Review, type Timeline, type TalentContext } from '../../lib/analyzeRules';
-import { getRaidFightData, buildRaidReview, buildMechanicItems, buildPlayerMechanicItems, composeRaidSummary, type RaidReview, type RaidItem } from '../../lib/raidReview';
+import { reviewPlayer, registerPotionNames, buffFamily, fmtClock, median, type BossCastMark, type Finding, type Review, type Timeline, type TalentContext } from '../../lib/analyzeRules';
+import { getRaidFightData, buildRaidReview, buildMechanicItems, buildPlayerMechanicItems, composeRaidSummary, type RaidReview, type RaidItem, type WipefestPlacement } from '../../lib/raidReview';
 import { composeSummary, costOf, paceClause } from '../../lib/summary';
-import { getLorrgsSpells, lorrgsMajorsForSpec, lorrgsNonMajorsForSpec } from '../../lib/lorrgsSpells';
+import { getLorrgsSpells, getLorrgsExternals, lorrgsMajorsForSpec, lorrgsNonMajorsForSpec } from '../../lib/lorrgsSpells';
+import { getLorrgsBossCasts, LORRGS_BOSS_CREDIT } from '../../lib/lorrgsBosses';
+import { BIGWIGS_CREDIT } from '../../lib/bigwigs';
 import { getWipefestFightConfig, wipefestCredit, type WipefestFightConfig } from '../../lib/wipefestConfig';
-import { evaluateInsights, fetchFightEvents, summariseComparison, type MechanicComparison, type MechanicInsight } from '../../lib/wipefestInsights';
+import { evaluateInsights, fetchFightEvents, phaseStarts, summariseComparison, type MechanicComparison, type MechanicInsight } from '../../lib/wipefestInsights';
 import { getOrSetPersistent } from '../../lib/persistentCache';
+import { getWipefestBuckets, wipefestPercentile } from '../../lib/wipefestStats';
 import { unstable_cache } from 'next/cache';
 
 // Log review (preview). Unlisted while it's being built: no nav link, no indexing.
@@ -118,32 +121,48 @@ async function AnalyzeContent({ sp }: { sp: Awaited<PageProps['searchParams']> }
             ]);
             const review = buildRaidReview({ fight, data, boss, raidStats: raidStats.raidStats, cooldowns, charges, potionNorm: potionNormOf(raidStats.pool, raidStats.poolSpec) });
             const wipeDeaths = fight.kill ? 0 : data.raidDeaths.filter(d => data.raidDeaths.filter(x => x.killer === d.killer && Math.abs(x.atSec - d.atSec) <= 3).length >= 5).length;
+            // Wipefest's percentile buckets for this boss: where this raid sits among the raids
+            // Wipefest has analysed, per mechanic (an experiment; shown only where a bucket exists).
+            const placements: Record<string, WipefestPlacement> = {};
             if (mech.insights.length) {
-              const cards = buildMechanicItems(mech.insights, comparison, players.length);
+              const buckets = await getWipefestBuckets(fight.encounterID);
+              const diffLabel = DIFFICULTY_LABELS[fight.difficulty] ?? '';
+              if (buckets) for (const ins of mech.insights) {
+                const main = ins.stats.find(s => s.name === ins.mainStat) ?? ins.stats[0];
+                if (!main) continue;
+                const pct = wipefestPercentile(buckets, ins.configId, main.name, diffLabel, main.value);
+                if (pct != null) placements[ins.configId] = { percentile: pct, statistic: main.name, difficulty: diffLabel, date: buckets.date };
+              }
+            }
+            if (mech.insights.length) {
+              const cards = annotateCards(buildMechanicItems(mech.insights, comparison, players.length, placements), boss);
               // The definition-based cards replace our own type-guessed cards for the same abilities.
               const covered = cards.map(c => c.title.toLowerCase());
               const subject = (t: string) => t.replace(/^(dispelled|interrupted|soaked) /i, '').replace(/ (hit|soaked by|picked|soaked) .*$/i, '').replace(/ d+ of d+ times?$/i, '').toLowerCase();
               review.items = review.items.filter(i => i.group !== 'mechanics' || !covered.some(t => t.includes(subject(i.title))));
               review.items.push(...cards);
-              review.sourcesNote = [review.sourcesNote?.replace(/\.$/, ''), wipefestCredit(mech.config)].filter(Boolean).join(', ') + '.';
+              review.sourcesNote = [review.sourcesNote?.replace(/\.$/, ''), wipefestCredit(mech.config), boss?.sources.bigwigs ? BIGWIGS_CREDIT : ''].filter(Boolean).join(', ') + '.';
             }
-            composeRaidSummary(review, fight, { topMedianSec: raidStats.topMedianSec, deaths: data.raidDeaths.length, wipeDeaths });
-            state = { kind: 'raid', overview, fight, players, review, debug: { summary: review.summaryDebug, wipefest: !!mech.config, insights: mech.insights.map(i => `${i.configId} ${i.type} n=${i.totalEvents} | ${i.title} | ${i.stats.map(s => `${s.name}=${s.display}${s.unit ? ' ' + s.unit : ''}`).join(', ')}`), errors: mech.errors, comparisonN: comparison?.n ?? 0, comparison: comparison?.byConfig } };
+            composeRaidSummary(review, fight, { topMedianSec: raidStats.topMedianSec, deaths: data.raidDeaths.length, wipeDeaths, lastPhaseName: mech.phases.length ? mech.phases[mech.phases.length - 1].name : null });
+            state = { kind: 'raid', overview, fight, players, review, debug: { summary: review.summaryDebug, wipefest: !!mech.config, insights: mech.insights.map(i => `${i.configId} ${i.type} n=${i.totalEvents} | ${i.title} | ${i.stats.map(s => `${s.name}=${s.display}${s.unit ? ' ' + s.unit : ''}`).join(', ')}`), errors: mech.errors, comparisonN: comparison?.n ?? 0, comparison: comparison?.byConfig, placements: Object.fromEntries(Object.entries(placements).map(([k, v]) => [k, `${v.statistic} p${v.percentile}`])), mainValues: Object.fromEntries(mech.insights.map(i => [i.configId, (i.stats.find(s => s.name === i.mainStat) ?? i.stats[0])?.value ?? null])) } };
           } else if (!player) {
             state = { kind: 'players', overview, fight, players };
           } else {
             const poolDifficulty = fight.difficulty >= 4 ? fight.difficulty : 4;
-            const [profile, { pool, raidStats }, talents, boss, lorrgs, mech] = await Promise.all([
-              getPlayerProfile(token, overview.code, fight, player),
+            // The externals list (lorrgs) decides which buffs on this player are looked up.
+            const externalIds = ((await getLorrgsExternals()) ?? []).filter(e => e.kind === 'buff').flatMap(e => e.ids);
+            const [profile, { pool, raidStats }, talents, boss, lorrgs, mech, bossCasts] = await Promise.all([
+              getPlayerProfile(token, overview.code, fight, player, { externalIds }),
               loadPoolWithRaidStats(token, fight, player, poolDifficulty),
               loadTalentContext(player, fight, poolDifficulty),
               loadBossKnowledge(token, fight),
               getLorrgsSpells(),
               loadMechanicInsights(token, overview.code, fight, players),
+              loadBossCasts(token, overview.code, fight),
             ]);
             const topFights = (pool?.fights ?? []).filter(f => f.difficulty === fight.difficulty).slice(0, 3);
             const mechComparison = mech.config && topFights.length >= 2 ? await loadMechanicComparison(token, fight, topFights, mech.config) : null;
-            const mechanics = mech.insights.length ? buildPlayerMechanicItems(mech.insights, mechComparison, player.id, players.length) : [];
+            const mechanics = mech.insights.length ? annotateCards(buildPlayerMechanicItems(mech.insights, mechComparison, player.id, players.length), boss) : [];
             const majorSpells = lorrgs ? lorrgsMajorsForSpec(lorrgs, player.className, player.spec) : null;
             const notMajorSpells = lorrgs ? lorrgsNonMajorsForSpec(lorrgs, player.className, player.spec) : null;
             // Which casts are combat potions, by Wowhead's text (names change every season).
@@ -171,14 +190,18 @@ async function AnalyzeContent({ sp }: { sp: Awaited<PageProps['searchParams']> }
               mapConcurrent(pool?.trinkets ?? [], 8, async t => ({ name: t.name, ...(await getItemOnUse(t.id).catch(() => noUse)) })),
             ]);
             const poolItemUses = Object.fromEntries(poolTrinketUses.filter(t => t.onUse || t.effectNames.length).map(t => [t.name, { useSpellId: t.useSpellId, useSpellName: t.useSpellName, effectNames: t.effectNames }]));
-            const review = reviewPlayer({ player, fight, profile, pool, talents, boss, raidStats, cooldowns, charges, trinkets, poolItemUses, majorSpells, notMajorSpells, context: { mechanicEvents: mechanics.flatMap(m => m.events ?? []), phases: mech.phases } });
+            const review = reviewPlayer({ player, fight, profile, pool, talents, boss, raidStats, cooldowns, charges, trinkets, poolItemUses, majorSpells, notMajorSpells, context: {
+              mechanicEvents: mechanics.flatMap(m => m.events ?? []), phases: mech.phases, bossCasts: bossCasts ?? [],
+              playerNames: Object.fromEntries(players.map(p => [p.id, p.name])), externalsTracked: externalIds.length > 0,
+            } });
+            if (bossCasts?.length) review.sourcesNote = [review.sourcesNote?.replace(/\.$/, ''), LORRGS_BOSS_CREDIT].filter(Boolean).join(', ') + '.';
             if (mechanics.length) {
               // The definition-based cards replace the type-guessed mechanic findings for the same abilities.
               const covered = mechanics.map(m => m.title.toLowerCase());
               const coveredIds = new Set(mechanics.map(m => m.spellId).filter((x): x is number => !!x));
               const subject = (t: string) => t.replace(/^(too much damage from|needless damage from|hit by|soaked|took) /i, '').replace(/ (hit you|picked you|soaked|took|dealt|hit|without).*$/i, '').toLowerCase();
               review.findings = review.findings.filter(f => f.category !== 'mechanics' || !((f.spellId && coveredIds.has(f.spellId)) || covered.some(t => t.includes(subject(f.title)))));
-              if (mech.config) review.sourcesNote = [review.sourcesNote?.replace(/\.$/, ''), wipefestCredit(mech.config)].filter(Boolean).join(', ') + '.';
+              if (mech.config) review.sourcesNote = [review.sourcesNote?.replace(/\.$/, ''), wipefestCredit(mech.config), boss?.sources.bigwigs ? BIGWIGS_CREDIT : ''].filter(Boolean).join(', ') + '.';
             }
             {
               const pace = fight.kill ? paceClause(fight.durationMs / 1000, topKillMedianSec(pool, fight.difficulty)) : '';
@@ -362,12 +385,16 @@ async function loadMechanicInsights(token: string, code: string, fight: ReportFi
     const { insights, phases } = await unstable_cache(
       async () => {
         const ev = await fetchFightEvents(token, code, fight, players, config);
-        const names = new Map(config.eventConfigs.filter(c => c.filter?.type === 'phase' && c.filter.phase?.id != null).map(c => [c.filter.phase!.id, c.name]));
+        // Wipefest's phase definitions resolved against this pull (a WCL phase id, the pull,
+        // or a cast), named as Wipefest names them; WCL's own names fill any gap.
+        const starts = phaseStarts({ ev, cfgById: new Map(config.eventConfigs.map(c => [c.id, c])) });
         const sorted = ev.phases.slice().sort((a, b) => a.startTime - b.startTime);
-        const phases = sorted.map((p, i) => ({ name: names.get(p.id) ?? `Phase ${p.id}`, fromSec: Math.max(0, (p.startTime - ev.startTime) / 1000), toSec: ((sorted[i + 1]?.startTime ?? ev.endTime) - ev.startTime) / 1000 }));
+        const phases = starts.length
+          ? starts.map((p, i) => ({ name: p.name, fromSec: Math.max(0, (p.start - ev.startTime) / 1000), toSec: ((starts[i + 1]?.start ?? ev.endTime) - ev.startTime) / 1000 }))
+          : sorted.map((p, i) => ({ name: ev.phaseNames[p.id] ?? `Phase ${p.id}`, fromSec: Math.max(0, (p.startTime - ev.startTime) / 1000), toSec: ((sorted[i + 1]?.startTime ?? ev.endTime) - ev.startTime) / 1000 }));
         return { insights: evaluateInsights(fight, ev, players, config, errors), phases };
       },
-      [`analyze-wf-v16-${code}-${fight.id}`],
+      [`analyze-wf-v19-${code}-${fight.id}`],
       { revalidate: 7 * 86400 },
     )();
     return { config, insights, errors, phases };
@@ -382,10 +409,10 @@ async function loadMechanicInsights(token: string, code: string, fight: ReportFi
 // say what the best raids manage. Keyed by boss and difficulty, kept a week.
 async function loadMechanicComparison(token: string, fight: ReportFight, fights: Array<{ code: string; fightId: number; difficulty: number }>, config: WipefestFightConfig): Promise<MechanicComparison | null> {
   try {
-    return await getOrSetPersistent<MechanicComparison>(`analyze-wfcmp-v16-${fight.encounterID}-${fight.difficulty}`, 7 * 86400, async () => {
+    return await getOrSetPersistent<MechanicComparison>(`analyze-wfcmp-v19-${fight.encounterID}-${fight.difficulty}`, 7 * 86400, async () => {
       const runs = await mapConcurrent(fights, 2, async f => {
         const ps = await getFightPlayers(token, f.code, f.fightId);
-        const stub: ReportFight = { id: f.fightId, encounterID: fight.encounterID, name: fight.name, difficulty: f.difficulty, kill: true, fightPercentage: 0, startTime: 0, endTime: 0, durationMs: 0 };
+        const stub: ReportFight = { id: f.fightId, encounterID: fight.encounterID, name: fight.name, difficulty: f.difficulty, kill: true, fightPercentage: 0, bossPercentage: 0, lastPhase: null, lastPhaseIsIntermission: false, startTime: 0, endTime: 0, durationMs: 0 };
         return evaluateInsights(stub, await fetchFightEvents(token, f.code, stub, ps, config), ps, config);
       });
       return summariseComparison(runs);
@@ -438,12 +465,52 @@ async function loadTalentContext(player: FightPlayer, fight: ReportFight, diffic
 // DBM mechanic labels + Blizzard journal text for this boss. Needs the zone name
 // (from the cached WCL zone list) and the expansion (from season state) to find the
 // right DBM folder. Optional like everything else around the core review.
+// What the addon authors say about a card's ability: BigWigs' or DBM's note on the debuff
+// ("This debuff will apply to you if your group fails to soak Serpent's Bite") and DBM's
+// short name for it ("Tank Line"). Added under the card, never in place of the numbers.
+function annotateCards(cards: RaidItem[], boss: BossKnowledge | null): RaidItem[] {
+  if (!boss) return cards;
+  for (const c of cards) {
+    if (!c.spellId || c.explain) continue;
+    const note = lookupNote(boss, '', c.spellId);
+    const label = lookupLabel(boss, '', c.spellId);
+    const parts = [
+      note ? `${note.source}: ${note.note.replace(/\.$/, '')}${note.mythicOnly ? ' (Mythic only)' : ''}.` : '',
+      label?.alt ? `DBM files it as "${label.alt}".` : boss.renames[String(c.spellId)] ? `BigWigs files it as "${boss.renames[String(c.spellId)]}".` : '',
+    ].filter(Boolean);
+    if (parts.length) c.explain = parts.join(' ');
+  }
+  return cards;
+}
+
+// lorrgs' boss lane for this pull: its curated casts for the encounter, found in this
+// log. Null when lorrgs has no file for the boss.
+async function loadBossCasts(token: string, code: string, fight: ReportFight): Promise<BossCastMark[] | null> {
+  try {
+    const [zones, season] = await Promise.all([getRaidStructure(token), getSeasonState()]);
+    const zone = (zones as Array<{ name: string; encounters?: Array<{ id: number }> }>).find(z => (z.encounters ?? []).some(e => e.id === fight.encounterID));
+    if (!zone) return null;
+    const defs = await getLorrgsBossCasts(season.expansionName, zone.name, fight.encounterID);
+    if (!defs) return null;
+    const casts = defs.casts.filter(c => c.kind === 'cast');
+    const evs = await fetchBossCastEvents(token, code, fight, casts.flatMap(c => c.ids));
+    return evs.map(e => {
+      const d = casts.find(c => c.ids.includes(e.spellId));
+      return d ? { atSec: e.atSec, name: d.name, spellId: d.spellId, icon: d.icon, durationSec: d.durationSec, note: d.note, color: d.color } : null;
+    }).filter((x): x is BossCastMark => !!x);
+  } catch (err) {
+    console.error('analyze: boss casts unavailable', err);
+    return null;
+  }
+}
+
 async function loadBossKnowledge(token: string, fight: ReportFight): Promise<BossKnowledge | null> {
   try {
     const [zones, season, blizzToken] = await Promise.all([getRaidStructure(token), getSeasonState(), getBlizzardToken()]);
-    const zone = (zones as Array<{ name: string; encounters?: Array<{ id: number }> }>).find(z => (z.encounters ?? []).some(e => e.id === fight.encounterID));
+    const zone = (zones as Array<{ name: string; encounters?: Array<{ id: number; journalID?: number }> }>).find(z => (z.encounters ?? []).some(e => e.id === fight.encounterID));
     if (!zone) return null;
-    return await getBossKnowledge({ expansionName: season.expansionName, zoneName: zone.name, bossName: fight.name, blizzToken });
+    const journalId = (zone.encounters ?? []).find(e => e.id === fight.encounterID)?.journalID ?? null;
+    return await getBossKnowledge({ expansionName: season.expansionName, zoneName: zone.name, bossName: fight.name, blizzToken, encounterId: fight.encounterID, journalId });
   } catch (err) {
     console.error('analyze: boss knowledge unavailable', err);
     return null;
@@ -895,6 +962,9 @@ function TimelineView({ timeline }: { timeline: Timeline }) {
         <span className="inline-block w-3 h-2 rounded-sm align-middle mr-1.5" style={{ background: 'rgba(253,230,138,0.25)' }} />where the middle half of the top players press it, with{' '}
         <span className="inline-block w-0 h-0 align-middle mx-1" style={{ borderLeft: '5px solid transparent', borderRight: '5px solid transparent', borderTop: '6px solid #fde68a' }} />their median — hover any band or bar for the times
         {phases.length > 0 && <> · phases run across the top{phases.some(p => isIntermission(p.name)) ? ', intermissions in amber' : ''}</>}
+        {(timeline.bossCasts?.length ?? 0) > 0 && <> · the boss&apos;s casts sit in the lane under the phases (lorrgs&apos; definitions; hover one for its name)</>}
+        {timeline.lustSec != null && <> · <span className="inline-block w-px h-3 align-middle mr-1.5 border-l border-dashed border-sky-400" />Bloodlust</>}
+        {timeline.rows.some(r => r.prePull) && <> · a bar starting at 0:00 is a press before the pull (its buff was up at the start)</>}
         {timeline.rows.some(r => r.kind === 'buff') && <> · below the dashed line: cooldowns that show up as a buff rather than a cast</>}
         {' '}· major cooldowns only: a minute or longer, plus Bestial Wrath
         {timeline.aliveSec < dur - 2 && <> · <span className="inline-block w-3 h-2 rounded-sm bg-red-500/30 align-middle mr-1.5" />after your death</>}

@@ -1,6 +1,6 @@
 import type { FightPlayer, PlayerProfile, PoolSummary, RaidMechanicStats, ReportFight } from './analyze';
 import { DIFFICULTY_LABELS, GEAR_SLOT_NAMES } from './analyze';
-import { lookupJournal, lookupLabel, MECHANIC_WORDS, type BossKnowledge, type MechanicType } from './bossMechanics';
+import { lookupJournal, lookupLabel, lookupNote, MECHANIC_WORDS, type BossKnowledge, type MechanicType } from './bossMechanics';
 import { BASELINE_BY_CLASS, DEFENSIVES, REPLACED_BY, TWO_STEP, isMovement, isUtility, noChargeModel, chargesFromTalents, defensiveKey, defensivesAt, minReuseGap, wastedDoublePresses } from './defensives';
 import { LORRGS_CREDIT, MAJOR_CD_SEC, MAJOR_UNDER_60, type MajorSpell } from './lorrgsSpells';
 import { timesWord } from './summary';
@@ -53,7 +53,17 @@ export interface TimelineRow {
   bands: Array<{ k: number; med: number; lo: number; hi: number }>;
   // How this player's presses compare with those medians; null when there is nothing to judge.
   verdict: { text: string; kind: 'good' | 'warn' | 'info' } | null;
+  // Uses this pull, and how many the cooldown allowed in the time alive (null when the
+  // cooldown is not known or the row is not a pressed cooldown).
+  used?: number;
+  possible?: number | null;
+  cooldownSec?: number | null;
+  // The first press was before the pull (its buff was already up at 0:00).
+  prePull?: boolean;
 }
+
+// A boss cast on the timeline lane: when, what, and lorrgs' window and label for it.
+export interface BossCastMark { atSec: number; name: string; spellId: number; icon: string; durationSec: number; note: string; color: string }
 
 export interface Timeline {
   durationSec: number;
@@ -61,6 +71,11 @@ export interface Timeline {
   rows: TimelineRow[];
   // Fight phases and intermissions, for the bands behind the rows.
   phases: Array<{ name: string; fromSec: number; toSec: number }>;
+  // The boss's casts, from lorrgs' encounter definitions.
+  bossCasts: BossCastMark[];
+  // When Bloodlust landed on this player, and the top players' median.
+  lustSec: number | null;
+  lustPoolMedian: number | null;
 }
 
 export interface DefensiveRow {
@@ -122,7 +137,15 @@ export interface ReviewInput {
   notMajorSpells?: MajorSpell[] | null;
   // What the boss did to this player, by the second (from the Wipefest-defined
   // mechanics): the context that explains a gap in casting or a late cooldown.
-  context?: { mechanicEvents: Array<{ atSec: number; text: string }>; phases?: Array<{ name: string; fromSec: number; toSec: number }> } | null;
+  context?: {
+    mechanicEvents: Array<{ atSec: number; text: string }>;
+    phases?: Array<{ name: string; fromSec: number; toSec: number }>;
+    bossCasts?: BossCastMark[];
+    // Names for the other players in the fight (who gave an external).
+    playerNames?: Record<number, string>;
+    // Externals were looked up for this player (so "none was on you" is a fact, not a gap).
+    externalsTracked?: boolean;
+  } | null;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -284,7 +307,14 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, bo
   const classify = (name: string, spellId?: number) => classifyAbility(boss, raidStats, name, spellId);
   const explain = (name: string, spellId?: number): string | undefined => {
     const j = lookupJournal(boss, name, spellId);
-    return j?.description ? j.description : undefined;
+    const note = lookupNote(boss, name, spellId);
+    const label = lookupLabel(boss, name, spellId);
+    const parts = [
+      j?.description ? j.description : '',
+      note ? `${note.source}: ${note.note.replace(/\.$/, '')}${note.mythicOnly ? ' (Mythic only)' : ''}.` : '',
+      label?.alt ? `DBM files it as "${label.alt}".` : boss?.renames?.[String(spellId ?? 0)] ? `BigWigs files it as "${boss.renames[String(spellId ?? 0)]}".` : '',
+    ].filter(Boolean);
+    return parts.length ? parts.join(' ') : undefined;
   };
   const isUnavoidableType = (t: MechanicType | undefined) => t === 'raidwide' || t === 'defensive' || (t === 'tank' && player.role === 'tank');
 
@@ -415,6 +445,16 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, bo
         Object.entries(pool.buffs).filter(([name]) => buffFamily(name) === 'potion').reduce((s, [, e]) => s + (e.starts[i]?.length ?? 0), 0))
     : [];
 
+  // An external another player put on this one at a given moment, by name and giver —
+  // or, when externals were looked up and none covered it, that fact.
+  const playerNames = context?.playerNames ?? {};
+  const externalNote = (atSec: number): string => {
+    if (!context?.externalsTracked) return '';
+    const on = (profile.externals ?? []).filter(x => x.fromSec <= atSec + 0.5 && x.toSec >= atSec - 0.5 && !/power infusion|blessing of summer|blessing of autumn|innervate|spatial paradox/i.test(x.name));
+    if (on.length) return ` ${listNames(on.map(x => `${x.name}${playerNames[x.fromId] ? ` from ${playerNames[x.fromId]}` : ''}`))} ${on.length === 1 ? 'was' : 'were'} on you at the time.`;
+    return ' No external (Pain Suppression, Ironbark, Guardian Spirit and the like) was on you.';
+  };
+
   // ── Survival ──
   const isWipeDeath = (d: { killer: string; atSec: number }) =>
     !fight.kill && profile.raidDeaths.filter(r => r.killer === d.killer && Math.abs(r.atSec - d.atSec) <= WIPE_WINDOW_SEC).length >= WIPE_DEATHS_MIN;
@@ -487,7 +527,7 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, bo
     findings.push({
       id: `death-${i}`, severity: 'bad', category: 'survival', impact: 100 - i * 5, icon: d.killerIcon, spellId: d.killerSpellId,
       title: `Died at ${fmtClock(d.atSec)} to ${d.killer}`,
-      text: (`${lead}${hitNote}${verdict}${defensiveNote(d.atSec)}`) + recapText,
+      text: (`${lead}${hitNote}${verdict}${defensiveNote(d.atSec)}${externalNote(d.atSec)}`) + recapText,
       events: recapEvents,
       explain: explain(d.killer, d.killerSpellId),
       evidence: `${plural(defUses['Healthstone']?.length ?? player.healthstoneUse, 'healthstone')} used in the fight`,
@@ -806,6 +846,37 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, bo
         onUseTrinkets.map(t => ({ label: t.name, castName: t.useSpellName ?? t.name, spellId: t.useSpellId ?? 0, cooldownSec: t.cooldownSec ?? 0 })),
         cooldowns ?? {}, isMajorCooldown)
     : null;
+  // A cooldown whose buff was already up at the pull was pressed before the log's events
+  // begin. That press is set at 0:00 — for this player, and for every top player whose
+  // buff was up at their pull — so both sides are judged on the same presses.
+  if (timeline && pool) for (const row of timeline.rows) {
+    if (row.kind !== 'cooldown' || row.origin === 'potion') continue;
+    const buffKey = Object.keys(pool.buffs).find(b => baseName(b) === baseName(row.poolName));
+    if (!buffKey) continue;
+    const mineBuff = profile.buffs.find(b => b.name === buffKey);
+    if (mineBuff?.atPull && !row.mine.some(([s]) => s <= 2)) {
+      row.mine.unshift([0, Math.max(3, mineBuff.bands[0]?.[1] ?? 3)]);
+      row.prePull = true;
+    }
+    const atPull = pool.buffs[buffKey].atPull;
+    row.members = row.members.map((s, i) => ((atPull[i] ?? 0) > 0 && !s.some(t => t <= 2) ? [0, ...s] : s));
+    row.pool = row.members.flat();
+  }
+  // Uses against what the cooldown allowed in the time alive: the cooldown from Wowhead
+  // (or lorrgs), the charges from Wowhead or talent text; a press due in the last fifteen
+  // seconds alive is not counted as possible.
+  const majorCooldownOf = (row: TimelineRowInternal): number | null => {
+    const byName = cooldowns?.[row.poolName] ?? cooldowns?.[row.name];
+    if (byName && byName >= 20) return byName;
+    const m = (majorSpells ?? []).find(x => (row.spellId > 0 && x.ids.includes(row.spellId)) || x.name.toLowerCase() === row.poolName.toLowerCase());
+    return m && m.cooldown > 0 ? m.cooldown : null;
+  };
+  if (timeline) for (const row of timeline.rows) {
+    row.used = row.mine.length;
+    const cd = row.kind === 'cooldown' && row.origin !== 'potion' && row.origin !== 'external' ? majorCooldownOf(row) : null;
+    row.cooldownSec = cd;
+    row.possible = cd && cd >= MAJOR_CD_SEC ? Math.max(1, charges?.[row.poolName] ?? 1) + Math.floor(Math.max(0, aliveSec - 15) / cd) : null;
+  }
   // ── Cooldown timing: each press against the top players' median for that press ──
   // For every major cooldown row, the top players' 1st, 2nd, 3rd… presses are compared
   // as a distribution. Where their middle half agrees to within TIMING_BAND_SEC, the
@@ -864,6 +935,66 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, bo
         id: 'timing-good', severity: 'good', category: 'cooldowns', impact: 0,
         title: 'Major cooldowns on time',
         text: `Every press of your major cooldowns landed inside the window where ${topWord} press theirs (see the markers on the timeline).`,
+      });
+    }
+  }
+  // ── Uses vs what the cooldown allowed ──
+  // Two different questions: timing (above) asks whether the presses sat where the top
+  // players' do; this asks whether a press that the cooldown allowed never happened.
+  if (timeline && judgeable) {
+    const eligible = timeline.rows.filter(r => r.possible != null && r.kind === 'cooldown' && !isTalentGap(r.poolName) && !unownedItemCast(r.poolName) && !TWO_STEP.has(r.poolName) && !reportedNever.has(r.poolName) && !reportedNever.has(r.name));
+    const short = eligible.filter(r => (r.used ?? 0) < (r.possible ?? 0) && !reportedCasts.has(r.name)).sort((a, b) => ((b.possible ?? 0) - (b.used ?? 0)) - ((a.possible ?? 0) - (a.used ?? 0)));
+    for (const r of short.slice(0, 2)) {
+      const used = r.used ?? 0, possible = r.possible ?? 0;
+      const src = cooldowns?.[r.poolName] || cooldowns?.[r.name] ? 'Wowhead' : 'lorrgs';
+      const lastPress = r.mine.length ? r.mine[r.mine.length - 1][0] : null;
+      reportedCasts.add(r.name);
+      findings.push({
+        id: `uses-${r.name}`, severity: 'warn', category: 'cooldowns', impact: 28 + 4 * (possible - used), icon: r.icon, spellId: r.spellId,
+        title: `${r.name}: ${plural(used, 'use')} of ${possible} possible`,
+        text: `Its cooldown is ${fmtClock(r.cooldownSec ?? 0)} (${src}), so the ${fmtClock(aliveSec)} you were alive allowed ${possible} presses${r.prePull ? ', counting the one before the pull' : ''}. ${used === 0 ? 'It was never pressed.' : lastPress != null ? `Your last press was at ${fmtClock(lastPress)}, leaving ${fmtClock(Math.max(0, aliveSec - lastPress))} at the end with it unused.` : ''}`.trim(),
+      });
+    }
+    if (eligible.length >= 2 && eligible.every(r => (r.used ?? 0) >= (r.possible ?? 0)) && !short.length) {
+      findings.push({
+        id: 'uses-good', severity: 'good', category: 'cooldowns', impact: 0,
+        title: 'Every major cooldown used as often as its cooldown allowed',
+        text: `${eligible.map(r => `${r.name} ${r.used}/${r.possible}`).join(', ')} — presses against what each cooldown allowed in ${fmtClock(aliveSec)} alive.`,
+      });
+    }
+  }
+  // ── Bloodlust: when it went out, against the top players' raids ──
+  const lustSec = profile.lustSec ?? null;
+  const poolLust = (pool?.lustSec ?? []).filter((x): x is number => x != null);
+  const lustPoolMedian = pool && poolLust.length >= Math.max(3, pool.n * 0.5) ? median(poolLust) : null;
+  if (pool && judgeable && lustPoolMedian != null) {
+    if (lustSec != null && Math.abs(lustSec - lustPoolMedian) > 20) {
+      findings.push({
+        id: 'lust', severity: 'info', category: 'cooldowns', impact: 24,
+        title: `Bloodlust at ${fmtClock(lustSec)}; the top players' raids lust around ${fmtClock(lustPoolMedian)}`,
+        text: `${poolLust.length} of ${topWord}' ${pool.n} logs show Bloodlust (the Sated debuff), at a median of ${fmtClock(lustPoolMedian)}. When the raid lusts is a raid call, not yours, but it moves where the top players' cooldown windows fall, so read the bands on the timeline with that in mind.`,
+      });
+    } else if (lustSec == null && poolLust.length >= pool.n * 0.8) {
+      findings.push({
+        id: 'lust-none', severity: 'info', category: 'cooldowns', impact: 20,
+        title: 'No Bloodlust on you this pull',
+        text: `No Sated debuff in your log for this pull; ${poolLust.length} of ${topWord}' ${pool.n} logs have one, at a median of ${fmtClock(lustPoolMedian)}.`,
+      });
+    }
+  }
+  // ── Externals received that shape the timeline: Power Infusion and the like ──
+  if (timeline && pool) {
+    const byName = new Map<string, typeof profile.externals>();
+    for (const x of profile.externals ?? []) if (/power infusion|blessing of summer|blessing of autumn|innervate|spatial paradox/i.test(x.name)) (byName.get(x.name) ?? byName.set(x.name, []).get(x.name)!).push(x);
+    for (const [name, xs] of byName) {
+      const from = [...new Set(xs.map(x => playerNames[x.fromId]).filter(Boolean))];
+      timeline.rows.push({
+        kind: 'buff', origin: 'external', poolName: name,
+        name: from.length ? `${name} (from ${from.join(', ')})` : name,
+        icon: xs[0].icon, spellId: xs[0].spellId,
+        mine: xs.map((x): [number, number] => [x.fromSec, x.toSec]), pool: [], poolN: pool.n,
+        firstMed: xs[0].fromSec, members: [], medians: [], bands: [],
+        verdict: { kind: 'info', text: `received ${timesWord(xs.length)}` }, used: xs.length, possible: null, cooldownSec: null, prePull: false,
       });
     }
   }
@@ -1227,12 +1358,12 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, bo
     dbmLabels: boss?.labels.length ?? 0, journalAbilities: boss?.journal.length ?? 0, raidStatFights: raidStats?.n ?? 0,
     classified: profile.damageTaken.map(t => `${t.name}: ${classify(t.name, t.spellId)?.type ?? '-'} (${classify(t.name, t.spellId)?.via ?? ''})`),
   };
-  return { headline, summary, verdict, stats, findings, timeline: timeline ? { durationSec: timeline.durationSec, aliveSec: timeline.aliveSec, phases: context?.phases ?? [], rows: timeline.rows.map(r => ({ name: r.name, icon: r.icon, spellId: r.spellId, kind: r.kind, mine: r.mine, pool: r.pool, poolN: r.poolN, medians: r.medians, bands: r.bands, verdict: r.verdict })) } : null, defensives: defensiveRows, poolNote, sourcesNote, debug };
+  return { headline, summary, verdict, stats, findings, timeline: timeline ? { durationSec: timeline.durationSec, aliveSec: timeline.aliveSec, phases: context?.phases ?? [], bossCasts: (context?.bossCasts ?? []).filter(c => c.atSec <= durationSec), lustSec, lustPoolMedian, rows: timeline.rows.map(r => ({ name: r.name, icon: r.icon, spellId: r.spellId, kind: r.kind, mine: r.mine, pool: r.pool, poolN: r.poolN, medians: r.medians, bands: r.bands, verdict: r.verdict, used: r.used, possible: r.possible, cooldownSec: r.cooldownSec, prePull: r.prePull })) } : null, defensives: defensiveRows, poolNote, sourcesNote, debug };
 }
 
 // ─── Timeline ─────────────────────────────────────────────────────────────────
 
-interface TimelineRowInternal extends TimelineRow { poolName: string; firstMed: number; origin: 'pool' | 'potion' | 'own' | 'buff' | 'trinket'; members: number[][] }
+interface TimelineRowInternal extends TimelineRow { poolName: string; firstMed: number; origin: 'pool' | 'potion' | 'own' | 'buff' | 'trinket' | 'external'; members: number[][] }
 
 // Rows, lorrgs-style: the spec's major cooldowns (see isMajorCooldown in reviewPlayer),
 // combat potions as one row, and the player's own on-use trinkets with a cooldown of a

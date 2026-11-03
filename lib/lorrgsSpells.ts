@@ -4,7 +4,7 @@ import { HEALER_SPECS, SPEC_IDS } from './wow';
 // ─── lorrgs' per-spec cooldown definitions ─────────────────────────────────────
 //
 // lorrgs.io (github.com/gitarrg/lorrgs) keeps a hand-maintained list of each spec's
-// cooldowns in lorgs/data/classes/*.py — the rows its spec-ranking timelines draw.
+// cooldowns in lorgs/data/retail/classes/*.py — the rows its spec-ranking timelines draw.
 // We read those files straight from GitHub, parse the add_spell/add_buff/add_debuff
 // calls, and cache the result a day (the repo moves with every patch). Nothing here
 // guesses: a spell is "major" because lorrgs lists it as shown for the spec, or
@@ -24,12 +24,24 @@ export interface LorrgsSpell {
 }
 
 const CLASS_FILES = ['deathknight', 'demonhunter', 'druid', 'evoker', 'hunter', 'mage', 'monk', 'paladin', 'priest', 'rogue', 'shaman', 'warlock', 'warrior'];
-const RAW = 'https://raw.githubusercontent.com/gitarrg/lorrgs/main/lorgs/data/classes/';
+// lorrgs moved its data under lorgs/data/retail/ on 2026-11-01 (classic lives beside it);
+// the older layout is tried second so a move back costs nothing.
+const RAW_BASES = ['https://raw.githubusercontent.com/gitarrg/lorrgs/main/lorgs/data/retail/', 'https://raw.githubusercontent.com/gitarrg/lorrgs/main/lorgs/data/'];
+async function fetchData(relPath: string): Promise<string> {
+  let last = '';
+  for (const base of RAW_BASES) {
+    const r = await fetch(base + relPath, { headers: { 'User-Agent': 'hotsbb-raid-talents' }, cache: 'no-store' });
+    if (r.ok) return r.text();
+    last = `${r.status}`;
+    if (r.status !== 404) break;
+  }
+  throw new Error(`lorrgs ${relPath} ${last}`);
+}
 const KEY = 'lorrgs-spells-v2';
 const TTL_SECONDS = 86400;
 export const LORRGS_CREDIT = 'major cooldowns from lorrgs.io\u2019s spec definitions';
 
-function balanced(s: string, openIdx: number): string | null {
+export function balanced(s: string, openIdx: number): string | null {
   let depth = 0;
   for (let i = openIdx; i < s.length; i++) {
     if (s[i] === '(') depth++;
@@ -38,7 +50,7 @@ function balanced(s: string, openIdx: number): string | null {
   return null;
 }
 
-function kw(args: string, k: string): string | null {
+export function kw(args: string, k: string): string | null {
   const m = args.match(new RegExp(String.raw`(?:^|[,(\s])${k}\s*=\s*("[^"]*"|'[^']*'|\[[^\]]*\]|[^,\n]+)`));
   return m ? m[1].trim() : null;
 }
@@ -96,9 +108,7 @@ export function parseLorrgsClassFile(src: string): LorrgsSpell[] {
 
 async function fetchAll(): Promise<LorrgsSpell[]> {
   const parts = await Promise.all(CLASS_FILES.map(async f => {
-    const r = await fetch(RAW + f + '.py', { headers: { 'User-Agent': 'hotsbb-raid-talents' }, cache: 'no-store' });
-    if (!r.ok) throw new Error(`lorrgs ${f}.py ${r.status}`);
-    const spells = parseLorrgsClassFile(await r.text());
+    const spells = parseLorrgsClassFile(await fetchData(`classes/${f}.py`));
     if (!spells.length) throw new Error(`lorrgs ${f}.py parsed to nothing`);
     return spells;
   }));
@@ -109,6 +119,48 @@ async function fetchAll(): Promise<LorrgsSpell[]> {
   const covered = new Set(all.flatMap(s => s.specIds)).size;
   if (covered < 30) throw new Error(`lorrgs parse covers only ${covered} specs — data format changed?`);
   return all;
+}
+
+// ─── lorrgs' externals: buffs other players put on you ─────────────────────────
+//
+// lorgs/data/externals.py lists the external defensives (Pain Suppression, Ironbark,
+// Blessing of Protection…), the power gains (Power Infusion, Blessing of Summer/Autumn)
+// and the healer-only ones (Innervate, Spatial Paradox), with the spell id each is logged
+// under. Bloodlust lives there too, tracked as the Sated debuff.
+export interface LorrgsExternal { spellId: number; ids: number[]; name: string; cooldown: number; duration: number; kind: 'buff' | 'debuff' }
+
+export function parseLorrgsExternals(src: string): LorrgsExternal[] {
+  const out: LorrgsExternal[] = [];
+  const byVar = new Map<string, LorrgsExternal>();
+  for (const m of src.matchAll(/(?:(\w+)\s*=\s*)?OTHER_EXTERNALS\.add_(buff|debuff)\(/g)) {
+    const args = balanced(src, m.index! + m[0].length - 1);
+    if (args == null) continue;
+    const spellId = Number(kw(args, 'spell_id'));
+    const name = (kw(args, 'name') ?? '').replace(/^["']|["']$/g, '');
+    if (!spellId || !name) continue;
+    const e: LorrgsExternal = { spellId, ids: [spellId], name, cooldown: Number(kw(args, 'cooldown') ?? 0) || 0, duration: Number(kw(args, 'duration') ?? 0) || 0, kind: m[2] as 'buff' | 'debuff' };
+    out.push(e);
+    if (m[1]) byVar.set(m[1], e);
+  }
+  for (const m of src.matchAll(/(\w+)\.add_variation\(\s*(\d+)/g)) {
+    const e = byVar.get(m[1]);
+    if (e && !e.ids.includes(Number(m[2]))) e.ids.push(Number(m[2]));
+  }
+  return out;
+}
+
+// The externals list, or null when GitHub is unreachable. A failed fetch is not cached.
+export async function getLorrgsExternals(): Promise<LorrgsExternal[] | null> {
+  try {
+    const list = await getOrSetPersistent<LorrgsExternal[]>('lorrgs-externals-v1', TTL_SECONDS, async () => {
+      const parsed = parseLorrgsExternals(await fetchData('externals.py'));
+      if (parsed.length < 5) throw new Error('lorrgs externals.py parsed to too little — format changed?');
+      return parsed;
+    });
+    return list?.length ? list : null;
+  } catch {
+    return null;
+  }
 }
 
 // All of lorrgs' spells, or null when GitHub is unreachable (callers then fall back
@@ -156,7 +208,10 @@ export function lorrgsMajorsForSpec(all: LorrgsSpell[], className: string, spec:
   const healer = HEALER_SPECS.some(h => h.class === className && h.spec === spec);
   const out: MajorSpell[] = [];
   for (const s of all) {
-    if (!s.specIds.includes(specId) || !s.show || !s.query) continue;
+    // `show` is only lorrgs' default toggle for the row, not a judgement of importance
+    // (Divine Toll, Apotheosis and the tank cooldowns ship hidden); a buff or debuff
+    // that no button presses (Purgatory, Last Resort) is a proc, not a cooldown.
+    if (!s.specIds.includes(specId) || !s.query || s.kind === 'debuff') continue;
     if (s.tags.includes('DEFENSIVE') || s.tags.includes('MOVE')) continue;
     if (s.tags.includes('RAID_CD') && !healer) continue;
     if (s.cooldown > 0 && s.cooldown < MAJOR_CD_SEC && !MAJOR_UNDER_60.has(s.name)) continue;

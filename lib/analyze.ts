@@ -55,6 +55,11 @@ export interface ReportFight {
   difficulty: number;
   kill: boolean;
   fightPercentage: number;
+  // Boss health remaining at the end (differs from fightPercentage on multi-stage bosses).
+  bossPercentage: number;
+  // The phase the pull ended in, as Warcraft Logs numbers them (null when unknown).
+  lastPhase: number | null;
+  lastPhaseIsIntermission: boolean;
   startTime: number;
   endTime: number;
   durationMs: number;
@@ -73,7 +78,7 @@ export const DIFFICULTY_LABELS: Record<number, string> = { 1: 'LFR', 2: 'Flex', 
 export async function getReportOverview(token: string, code: string): Promise<ReportOverview | null> {
   const data = await wclQuery(
     token,
-    `{ reportData { report(code: "${code}") { title startTime fights(killType: Encounters) { id encounterID name difficulty kill fightPercentage startTime endTime } } } }`,
+    `{ reportData { report(code: "${code}") { title startTime fights(killType: Encounters) { id encounterID name difficulty kill fightPercentage bossPercentage lastPhase lastPhaseIsIntermission startTime endTime } } } }`,
     'report-overview',
     300
   );
@@ -89,6 +94,9 @@ export async function getReportOverview(token: string, code: string): Promise<Re
       difficulty: f.difficulty ?? 0,
       kill: !!f.kill,
       fightPercentage: f.fightPercentage ?? 0,
+      bossPercentage: f.bossPercentage ?? f.fightPercentage ?? 0,
+      lastPhase: typeof f.lastPhase === 'number' ? f.lastPhase : null,
+      lastPhaseIsIntermission: !!f.lastPhaseIsIntermission,
       startTime: f.startTime,
       endTime: f.endTime,
       durationMs: Math.max(0, (f.endTime ?? 0) - (f.startTime ?? 0)),
@@ -257,6 +265,11 @@ export const RESOURCE_NAMES: Record<number, string> = {
 // Hostile debuffs the player picked up: a mechanic the game marked as failed often
 // shows up as a debuff before (or instead of) damage.
 export interface DebuffStat { name: string; icon: string; spellId: number; count: number; uptimeMs: number }
+// A buff another player put on this one (Pain Suppression, Power Infusion…), with who gave it.
+export interface ExternalBuff { name: string; spellId: number; icon: string; fromId: number; fromSec: number; toSec: number }
+// Bloodlust is logged on each player as the Sated-family debuff, whatever talent or item
+// cast it (the ids lorrgs tracks it by: lorgs/data/externals.py).
+export const SATED_IDS = new Set([57723, 390435, 57724, 80354, 264689]);
 export interface RaidDeath { id: number; name: string; className: string; atSec: number; killer: string; killerIcon: string; killerSpellId: number }
 export interface RaidMember { id: number; name: string; className: string; total: number; activeTime: number }
 
@@ -286,6 +299,10 @@ export interface PlayerProfile {
   raid: RaidMember[];
   gear: GearInfo | null;
   talentNodes: Array<[number, number]> | null;
+  // When Bloodlust landed on this player (the Sated debuff's first application), or null.
+  lustSec: number | null;
+  // Externals received, only for the player being reviewed (needs their spell ids).
+  externals: ExternalBuff[];
 }
 
 const MAX_BANDS_KEPT = 12;
@@ -304,9 +321,13 @@ function buffsTable(fightId: number, sourceId: number): string {
 // `full` extras (deaths, interrupts, dispels) are only fetched for the player being
 // reviewed, not for pool members. Gear and talents come from the playerDetails call
 // the caller already made (getFightPlayers / the pool's own phase 1).
-function playerTablesSelection(fightId: number, sourceId: number, role: Role, full: boolean): string {
+function playerTablesSelection(fightId: number, sourceId: number, role: Role, full: boolean, externalIds: number[] = []): string {
   const output = role === 'healer' ? 'Healing' : 'DamageDone';
+  // Buffs put on the player by others, by id (lorrgs' externals list): applied and removed
+  // events carry who cast them and when.
+  const externals = full && externalIds.length ? `externals: events(fightIDs: [${fightId}], targetID: ${sourceId}, dataType: Buffs, filterExpression: "ability.id in (${externalIds.join(',')})", limit: 1000) { data }` : '';
   return `
+    ${externals}
     casts: table(dataType: Casts, fightIDs: [${fightId}], sourceID: ${sourceId})
     castEvents: events(fightIDs: [${fightId}], sourceID: ${sourceId}, dataType: Casts, limit: 5000) { data }
     buffs: ${buffsTable(fightId, sourceId)}
@@ -403,12 +424,35 @@ export function buildProfile(raw: any, fight: { startTime: number; endTime: numb
   }
 
   const debuffMap = new Map<string, DebuffStat>();
+  let lustSec: number | null = null;
   for (const a of raw?.debuffs?.data?.auras ?? []) {
     if (!a?.name) continue;
+    if (SATED_IDS.has(Number(a.guid))) {
+      const first = (Array.isArray(a.bands) ? a.bands : []).map((b: any) => Number(b.startTime)).filter((t: number) => Number.isFinite(t)).sort((x: number, y: number) => x - y)[0];
+      if (first != null) lustSec = lustSec == null ? sec1(Math.max(0, first - fight.startTime)) : Math.min(lustSec, sec1(Math.max(0, first - fight.startTime)));
+    }
     const d = debuffMap.get(a.name) ?? { name: a.name, icon: a.abilityIcon ?? '', spellId: a.guid ?? 0, count: 0, uptimeMs: 0 };
     d.count += a.totalUses ?? 0;
     d.uptimeMs = Math.max(d.uptimeMs, a.totalUptime ?? 0);
     debuffMap.set(a.name, d);
+  }
+
+  // Externals: apply/remove pairs per spell and giver; an aura still up at the end runs to it.
+  const externals: ExternalBuff[] = [];
+  {
+    const open = new Map<string, { t: number; name: string; icon: string; fromId: number; spellId: number }>();
+    const evs: any[] = (raw?.externals?.data ?? []).slice().sort((a: any, b: any) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+    for (const ev of evs) {
+      const key = `${ev.abilityGameID}:${ev.sourceID}`;
+      if (ev.type === 'applybuff' || ev.type === 'refreshbuff') {
+        if (!open.has(key)) open.set(key, { t: ev.timestamp, name: ev.ability?.name ?? '', icon: ev.ability?.abilityIcon ?? '', fromId: Number(ev.sourceID), spellId: Number(ev.abilityGameID) });
+      } else if (ev.type === 'removebuff') {
+        const o = open.get(key);
+        if (o) { externals.push({ name: o.name, spellId: o.spellId, icon: o.icon, fromId: o.fromId, fromSec: sec1(Math.max(0, o.t - fight.startTime)), toSec: sec1(Math.max(0, ev.timestamp - fight.startTime)) }); open.delete(key); }
+      }
+    }
+    for (const o of open.values()) externals.push({ name: o.name, spellId: o.spellId, icon: o.icon, fromId: o.fromId, fromSec: sec1(Math.max(0, o.t - fight.startTime)), toSec: sec1(durationMs) });
+    externals.sort((a, b) => a.fromSec - b.fromSec);
   }
 
   const outputEntries: any[] = raw?.output?.data?.entries ?? [];
@@ -484,17 +528,20 @@ export function buildProfile(raw: any, fight: { startTime: number; endTime: numb
     raid,
     gear: pdMe?.gear ?? null,
     talentNodes: pdMe?.talentNodes ?? null,
+    lustSec,
+    externals,
   };
 }
 
 // A logged fight never changes once uploaded, so a day is a safe cache; the key
 // covers everything that shapes the result.
-export function getPlayerProfile(token: string, code: string, fight: ReportFight, player: FightPlayer): Promise<PlayerProfile> {
+export function getPlayerProfile(token: string, code: string, fight: ReportFight, player: FightPlayer, opts?: { externalIds?: number[] }): Promise<PlayerProfile> {
+  const externalIds = (opts?.externalIds ?? []).filter(x => Number.isFinite(x)).sort((a, b) => a - b);
   return unstable_cache(
     async () => {
       const data = await wclQuery(
         token,
-        `{ reportData { report(code: "${code}") { ${playerTablesSelection(fight.id, player.id, player.role, true)} } } }`,
+        `{ reportData { report(code: "${code}") { ${playerTablesSelection(fight.id, player.id, player.role, true, externalIds)} } } }`,
         'player-tables',
         null
       );
@@ -502,8 +549,34 @@ export function getPlayerProfile(token: string, code: string, fight: ReportFight
       const extra = await fetchDeathRecapsAndResources(token, code, fight, player.id, profile.deaths).catch(err => { console.error('analyze: death recap / resources unavailable', err); return { deathRecaps: [], resourceWaste: [] }; });
       return { ...profile, ...extra, gear: player.gear ?? profile.gear, talentNodes: player.talentNodes ?? profile.talentNodes };
     },
-    [`analyze-profile-v16-${code}-${fight.id}-${player.id}-${player.role}`],
+    [`analyze-profile-v17-${code}-${fight.id}-${player.id}-${player.role}-${externalIds.length}`],
     { revalidate: 86400 }
+  )();
+}
+
+// The boss's casts of the given spells in this pull (lorrgs' lane), as seconds from the
+// pull. A spell with a cast bar logs a begincast and then a cast: the start is kept.
+export function fetchBossCastEvents(token: string, code: string, fight: ReportFight, ids: number[]): Promise<Array<{ atSec: number; spellId: number }>> {
+  const list = [...new Set(ids.filter(x => Number.isFinite(x) && x > 0))].sort((a, b) => a - b);
+  if (!list.length) return Promise.resolve([]);
+  return unstable_cache(
+    async () => {
+      const data = await wclQuery(token, `{ reportData { report(code: "${code}") { events(fightIDs: [${fight.id}], hostilityType: Enemies, filterExpression: "type in ('cast','begincast') and ability.id in (${list.join(',')})", limit: 2000) { data } } } }`, 'boss-casts', null);
+      const evs: any[] = (data?.reportData?.report?.events?.data ?? []).slice().sort((a: any, b: any) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+      const out: Array<{ atSec: number; spellId: number }> = [];
+      const last = new Map<string, number>();
+      for (const e of evs) {
+        const t = sec1(Math.max(0, (e.timestamp ?? fight.startTime) - fight.startTime));
+        const key = `${e.abilityGameID}:${e.sourceID}:${e.sourceInstance ?? 0}`;
+        const prev = last.get(key);
+        if (e.type === 'cast' && prev != null && t - prev <= 10) continue; // the completed cast of a start already kept
+        last.set(key, t);
+        out.push({ atSec: t, spellId: Number(e.abilityGameID) });
+      }
+      return out;
+    },
+    [`analyze-bosscasts-v1-${code}-${fight.id}-${list.join('.')}`],
+    { revalidate: 7 * 86400 }
   )();
 }
 
@@ -607,6 +680,8 @@ export interface PoolSummary {
   fights: Array<{ code: string; fightId: number; difficulty: number }>;
   // Each member's difficulty (Mythic pools are padded with Heroic parses).
   memberDifficulty: number[];
+  // Each member's Bloodlust time in seconds (null when the log shows none).
+  lustSec: Array<number | null>;
   casts: Record<string, { icon: string; spellId: number; cpm: number[] }>;
   // Cast times per member for cooldown-shaped casts (20 or fewer in the fight):
   // defensives, damage cooldowns, on-use trinkets. Charges, cooldown lengths and
@@ -632,6 +707,7 @@ function emptyPool(difficulty: number): PoolSummary {
     durations: [], output: [], activePct: [], ilvl: [],
     gearN: 0, enchantBySlot: new Array(18).fill(0), tempBySlot: new Array(18).fill(0), itemNames: [], trinkets: [], talentN: 0, talentNodeCount: {}, talentEntryCount: {},
     fights: [], memberDifficulty: [],
+    lustSec: [],
     casts: {}, castStarts: {}, buffs: {}, taken: {}, debuffs: {},
   };
 }
@@ -645,6 +721,7 @@ function summarizePool(items: Array<{ profile: PlayerProfile; output: number; pl
   items.forEach(({ profile: p, output, player, difficulty: memberDiff }, idx) => {
     const minutes = p.durationMs / 60000;
     S.memberDifficulty.push(memberDiff);
+    S.lustSec.push(p.lustSec ?? null);
     S.durations.push(p.durationMs);
     S.output.push(output);
     S.activePct.push(100 * p.activeTimeMs / p.durationMs);
@@ -708,7 +785,7 @@ const POOL_THIN_TTL_SECONDS = 3600;
 export async function getPoolSummary(token: string, encounterId: number, className: string, spec: string, difficulty: number): Promise<PoolSummary> {
   const role: Role = HEALER_SPECS.some(h => h.class === className && h.spec === spec) ? 'healer' : 'dps';
   const metric = role === 'healer' ? 'hps' : undefined;
-  const key = `analyze-pool-v18-${encounterId}-${className}-${spec}-${difficulty}`;
+  const key = `analyze-pool-v19-${encounterId}-${className}-${spec}-${difficulty}`;
   const cached = await getPersistentReadOnly<PoolSummary>(key);
   if (cached) return cached;
   const compute = async (): Promise<PoolSummary> => {

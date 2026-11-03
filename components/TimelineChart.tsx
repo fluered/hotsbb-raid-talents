@@ -13,13 +13,15 @@ const ord = (k: number) => ['1st', '2nd', '3rd'][k] ?? `${k + 1}th`;
 const isIntermission = (name: string) => /intermission|transition/i.test(name);
 const VERDICT_COLOR = { good: '#86efac', warn: '#fcd34d', info: '#a1a1aa' } as const;
 
-interface Hover { x: number; y: number; maxLeft: number; title: string; lines: string[]; tone: 'band' | 'on' | 'off' | 'none' | 'phase' }
+interface Hover { x: number; y: number; maxLeft: number; title: string; lines: string[]; tone: 'band' | 'on' | 'off' | 'none' | 'phase' | 'boss' | 'lust' | 'pre' }
 
 export default function TimelineChart({ timeline }: { timeline: Timeline }) {
   const W = 760, LABEL = 200, PAD_R = 12, ROW = 34, AXIS = 22;
   const phases = (timeline.phases ?? []).filter(p => p.toSec > p.fromSec);
+  const bossCasts = (timeline.bossCasts ?? []).slice().sort((a, b) => a.atSec - b.atSec);
   const PHASE_H = phases.length ? 16 : 0;
-  const TOP = 6 + PHASE_H;
+  const BOSS_H = bossCasts.length ? 20 : 0;
+  const TOP = 6 + PHASE_H + BOSS_H;
   const plotW = W - LABEL - PAD_R;
   const dur = Math.max(1, timeline.durationSec);
   const x = (t: number) => LABEL + Math.min(1, Math.max(0, t / dur)) * plotW;
@@ -45,7 +47,10 @@ export default function TimelineChart({ timeline }: { timeline: Timeline }) {
     setHover(h => (h ? { ...h, x, y } : h));
   };
   const hide = () => setHover(null);
-  const toneColor = { band: '#fde68a', on: '#34d399', off: '#f59e0b', none: '#a1a1aa', phase: '#a1a1aa' } as const;
+  const toneColor = { band: '#fde68a', on: '#34d399', off: '#f59e0b', none: '#a1a1aa', phase: '#a1a1aa', boss: '#c4b5fd', lust: '#7dd3fc', pre: '#34d399' } as const;
+  // lorrgs' colours are "rgb(r, g, b)" strings; anything else falls back to violet.
+  const bossColor = (c: string) => (/^(rgb|#)/.test(c) ? c : '#a78bfa');
+  const lustSec = timeline.lustSec ?? null;
 
   return (
     <div ref={box} className="relative" onMouseMove={move} onMouseLeave={hide}>
@@ -68,6 +73,25 @@ export default function TimelineChart({ timeline }: { timeline: Timeline }) {
             </g>
           );
         })}
+        {bossCasts.length > 0 && (
+          <g>
+            <text x={6} y={6 + PHASE_H + 13} fill="#a1a1aa" fontSize={9} fontFamily="var(--font-geist-mono), monospace">boss casts</text>
+            <line x1={LABEL} x2={W - PAD_R} y1={6 + PHASE_H + BOSS_H - 2} y2={6 + PHASE_H + BOSS_H - 2} stroke="#27272a" strokeWidth={1} />
+            {bossCasts.map((c, i) => {
+              const y0 = 6 + PHASE_H + 4;
+              const w = c.durationSec > 0 ? Math.max(2, x(Math.min(c.atSec + c.durationSec, dur)) - x(c.atSec)) : 0;
+              const col = bossColor(c.color);
+              return (
+                <g key={`bc${i}`} style={{ cursor: 'default' }}
+                  onMouseLeave={hide} onMouseEnter={e => show(e, { tone: 'boss', title: c.name, lines: [`Cast at ${fmtClock(c.atSec)}${c.durationSec ? `, window ${c.durationSec}s` : ''}`, ...(c.note ? [`lorrgs: ${c.note}`] : [])] })}>
+                  {w > 0 && <rect x={x(c.atSec)} y={y0 + 3} width={w} height={6} rx={1} fill={col} opacity={0.28} />}
+                  <path d={`M ${x(c.atSec)} ${y0} L ${x(c.atSec) + 4} ${y0 + 6} L ${x(c.atSec)} ${y0 + 12} L ${x(c.atSec) - 4} ${y0 + 6} Z`} fill={col} opacity={0.95} />
+                  <rect x={x(c.atSec) - 5} y={y0 - 2} width={Math.max(10, w + 5)} height={16} fill="transparent" />
+                </g>
+              );
+            })}
+          </g>
+        )}
         {ticks.map(t => (
           <g key={t}>
             <line x1={x(t)} x2={x(t)} y1={TOP} y2={H - AXIS + 4} stroke="#27272a" strokeWidth={1} />
@@ -80,28 +104,39 @@ export default function TimelineChart({ timeline }: { timeline: Timeline }) {
             <line x1={x(timeline.aliveSec)} x2={x(timeline.aliveSec)} y1={TOP} y2={H - AXIS + 4} stroke="#ef4444" strokeWidth={1} strokeDasharray="3 3" opacity={0.7} />
           </g>
         )}
+        {lustSec != null && lustSec <= dur && (
+          <g style={{ cursor: 'default' }}
+            onMouseLeave={hide} onMouseEnter={e => show(e, { tone: 'lust', title: 'Bloodlust', lines: [`On you at ${fmtClock(lustSec)} (the Sated debuff)`, ...(timeline.lustPoolMedian != null ? [`Top players' raids: median ${fmtClock(timeline.lustPoolMedian)}`] : [])] })}>
+            <line x1={x(lustSec)} x2={x(lustSec)} y1={TOP} y2={H - AXIS + 4} stroke="#38bdf8" strokeWidth={1} strokeDasharray="2 3" opacity={0.8} />
+            <text x={x(lustSec) + 3} y={TOP + 9} fill="#7dd3fc" fontSize={8.5} fontFamily="var(--font-geist-mono), monospace">lust</text>
+            <rect x={x(lustSec) - 4} y={TOP} width={26} height={H - AXIS - TOP} fill="transparent" />
+          </g>
+        )}
         {timeline.rows.map((row, i) => {
           const y = TOP + i * ROW;
           const firstBuff = row.kind === 'buff' && (i === 0 || timeline.rows[i - 1].kind !== 'buff');
           const bands = (row.bands ?? []).filter(b => b.med <= dur);
           const mine = row.mine.slice().sort((a, b) => a[0] - b[0]);
+          const uses = row.possible != null ? `${row.used ?? mine.length} of ${row.possible} possible uses by cooldown` : null;
+          // Timing verdict first; without one, the uses against the cooldown say something.
+          const verdict = row.verdict ?? (row.possible != null ? { kind: (row.used ?? 0) >= row.possible ? 'good' as const : 'warn' as const, text: `${row.used ?? mine.length} of ${row.possible} uses by cooldown` } : null);
           return (
             <g key={row.name}>
               {i > 0 && <line x1={0} x2={W} y1={y} y2={y} stroke={firstBuff ? '#3f3f46' : '#18181b'} strokeWidth={1} strokeDasharray={firstBuff ? '4 3' : undefined} />}
               <a href={row.spellId ? `https://www.wowhead.com/spell=${row.spellId}` : undefined} target="_blank" rel="noopener noreferrer">
                 {row.icon && <image href={ABILITY_ICON(row.icon)} x={6} y={y + 8} width={18} height={18} clipPath="inset(0 round 3px)" />}
-                <text x={30} y={row.verdict ? y + 15 : y + ROW / 2 + 4} fill="#d4d4d8" fontSize={12} fontWeight={600} style={{ cursor: row.spellId ? 'pointer' : 'default' }}>
+                <text x={30} y={verdict ? y + 15 : y + ROW / 2 + 4} fill="#d4d4d8" fontSize={12} fontWeight={600} style={{ cursor: row.spellId ? 'pointer' : 'default' }}>
                   {row.name.length > 22 ? `${row.name.slice(0, 21)}…` : row.name}
                 </text>
               </a>
-              {row.verdict && (
-                <text x={30} y={y + 27} fill={VERDICT_COLOR[row.verdict.kind]} fontSize={9.5} fontFamily="var(--font-geist-mono), monospace">
-                  {row.verdict.text.length > 29 ? `${row.verdict.text.slice(0, 28)}…` : row.verdict.text}
+              {verdict && (
+                <text x={30} y={y + 27} fill={VERDICT_COLOR[verdict.kind]} fontSize={9.5} fontFamily="var(--font-geist-mono), monospace">
+                  {verdict.text.length > 29 ? `${verdict.text.slice(0, 28)}…` : verdict.text}
                 </text>
               )}
               {bands.map(b => (
                 <g key={`b${b.k}`} style={{ cursor: 'default' }}
-                  onMouseLeave={hide} onMouseEnter={e => show(e, { tone: 'band', title: `${row.name} · top players' ${ord(b.k)} press`, lines: [`Median ${fmtClock(b.med)}`, `Middle half of them: ${fmtClock(b.lo)} – ${fmtClock(b.hi)}`, `${row.poolN} players`] })}>
+                  onMouseLeave={hide} onMouseEnter={e => show(e, { tone: 'band', title: `${row.name} · top players' ${ord(b.k)} press`, lines: [`Median ${fmtClock(b.med)}`, `Middle half of them: ${fmtClock(b.lo)} – ${fmtClock(b.hi)}`, `${row.poolN} players`, ...(b.k === 0 && b.med <= 2 ? ['A press at 0:00 is one made before the pull'] : [])] })}>
                   <rect x={x(b.lo)} y={y + 7} width={Math.max(4, x(Math.min(b.hi, dur)) - x(b.lo))} height={ROW - 14} rx={2} fill="#fde68a" opacity={0.14} />
                   <path d={`M ${x(b.med) - 4} ${y + 3} L ${x(b.med) + 4} ${y + 3} L ${x(b.med)} ${y + 9} Z`} fill="#fde68a" opacity={0.95} />
                   <rect x={x(b.lo) - 2} y={y + 1} width={Math.max(10, x(Math.min(b.hi, dur)) - x(b.lo) + 4)} height={ROW - 2} fill="transparent" />
@@ -111,10 +146,12 @@ export default function TimelineChart({ timeline }: { timeline: Timeline }) {
                 const band = bands.find(b => b.k === j) ?? null;
                 const diff = band ? s - band.med : null;
                 const tol = band ? Math.max(20, band.hi - band.lo, 0.06 * band.med) : 0;
-                const state: Hover['tone'] = diff == null ? 'none' : Math.abs(diff) <= tol ? 'on' : 'off';
-                const lines = [`Pressed at ${fmtClock(s)}${e - s > 3.5 ? `, running until ${fmtClock(Math.min(e, dur))}` : ''}`];
-                if (band && diff != null) lines.push(`${Math.round(Math.abs(diff))}s ${diff > 0 ? 'after' : 'before'} the top players' median (${fmtClock(band.med)})`, state === 'on' ? 'Inside their window' : 'Outside their window');
-                else lines.push('No top-player window to judge this press by');
+                const pre = !!row.prePull && j === 0;
+                const state: Hover['tone'] = pre ? 'pre' : diff == null ? 'none' : Math.abs(diff) <= tol ? 'on' : 'off';
+                const lines = [pre ? `Pressed before the pull: its buff was already up at 0:00${e - s > 3.5 ? `, running until ${fmtClock(Math.min(e, dur))}` : ''}` : `Pressed at ${fmtClock(s)}${e - s > 3.5 ? `, running until ${fmtClock(Math.min(e, dur))}` : ''}`];
+                if (band && diff != null && !pre) lines.push(`${Math.round(Math.abs(diff))}s ${diff > 0 ? 'after' : 'before'} the top players' median (${fmtClock(band.med)})`, state === 'on' ? 'Inside their window' : 'Outside their window');
+                else if (!pre) lines.push('No top-player window to judge this press by');
+                if (uses) lines.push(uses);
                 return (
                   <rect key={j} x={x(s)} y={y + 11} width={Math.max(3, x(Math.min(e, dur)) - x(s))} height={ROW - 22} rx={2} fill={toneColor[state]} opacity={0.9} style={{ cursor: 'default' }}
                     onMouseLeave={hide} onMouseEnter={ev => show(ev, { tone: state, title: `${row.name} · your ${ord(j)} press`, lines })} />

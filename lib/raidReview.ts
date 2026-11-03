@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */ // raw WCL table JSON, same posture as lib/wow.ts
+import { ordinalWord } from './wipefestStats';
 import { unstable_cache } from 'next/cache';
 import { wclQuery } from './wow';
 import { buildProfile, DIFFICULTY_LABELS, PLAYER_CLASS_TYPES, type FightPlayer, type RaidDeath, type RaidMechanicStats, type ReportFight } from './analyze';
@@ -245,7 +246,10 @@ export interface RaidItem {
 // Cards from Wipefest-defined mechanics, evaluated against this log. The sentence is
 // Wipefest's template filled with our numbers; the plain-English line underneath and
 // the verdict against the top raids are ours.
-export function buildMechanicItems(insights: MechanicInsight[], comparison: MechanicComparison | null, raidSize: number): RaidItem[] {
+// Where Wipefest's percentile buckets put this raid for an insight's main statistic.
+export interface WipefestPlacement { percentile: number; statistic: string; difficulty: string; date: string }
+
+export function buildMechanicItems(insights: MechanicInsight[], comparison: MechanicComparison | null, raidSize: number, placements?: Record<string, WipefestPlacement> | null): RaidItem[] {
   const items: RaidItem[] = [];
   for (const ins of insights) {
     // A sentence written for a failure ("Failed to kill X before…") with nothing behind it
@@ -264,6 +268,10 @@ export function buildMechanicItems(insights: MechanicInsight[], comparison: Mech
       const better = cmp.higherIsBetter ? ratio >= 1 : ratio <= 1;
       severity = muchWorse && ins.totalEvents >= 3 ? 'bad' : worse ? 'warn' : better ? 'good' : 'info';
       comparisonText = `${main.name}${main.unit ? ` ${main.unit}` : ''}: ${main.display} here · top raids ${cmp.display} (median of ${comparison!.n})${phaseWords(ins.phase)}`;
+      const place = placements?.[ins.configId];
+      // Wipefest's buckets are for the statistic as Wipefest computes it; ours lands within a
+      // few points on most cards (17 of 24 inside five points on the reference kill), so "about".
+      if (place && place.statistic === main.name) comparisonText += ` · Wipefest: about the ${ordinalWord(place.percentile)} percentile of the ${place.difficulty} raids it has seen (as of ${place.date})`;
     } else if (main && cmp && cmp.median === 0) {
       severity = main.value > 0 && !cmp.higherIsBetter ? 'warn' : ins.totalEvents === 0 ? 'good' : 'info';
       comparisonText = `Top raids: none at all (median of ${comparison!.n})${phaseWords(ins.phase)}`;
@@ -422,7 +430,7 @@ export function buildPlayerMechanicItems(insights: MechanicInsight[], comparison
 }
 
 // Recomposes the raid's short version once every card, mechanics included, is in.
-export function composeRaidSummary(review: RaidReview, fight: ReportFight, opts: { topMedianSec: number | null; deaths: number; wipeDeaths: number }): void {
+export function composeRaidSummary(review: RaidReview, fight: ReportFight, opts: { topMedianSec: number | null; deaths: number; wipeDeaths: number; lastPhaseName?: string | null }): void {
   const diff = DIFFICULTY_LABELS[fight.difficulty] ?? '';
   const durationSec = fight.durationMs / 1000;
   const boss = review.items.filter(i => i.group === 'boss');
@@ -431,7 +439,11 @@ export function composeRaidSummary(review: RaidReview, fight: ReportFight, opts:
   const pace = fight.kill ? paceClause(durationSec, opts.topMedianSec) : '';
   const deathsClause = opts.deaths === 0 ? 'nobody died' : `${plural(opts.deaths, 'death')}${opts.wipeDeaths ? ` (${opts.deaths - opts.wipeDeaths} before the wipe)` : ''}`;
   const mechClause = judged.length ? `${worse === 0 ? 'no mechanic' : `${worse} of ${judged.length} mechanics`} worse than the top raids manage` : '';
-  const verdict = `${diff} ${fight.name}: ${fight.kill ? `killed in ${fmtClock(durationSec)}` : `wiped at ${Math.round(fight.fightPercentage)}% after ${fmtClock(durationSec)}`}${pace ? `, ${pace}` : ''}; ${deathsClause}${mechClause ? `, ${mechClause}` : ''}`;
+  // Where the wipe happened: the phase the pull ended in (Wipefest's name for it, or WCL's),
+  // and the boss's health when it differs from the fight percentage on a multi-stage boss.
+  const stage = opts.lastPhaseName ? opts.lastPhaseName.split(':')[0].trim() : '';
+  const bossHealth = !fight.kill && Math.abs((fight.bossPercentage ?? fight.fightPercentage) - fight.fightPercentage) >= 3 ? ` (boss at ${Math.round(fight.bossPercentage)}% health)` : '';
+  const verdict = `${diff} ${fight.name}: ${fight.kill ? `killed in ${fmtClock(durationSec)}` : `wiped at ${Math.round(fight.fightPercentage)}%${stage ? ` in ${stage}` : ''} after ${fmtClock(durationSec)}${bossHealth}`}${pace ? `, ${pace}` : ''}; ${deathsClause}${mechClause ? `, ${mechClause}` : ''}`;
   const groupCost: Record<RaidItem['group'], number> = { ending: 2, boss: 3, mechanics: 2.5, utility: 0.6, prep: 1.5 };
   const baseCost = (i: RaidItem) => (/^(wipe|deaths)$/i.test(i.id) ? 8 + opts.deaths : /death/i.test(i.id) ? 3 : groupCost[i.group]);
   const toItem = (i: RaidItem): SummaryItem => ({ severity: i.severity, brief: i.brief ?? i.title, cost: i.cost ?? (i.severity === 'good' ? 1 / baseCost(i) : baseCost(i) * (i.severity === 'bad' ? 2 : 1)) });

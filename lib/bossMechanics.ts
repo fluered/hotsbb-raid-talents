@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */ // raw GitHub / Blizzard / Wowhead JSON
 import { getOrSetPersistent } from './persistentCache';
 import { mapConcurrent } from './wow';
+import { getBigWigsBoss } from './bigwigs';
 
 // ─── Boss mechanic knowledge: what each boss ability IS ───────────────────────
 //
@@ -36,6 +37,21 @@ export interface MechanicLabel {
   fn: string;          // DBM constructor suffix, e.g. "DodgeCount"
   key: string;         // DBM voice key, e.g. "watchstep"
   boss: string;        // DBM module file stem, e.g. "Ulatek"
+  alt?: string;        // DBM's short name for it ("Tank Line", "Group Soak"), when registered
+}
+
+// Why a player ends up with a debuff, in the addon authors' words: BigWigs' note on
+// the aura ("This debuff will apply to you if your group fails to soak Serpent's
+// Bite") or DBM's comment on its aura sound ("Calcified Corpse. Failed to clear
+// Serpent's Bite").
+export interface MechanicNote {
+  spellId: number;
+  name: string;
+  note: string;
+  source: 'BigWigs' | 'DBM';
+  parentSpellId: number | null;  // the ability it follows from, when the addon says
+  dispel: string | null;
+  mythicOnly: boolean;
 }
 
 export interface JournalAbility {
@@ -49,7 +65,13 @@ export interface BossKnowledge {
   labels: MechanicLabel[];
   journal: JournalAbility[];   // journal abilities + DBM-labelled abilities, with descriptions where known
   overview: string | null;
-  sources: { dbm: boolean; journal: boolean; descriptions: boolean };
+  // The id the log uses → the id DBM names the ability by ("Script uses 1292036 but it
+  // has no tooltip, so we use 1284103"), so a lookup by the log's id finds the label.
+  aliases: Record<string, number>;
+  notes: MechanicNote[];
+  // BigWigs' one-word reading of an ability by spell id ("dodge", "soak", "adds").
+  renames: Record<string, string>;
+  sources: { dbm: boolean; journal: boolean; descriptions: boolean; bigwigs: boolean };
 }
 
 export const MECHANIC_WORDS: Record<MechanicType, string> = {
@@ -236,19 +258,50 @@ async function githubJson(path: string): Promise<any> {
 }
 
 interface RawLabel { spellId: number; fn: string; key: string; boss: string }
+interface RawAuraSound { ids: number[]; parentSpellId: number; comment: string; boss: string }
+interface DbmModule { labels: RawLabel[]; altNames: Record<string, string>; aliases: Record<string, number>; auraSounds: RawAuraSound[] }
 
-function parseDbmModule(src: string, boss: string): RawLabel[] {
-  const out: RawLabel[] = [];
+// DBM_COMMON_L.TANK .. " " .. DBM_COMMON_L.LINE → "Tank Line", with the common locale.
+function dbmExpr(expr: string, locale: Record<string, string>): string {
+  return expr.split('..').map(t => {
+    const k = t.trim().match(/^DBM_COMMON_L\.(\w+)$/)?.[1];
+    if (k) return locale[k] ?? '';
+    const q = t.trim().match(/^"([^"]*)"$/);
+    return q ? q[1] : '';
+  }).join('').replace(/\s+/g, ' ').trim();
+}
+
+export function parseDbmModule(src: string, boss: string, locale: Record<string, string> = {}): DbmModule {
+  const labels: RawLabel[] = [];
   const re = /mod:NewSpecialWarning(\w*)\(\s*(\d+)([^)]*)\)/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(src))) {
     const quoted = [...m[3].matchAll(/"([a-z0-9]+)"/g)].map(x => x[1]);
-    out.push({ spellId: Number(m[2]), fn: m[1], key: quoted[quoted.length - 1] ?? '', boss });
+    labels.push({ spellId: Number(m[2]), fn: m[1], key: quoted[quoted.length - 1] ?? '', boss });
   }
+  const altNames: Record<string, string> = {};
+  for (const a of src.matchAll(/^\s*DBM:RegisterAltSpellName\(\s*(\d+)\s*,\s*([^)]*)\)/gm)) {
+    const text = dbmExpr(a[2], locale);
+    if (text) altNames[a[1]] = text;
+  }
+  const aliases: Record<string, number> = {};
+  for (const a of src.matchAll(/Script uses (\d+),? but it has no tooltip,? so we use (\d+)/g)) aliases[a[1]] = Number(a[2]);
+  const auraSounds: RawAuraSound[] = [];
+  for (const a of src.matchAll(/mod:AddAuraSoundOption\(\s*(\{[^}]*\}|\d+)\s*,\s*\w+\s*,\s*(\d+)[^)]*\)[ \t]*--[ \t]*([^\n]*)/g)) {
+    const ids = (a[1].match(/\d+/g) ?? []).map(Number);
+    if (ids.length) auraSounds.push({ ids, parentSpellId: Number(a[2]), comment: a[3].trim(), boss });
+  }
+  return { labels, altNames, aliases, auraSounds };
+}
+
+// L.KEY = "text" pairs of DBM's common locale file.
+function parseDbmLocale(src: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const m of src.matchAll(/^\s*C?L\.(\w+)\s*=\s*"((?:[^"\\]|\\.)*)"/gm)) out[m[1]] = m[2].replace(/\\"/g, '"');
   return out;
 }
 
-interface DbmRaid { labels: MechanicLabel[]; descriptions: Record<string, string> }
+interface DbmRaid { labels: MechanicLabel[]; descriptions: Record<string, string>; aliases: Record<string, number>; notes: MechanicNote[] }
 
 // GitHub paths are case-sensitive and DBM's folder names don't always match a display
 // name stripped of spaces ("WarWithin" vs "The War Within"), so both levels are found
@@ -270,18 +323,29 @@ async function resolveDbmZoneDir(expansionName: string, zoneName: string): Promi
 
 // All labels for one raid zone (every boss), from DBM-Raids-<expansion>/<Zone>/.
 async function getDbmRaidLabels(expansionName: string, zoneName: string): Promise<DbmRaid> {
-  const key = `dbm-labels-v3-${normalizeName(expansionName)}-${normalizeName(zoneName)}`;
+  const key = `dbm-labels-v4-${normalizeName(expansionName)}-${normalizeName(zoneName)}`;
   return getOrSetPersistent(key, 86400, async () => {
-    const dir = await resolveDbmZoneDir(expansionName, zoneName);
+    const [dir, localeFile] = await Promise.all([
+      resolveDbmZoneDir(expansionName, zoneName),
+      githubJson('DBM-Core/commonlocal.en.lua').catch(() => null),
+    ]);
+    const locale = localeFile?.download_url ? parseDbmLocale(await fetch(localeFile.download_url, { headers: GITHUB_HEADERS, next: { revalidate: 86400 } }).then(r => (r.ok ? r.text() : ''))) : {};
     const listing: any[] = await githubJson(dir);
     const files = listing.filter(f => typeof f?.name === 'string' && f.name.endsWith('.lua') && f.download_url);
     const raw: RawLabel[] = [];
+    const altNames: Record<string, string> = {};
+    const aliases: Record<string, number> = {};
+    const auraSounds: RawAuraSound[] = [];
     await mapConcurrent(files, 4, async f => {
       const r = await fetch(f.download_url, { headers: GITHUB_HEADERS, next: { revalidate: 86400 } });
       if (!r.ok) return;
-      raw.push(...parseDbmModule(await r.text(), f.name.replace(/\.lua$/, '')));
+      const mod = parseDbmModule(await r.text(), f.name.replace(/\.lua$/, ''), locale);
+      raw.push(...mod.labels);
+      Object.assign(altNames, mod.altNames);
+      Object.assign(aliases, mod.aliases);
+      auraSounds.push(...mod.auraSounds);
     });
-    const ids = [...new Set(raw.map(l => l.spellId))];
+    const ids = [...new Set([...raw.map(l => l.spellId), ...auraSounds.flatMap(a => [...a.ids, a.parentSpellId])])];
     const info = new Map<number, { name: string; description: string }>();
     await mapConcurrent(ids, 6, async id => { const s = await wowheadSpell(id); if (s) info.set(id, s); });
     const descriptions: Record<string, string> = {};
@@ -293,8 +357,30 @@ async function getDbmRaidLabels(expansionName: string, zoneName: string): Promis
       fn: l.fn,
       key: l.key,
       boss: l.boss,
+      alt: altNames[String(l.spellId)],
     }));
-    return { labels, descriptions };
+    // DBM's comment on an aura sound names the debuff and, often, the failure behind it.
+    // DBM's comment on an aura sound names the debuff and, often, the failure behind it
+    // ("Calcified Corpse. Failed to clear Serpent's Bite"). The name is dropped from the
+    // front; a comment that is only the name, or a developer's doubt ("iffy", "use if",
+    // a question mark), is not a fact about the mechanic.
+    const notes: MechanicNote[] = [];
+    for (const a of auraSounds) for (const id of a.ids) {
+      const name = info.get(id)?.name ?? '';
+      let comment = a.comment.trim();
+      if (name && comment.toLowerCase().startsWith(name.toLowerCase())) comment = comment.slice(name.length).trim();
+      // "Soul Constrictor (can't soak Spectral Coils)": the parenthesis is the note.
+      const paren = comment.match(/^([^()]{0,40}?)\s*\((.+)\)\s*$/);
+      if (paren && paren[1].trim().split(/\s+/).length <= 3) comment = paren[2];
+      comment = comment.replace(/^[.:\-–—\s]+/, '').replace(/^\((.*)\)$/, '$1').trim();
+      // A note is a sentence about the failure, not a name: four words or more, or a word
+      // that states a cause.
+      const words = comment.split(/\s+/).length;
+      if (!comment || (words < 4 && !/\b(fail|failed|can'?t|cannot|if|when|pulled|targeted|hit by|stood|missed)\b/i.test(comment))) continue;
+      if (/\?|\biffy\b|\buse if\b|\bnot sure\b|\btodo\b|\bmaybe\b|\bdoesn'?t work\b/i.test(comment)) continue;
+      notes.push({ spellId: id, name, note: comment.charAt(0).toUpperCase() + comment.slice(1), source: 'DBM', parentSpellId: a.parentSpellId, dispel: null, mythicOnly: false });
+    }
+    return { labels, descriptions, aliases, notes };
   });
 }
 
@@ -316,16 +402,21 @@ function cleanJournalText(s: string | undefined): string {
     .trim();
 }
 
-async function getJournal(zoneName: string, bossName: string, blizzToken: string): Promise<{ abilities: JournalAbility[]; overview: string | null }> {
-  const key = `journal-v2-${normalizeName(zoneName)}-${normalizeName(bossName)}`;
+async function getJournal(zoneName: string, bossName: string, blizzToken: string, journalId?: number | null): Promise<{ abilities: JournalAbility[]; overview: string | null }> {
+  const key = `journal-v3-${normalizeName(zoneName)}-${normalizeName(bossName)}-${journalId ?? 0}`;
   return getOrSetPersistent(key, 7 * 86400, async () => {
-    const index = await blizzard('/data/wow/journal-instance/index', blizzToken);
-    const inst = (index?.instances ?? []).find((i: any) => normalizeName(i.name ?? '') === normalizeName(zoneName));
-    if (!inst) return { abilities: [], overview: null };
-    const instance = await blizzard(`/data/wow/journal-instance/${inst.id}`, blizzToken);
-    const enc = (instance?.encounters ?? []).find((e: any) => normalizeName(e.name ?? '') === normalizeName(bossName));
-    if (!enc) return { abilities: [], overview: null };
-    const journal = await blizzard(`/data/wow/journal-encounter/${enc.id}`, blizzToken);
+    // Warcraft Logs states each encounter's journal id; name matching is the fallback.
+    let encId = journalId ?? null;
+    if (!encId) {
+      const index = await blizzard('/data/wow/journal-instance/index', blizzToken);
+      const inst = (index?.instances ?? []).find((i: any) => normalizeName(i.name ?? '') === normalizeName(zoneName));
+      if (!inst) return { abilities: [], overview: null };
+      const instance = await blizzard(`/data/wow/journal-instance/${inst.id}`, blizzToken);
+      const enc = (instance?.encounters ?? []).find((e: any) => normalizeName(e.name ?? '') === normalizeName(bossName));
+      if (!enc) return { abilities: [], overview: null };
+      encId = enc.id;
+    }
+    const journal = await blizzard(`/data/wow/journal-encounter/${encId}`, blizzToken);
     const abilities = new Map<number, JournalAbility>();
     let overview: string | null = null;
     const walk = (sections: any[]) => {
@@ -350,11 +441,27 @@ async function getJournal(zoneName: string, bossName: string, blizzToken: string
 
 // ─── Combined lookup ──────────────────────────────────────────────────────────
 
-export async function getBossKnowledge(opts: { expansionName: string; zoneName: string; bossName: string; blizzToken: string }): Promise<BossKnowledge> {
-  const [dbm, journal] = await Promise.all([
+export async function getBossKnowledge(opts: { expansionName: string; zoneName: string; bossName: string; blizzToken: string; encounterId?: number; journalId?: number | null }): Promise<BossKnowledge> {
+  const [dbm, journal, bigwigs] = await Promise.all([
     getDbmRaidLabels(opts.expansionName, opts.zoneName).catch(err => { console.error('dbm labels unavailable', err); return null; }),
-    getJournal(opts.zoneName, opts.bossName, opts.blizzToken).catch(err => { console.error('journal unavailable', err); return null; }),
+    getJournal(opts.zoneName, opts.bossName, opts.blizzToken, opts.journalId).catch(err => { console.error('journal unavailable', err); return null; }),
+    opts.encounterId ? getBigWigsBoss(opts.expansionName, opts.zoneName, opts.encounterId) : Promise.resolve(null),
   ]);
+  // BigWigs' notes, with the referenced spell's name filled in (from the journal, DBM's
+  // Wowhead lookups, or Wowhead directly).
+  // BigWigs' notes first (locale sentences, machine-readable), DBM's comments after.
+  const notes: MechanicNote[] = [];
+  if (bigwigs) {
+    const nameOf = async (id: number): Promise<string> => journal?.abilities.find(a => a.spellId === id)?.name ?? dbm?.labels.find(l => l.spellId === id)?.name ?? (await wowheadSpell(id))?.name ?? '';
+    await mapConcurrent(bigwigs.notes, 6, async n => {
+      let text = n.note;
+      if (text.includes('%s')) text = text.replace(/%s/g, n.refSpellId ? await nameOf(n.refSpellId) : '').replace(/\s+/g, ' ').trim();
+      if (!text && n.dispel) text = `Dispellable (${n.dispel})`;
+      if (!text) return;
+      notes.push({ spellId: n.spellId, name: n.name || await nameOf(n.spellId), note: text, source: 'BigWigs', parentSpellId: n.refSpellId, dispel: n.dispel, mythicOnly: n.mythicOnly });
+    });
+  }
+  notes.push(...(dbm?.notes ?? []));
   const bossKey = normalizeName(opts.bossName);
   // Prefer this boss's module, but keep the whole raid's labels as a fallback:
   // shared trash/add abilities sometimes live in another file.
@@ -372,17 +479,33 @@ export async function getBossKnowledge(opts: { expansionName: string; zoneName: 
     labels,
     journal: journalList,
     overview: journal?.overview ?? null,
+    aliases: dbm?.aliases ?? {},
+    notes,
+    renames: bigwigs?.renames ?? {},
     sources: {
       dbm: !!dbm && dbm.labels.length > 0,
       journal: !!journal && journal.abilities.length > 0,
       descriptions: journalList.some(j => !!j.description),
+      bigwigs: !!bigwigs && (bigwigs.notes.length > 0 || Object.keys(bigwigs.renames).length > 0),
     },
   };
 }
 
+// The addon authors' note on a debuff: why a player gets it. By the log's spell id
+// (through DBM's id aliases) or by name.
+export function lookupNote(k: BossKnowledge | null | undefined, name: string, spellId?: number): MechanicNote | null {
+  if (!k) return null;
+  const id = spellId ? (k.aliases[String(spellId)] ?? spellId) : 0;
+  const byId = id ? k.notes.find(n => n.spellId === id || n.spellId === spellId) : undefined;
+  if (byId) return byId;
+  const n = normalizeName(name);
+  return k.notes.find(x => x.name && normalizeName(x.name) === n) ?? null;
+}
+
 export function lookupLabel(k: BossKnowledge | null | undefined, name: string, spellId?: number): MechanicLabel | null {
   if (!k) return null;
-  const byId = spellId ? k.labels.find(l => l.spellId === spellId && l.type !== 'unknown') : undefined;
+  const wanted = spellId ? [spellId, k.aliases[String(spellId)] ?? 0].filter(Boolean) : [];
+  const byId = wanted.length ? k.labels.find(l => wanted.includes(l.spellId) && l.type !== 'unknown') : undefined;
   if (byId) return byId;
   const n = normalizeName(name);
   return k.labels.find(l => l.name && normalizeName(l.name) === n && l.type !== 'unknown') ?? null;

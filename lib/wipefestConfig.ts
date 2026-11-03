@@ -23,7 +23,14 @@ export interface WipefestEventFilter {
   phase?: { id: number };
   range?: number;           // ms: one event per target inside this window
   rangePer?: { range: number; target?: boolean; source?: boolean; instance?: boolean; minimum?: number };
+  rangePerActor?: number;   // ms: one event per window per actor (source or target)
   minimum?: number;         // with range: windows holding fewer events than this are dropped
+  stack?: number;           // keep only stack events reaching this count
+  first?: boolean;          // keep the first matching event only
+  index?: number;           // keep the Nth matching event only (0-based)
+  firstPerInstance?: boolean;        // one event per source instance
+  firstPerInstancePerTarget?: boolean;
+  timestamp?: number;       // a phase that starts at a fixed time (0 = the pull)
   query?: string;           // a Warcraft Logs filter expression that replaces the above
   excludeNpcTargets?: boolean;
   excludeNpcSources?: boolean;
@@ -73,6 +80,9 @@ export interface WipefestInsightConfig {
   debuffApplicationTimeRelativeToDamageTime?: number;
   countEndOfFightAsEndOfDebuff?: boolean;
   onlyMatchByTarget?: boolean;
+  excludeCastTarget?: boolean;   // the cast's own target is meant to be hit; do not count it
+  stacks?: number;               // stackThreshold: the stack count that counts
+  phase?: string;                // phaseDuration: the phase definition's name
   require?: string;         // "3513:E1E2H1H2" — pairs of event-config ids
   showIf?: string;
   statistics?: WipefestStatistic[];
@@ -101,7 +111,9 @@ export async function getWipefestFightConfig(encounterId: number): Promise<Wipef
   try {
     const v = await getOrSetPersistent<WipefestFightConfig | { none: true }>(`wipefest-config-v2-${encounterId}`, TTL_SECONDS, async () => {
       const r = await fetch(`${API}/fightConfig/${encounterId}`, { headers: HEADERS, cache: 'no-store' });
-      if (r.status === 404) return { none: true };
+      // Wipefest answers 400 ("No fight config could be found for group 'X'") for a boss it
+      // has no definitions for, not 404 (verified 2026-10-25 across all 317 encounters).
+      if (r.status === 404 || r.status === 400) return { none: true };
       if (!r.ok) throw new Error(`wipefest fightConfig ${encounterId}: ${r.status}`);
       const j = await r.json();
       const eventConfigs: WipefestEventConfig[] = Array.isArray(j?.eventConfigs) ? j.eventConfigs : [];
