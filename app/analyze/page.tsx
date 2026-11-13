@@ -16,11 +16,17 @@ import { isDefensive, defensiveKey, registerHealingPotionNames } from '../../lib
 import {
   parseReportInput, getReportOverview, getFightPlayers, getPlayerProfile, getPoolSummary, getRaidMechanicStats, fetchBossCastEvents,
   DIFFICULTY_LABELS, type ReportFight, type ReportOverview, type FightPlayer, type PoolSummary, type RaidMechanicStats,
+  heroTreeOf, loadHeroNodeMap,
 } from '../../lib/analyze';
 import { reviewPlayer, registerPotionNames, buffFamily, fmtClock, median, type BossCastMark, type Finding, type Review, type Timeline, type TalentContext } from '../../lib/analyzeRules';
 import { getRaidFightData, buildRaidReview, buildMechanicItems, buildPlayerMechanicItems, composeRaidSummary, type RaidReview, type RaidItem, type WipefestPlacement } from '../../lib/raidReview';
 import { composeSummary, costOf, paceClause } from '../../lib/summary';
+import { loadNightReview, nightGroups, nightHref, pickNightGroup, type NightReview } from '../../lib/nightReview';
+import { analyzeUrl, nightDiscordText, playerDiscordText, raidDiscordText } from '../../lib/discordText';
+import NightView from './NightView';
+import CopyDiscordButton from '../../components/CopyDiscordButton';
 import { getLorrgsSpells, getLorrgsExternals, lorrgsMajorsForSpec, lorrgsNonMajorsForSpec } from '../../lib/lorrgsSpells';
+import { loadRoleData } from '../../lib/roleData';
 import { getLorrgsBossCasts, LORRGS_BOSS_CREDIT } from '../../lib/lorrgsBosses';
 import { BIGWIGS_CREDIT } from '../../lib/bigwigs';
 import { getWipefestFightConfig, wipefestCredit, type WipefestFightConfig } from '../../lib/wipefestConfig';
@@ -45,7 +51,7 @@ export const metadata: Metadata = {
 };
 
 interface PageProps {
-  searchParams: Promise<{ report?: string; fight?: string; player?: string; view?: string; debug?: string }>;
+  searchParams: Promise<{ report?: string; fight?: string; player?: string; view?: string; boss?: string; difficulty?: string; debug?: string }>;
 }
 
 const ABILITY_ICON = (icon: string) => `https://assets.rpglogs.com/img/warcraft/abilities/${icon}`;
@@ -58,7 +64,7 @@ const classColor = (className: string) => POPULAR_SPECS.find(c => c.class === cl
 // streams the loading screen first on every such navigation.
 export default async function AnalyzePage({ searchParams }: PageProps) {
   const sp = await searchParams;
-  const key = [sp.report, sp.fight, sp.player, sp.view].map(v => v ?? '').join('|');
+  const key = [sp.report, sp.fight, sp.player, sp.view, sp.boss, sp.difficulty].map(v => v ?? '').join('|');
   return (
     <Suspense key={key} fallback={<Loading />}>
       <AnalyzeContent sp={sp} />
@@ -87,6 +93,7 @@ async function AnalyzeContent({ sp }: { sp: Awaited<PageProps['searchParams']> }
     | { kind: 'fights'; overview: ReportOverview }
     | { kind: 'players'; overview: ReportOverview; fight: ReportFight; players: FightPlayer[] }
     | { kind: 'review'; overview: ReportOverview; fight: ReportFight; player: FightPlayer; review: Review; mechanics: RaidItem[] }
+    | { kind: 'night'; overview: ReportOverview; night: NightReview }
     | { kind: 'raid'; overview: ReportOverview; fight: ReportFight; players: FightPlayer[]; review: RaidReview; debug?: unknown };
   let state: PageState;
   if (!ref) {
@@ -101,7 +108,15 @@ async function AnalyzeContent({ sp }: { sp: Awaited<PageProps['searchParams']> }
         const fight = sp.fight === 'last'
           ? overview.fights[overview.fights.length - 1]
           : sp.fight ? overview.fights.find(f => f.id === parseInt(sp.fight!)) : undefined;
-        if (!fight) {
+        // The night view: every pull of one boss. Without a boss it can only be the report's one group.
+        const nightGroup = !fight && sp.view === 'night' ? pickNightGroup(overview, sp.boss, sp.difficulty) : null;
+        if (nightGroup && nightGroup.fights.length >= 2) {
+          const night = await loadNightReview(token, overview.code, nightGroup, {
+            bossKnowledge: f => loadBossKnowledge(token, f),
+            raidStats: async (f, ps) => (await loadRaidStatsForFight(token, f, ps)).raidStats,
+          });
+          state = { kind: 'night', overview, night };
+        } else if (!fight) {
           state = { kind: 'fights', overview };
         } else {
           const players = await getFightPlayers(token, overview.code, fight.id);
@@ -121,7 +136,10 @@ async function AnalyzeContent({ sp }: { sp: Awaited<PageProps['searchParams']> }
               registerPotions(Object.entries(data.friendlyCasts).map(([name, c]) => ({ name, spellId: c.spellId, icon: c.icon }))),
             ]);
             const review = buildRaidReview({ fight, data, boss, raidStats: raidStats.raidStats, cooldowns, charges, potionNorm: potionNormOf(raidStats.pool, raidStats.poolSpec) });
-            const wipeDeaths = fight.kill ? 0 : data.raidDeaths.filter(d => data.raidDeaths.filter(x => x.killer === d.killer && Math.abs(x.atSec - d.atSec) <= 3).length >= 5).length;
+            // Deaths that are the wipe itself: the wipe group, and everything after it began.
+            const inWipeGroup = fight.kill ? [] : data.raidDeaths.filter(d => data.raidDeaths.filter(x => x.killer === d.killer && Math.abs(x.atSec - d.atSec) <= 3).length >= 5);
+            const wipeStart = inWipeGroup.length ? Math.min(...inWipeGroup.map(d => d.atSec)) : Infinity;
+            const wipeDeaths = data.raidDeaths.filter(d => inWipeGroup.includes(d) || d.atSec >= wipeStart).length;
             // Wipefest's percentile buckets for this boss: where this raid sits among the raids
             // Wipefest has analysed, per mechanic (an experiment; shown only where a bucket exists).
             const placements: Record<string, WipefestPlacement> = {};
@@ -139,7 +157,7 @@ async function AnalyzeContent({ sp }: { sp: Awaited<PageProps['searchParams']> }
               const cards = annotateCards(buildMechanicItems(mech.insights, comparison, players.length, placements), boss);
               // The definition-based cards replace our own type-guessed cards for the same abilities.
               const covered = cards.map(c => c.title.toLowerCase());
-              const subject = (t: string) => t.replace(/^(dispelled|interrupted|soaked) /i, '').replace(/ (hit|soaked by|picked|soaked) .*$/i, '').replace(/ d+ of d+ times?$/i, '').toLowerCase();
+              const subject = (t: string) => t.replace(/^(dispelled|interrupted|soaked) /i, '').replace(/ (hit|soaked by|picked|soaked) .*$/i, '').replace(/ \d+ of \d+ times?$/i, '').toLowerCase();
               review.items = review.items.filter(i => i.group !== 'mechanics' || !covered.some(t => t.includes(subject(i.title))));
               review.items.push(...cards);
               review.sourcesNote = [review.sourcesNote?.replace(/\.$/, ''), wipefestCredit(mech.config), boss?.sources.bigwigs ? BIGWIGS_CREDIT : ''].filter(Boolean).join(', ') + '.';
@@ -191,7 +209,11 @@ async function AnalyzeContent({ sp }: { sp: Awaited<PageProps['searchParams']> }
               mapConcurrent(pool?.trinkets ?? [], 8, async t => ({ name: t.name, ...(await getItemOnUse(t.id).catch(() => noUse)) })),
             ]);
             const poolItemUses = Object.fromEntries(poolTrinketUses.filter(t => t.onUse || t.effectNames.length).map(t => [t.name, { useSpellId: t.useSpellId, useSpellName: t.useSpellName, effectNames: t.effectNames }]));
-            const review = reviewPlayer({ player, fight, profile, pool, talents, boss, raidStats, cooldowns, charges, trinkets, poolItemUses, majorSpells, notMajorSpells, context: {
+            // The player's hero talent tree, so the comparison is with top players on the same one.
+            const heroTree = heroTreeOf(player.talentNodes ?? profile.talentNodes, await loadHeroNodeMap(player.className, player.spec));
+            // Tanks and healers: the extra facts their own checks need (one request for a tank, none for a healer).
+            const role = await loadRoleData({ token, code: overview.code, fight, player, profile, pool, boss, raidStats, lorrgs }).catch(() => null);
+            const review = reviewPlayer({ player, fight, profile, pool, talents, heroTree, boss, raidStats, cooldowns, charges, trinkets, poolItemUses, majorSpells, notMajorSpells, role, context: {
               mechanicEvents: mechanics.flatMap(m => m.events ?? []), phases: mech.phases, bossCasts: bossCasts ?? [],
               playerNames: Object.fromEntries(players.map(p => [p.id, p.name])), externalsTracked: externalIds.length > 0,
             } });
@@ -212,9 +234,10 @@ async function AnalyzeContent({ sp }: { sp: Awaited<PageProps['searchParams']> }
               // Strengths: an on-time cooldown set or a clean mechanics sheet says more than
               // staying alive on a kill, which is the default.
               const strengthCost = (f: Finding) => f.id === 'timing-good' ? 0.15 : f.id === 'clean-mechanics' ? 0.2 : f.id === 'alive' ? (fight.kill ? 0.7 : 0.3) : 1 / Math.max(0.3, Math.abs(costOf(f.category, 'warn')));
-              const fromFindings = review.findings.filter(f => f.id !== 'output').map(f => ({ severity: f.severity, brief: f.title, cost: f.severity === 'good' ? strengthCost(f) : Math.abs(costOf(f.category, f.severity)) }));
+              const fromFindings = review.findings.filter(f => f.id !== 'output').map(f => ({ severity: f.severity, brief: f.title, cost: f.severity === 'good' ? strengthCost(f) : f.cost ?? Math.abs(costOf(f.category, f.severity)) }));
               const fromMechanics = mechanics.map(m => ({ severity: m.severity, brief: m.brief ?? m.title, cost: m.cost ?? 2 }));
-              review.summary = composeSummary({ verdict, subject: 'you', problems: [...fromFindings, ...fromMechanics], strengths: [...fromFindings, ...fromMechanics] });
+              const all = [...fromFindings, ...fromMechanics];
+              review.summary = composeSummary({ verdict, subject: 'you', problems: all, strengths: all, minor: review.strong && !all.some(p => p.severity === 'bad') });
             }
             state = { kind: 'review', overview, fight, player, review, mechanics };
           }
@@ -233,6 +256,7 @@ async function AnalyzeContent({ sp }: { sp: Awaited<PageProps['searchParams']> }
 
   const crumbs: Array<{ label: string; href?: string }> = [];
   if (state.kind !== 'landing') crumbs.push({ label: state.overview.title, href: `/analyze?report=${state.overview.code}` });
+  if (state.kind === 'night') crumbs.push({ label: `${state.night.bossName} · night summary` });
   if (state.kind === 'players' || state.kind === 'review' || state.kind === 'raid') {
     crumbs.push({ label: `${state.fight.name} (${state.fight.kill ? 'kill' : `${Math.round(state.fight.fightPercentage)}%`})`, href: `/analyze?report=${state.overview.code}&fight=${state.fight.id}` });
   }
@@ -243,6 +267,7 @@ async function AnalyzeContent({ sp }: { sp: Awaited<PageProps['searchParams']> }
     state.kind === 'landing' ? <Landing error={state.error} initial={state.initial} />
     : state.kind === 'fights' ? <FightList overview={state.overview} />
     : state.kind === 'players' ? <PlayerList overview={state.overview} fight={state.fight} players={state.players} />
+    : state.kind === 'night' ? <NightView night={state.night} reportTitle={state.overview.title} discordText={nightDiscordText(state.night, analyzeUrl({ report: state.overview.code, view: 'night', boss: state.night.encounterID, difficulty: state.night.difficulty }))} />
     : state.kind === 'raid' ? <RaidView review={state.review} fight={state.fight} overview={state.overview} />
     : <ReviewView review={state.review} mechanics={state.mechanics} player={state.player} fight={state.fight} overview={state.overview} reportCode={state.overview.code} />;
 
@@ -282,6 +307,9 @@ async function AnalyzeContent({ sp }: { sp: Awaited<PageProps['searchParams']> }
           {body}
           {sp.debug === '1' && process.env.NODE_ENV !== 'production' && state.kind === 'raid' && (
             <pre className="mt-8 text-[11px] text-zinc-500 bg-zinc-950 border border-zinc-800 rounded-lg p-3 overflow-x-auto">{JSON.stringify(state.debug, null, 2)}</pre>
+          )}
+          {sp.debug === '1' && process.env.NODE_ENV !== 'production' && state.kind === 'night' && (
+            <pre className="mt-8 text-[11px] text-zinc-500 bg-zinc-950 border border-zinc-800 rounded-lg p-3 overflow-x-auto">{JSON.stringify({ wclRequests: state.night.requests, pulls: state.night.pulls }, null, 2)}</pre>
           )}
           {sp.debug === '1' && process.env.NODE_ENV !== 'production' && state.kind === 'review' && (
             <pre className="mt-8 text-[11px] text-zinc-500 bg-zinc-950 border border-zinc-800 rounded-lg p-3 overflow-x-auto">{JSON.stringify(state.review.debug, null, 2)}</pre>
@@ -349,7 +377,11 @@ async function loadPoolWithRaidStats(token: string, fight: ReportFight, player: 
 // The raid view has no spec of its own; the first DPS player's spec pool supplies the
 // top fights (and gets warmed for their own review in the process).
 async function loadRaidStatsForFight(token: string, fight: ReportFight, players: FightPlayer[]): Promise<{ raidStats: RaidMechanicStats | null; fights: Array<{ code: string; fightId: number; difficulty: number }>; topMedianSec: number | null; pool: PoolSummary | null; poolSpec: string }> {
-  const pick = players.find(p => p.role === 'dps') ?? players[0];
+  // The most common damage spec in the raid, not whoever is listed first: the same raid
+  // always gets the same reference, and that spec's pool is the likeliest to be built.
+  const dps = players.filter(p => p.role === 'dps');
+  const count = (p: FightPlayer) => dps.filter(q => q.className === p.className && q.spec === p.spec).length;
+  const pick = dps.slice().sort((a, b) => count(b) - count(a) || `${a.className} ${a.spec}`.localeCompare(`${b.className} ${b.spec}`))[0] ?? players[0];
   if (!pick) return { raidStats: null, fights: [], topMedianSec: null, pool: null, poolSpec: '' };
   const { pool, raidStats } = await loadPoolWithRaidStats(token, fight, pick, fight.difficulty >= 4 ? fight.difficulty : 4);
   const same = (pool?.fights ?? []).filter(f => f.difficulty === fight.difficulty);
@@ -609,6 +641,11 @@ function FightList({ overview }: { overview: ReportOverview }) {
                 <h2 className="font-bold text-zinc-100 leading-tight">{first.name}</h2>
                 <p className="text-xs text-zinc-500">{DIFFICULTY_LABELS[first.difficulty] ?? ''} · {fights.length} {fights.length === 1 ? 'pull' : 'pulls'}{kills ? ` · ${kills} kill${kills === 1 ? '' : 's'}` : ''}</p>
               </div>
+              {fights.length >= 2 && (
+                <Link href={nightHref(overview.code, first)} data-night-link className="ml-auto shrink-0 flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold border bg-amber-500/15 border-amber-500/40 text-amber-300 hover:bg-amber-500/25 transition-colors">
+                  <LinkPending label="reading" />Night summary →
+                </Link>
+              )}
             </div>
             <ul className="grid sm:grid-cols-2 gap-1.5">
               {fights.map((f, i) => (
@@ -733,6 +770,10 @@ function ReviewView({ review, mechanics, player, fight, overview, reportCode }: 
         <p className="text-lg md:text-xl leading-snug text-zinc-100 font-medium">{review.summary}</p>
         {review.poolNote && <p className="text-xs text-zinc-500 pt-1">{review.poolNote}</p>}
       </section>
+
+      <div className="flex flex-wrap items-center gap-2 -mt-4">
+        <CopyDiscordButton text={playerDiscordText(review, mechanics, player, fight, analyzeUrl({ report: reportCode, fight: fight.id, player: player.id }))} />
+      </div>
 
       <StatsGrid stats={review.stats} cols="grid-cols-3 sm:grid-cols-4 lg:grid-cols-7" />
 
@@ -964,6 +1005,7 @@ function TimelineView({ timeline }: { timeline: Timeline }) {
         <span className="inline-block w-0 h-0 align-middle mx-1" style={{ borderLeft: '5px solid transparent', borderRight: '5px solid transparent', borderTop: '6px solid #fde68a' }} />their median — hover any band or bar for the times
         {phases.length > 0 && <> · phases run across the top{phases.some(p => isIntermission(p.name)) ? ', intermissions in amber' : ''}</>}
         {(timeline.bossCasts?.length ?? 0) > 0 && <> · the boss&apos;s casts sit in the lane under the phases (lorrgs&apos; definitions; hover one for its name)</>}
+        {timeline.phaseAligned && <> · the top players&apos; times are placed on your pull&apos;s phases (this far into each phase), so a slower kill does not read as late</>}
         {timeline.lustSec != null && <> · <span className="inline-block w-px h-3 align-middle mr-1.5 border-l border-dashed border-sky-400" />Bloodlust</>}
         {timeline.rows.some(r => r.prePull) && <> · a bar starting at 0:00 is a press before the pull (its buff was up at the start)</>}
         {timeline.rows.some(r => r.kind === 'buff') && <> · below the dashed line: cooldowns that show up as a buff rather than a cast</>}
@@ -1012,7 +1054,13 @@ function RaidView({ review, fight, overview }: { review: RaidReview; fight: Repo
             </p>
           </div>
         </div>
-        <FightTabs overview={overview} fight={fight} active="raid" />
+        <div className="flex flex-wrap items-center gap-2">
+          <FightTabs overview={overview} fight={fight} active="raid" />
+          {(nightGroups(overview).find(g => g.encounterID === fight.encounterID && g.difficulty === fight.difficulty)?.all.length ?? 0) >= 2 && (
+            <Link href={nightHref(overview.code, fight)} data-night-link className="px-3 py-1.5 rounded-full text-xs font-bold transition-colors border border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700">Night summary</Link>
+          )}
+          <CopyDiscordButton text={raidDiscordText(review, fight, analyzeUrl({ report: overview.code, fight: fight.id }))} className="sm:ml-auto" />
+        </div>
       </header>
 
       <section className="rounded-2xl border border-amber-500/30 bg-gradient-to-br from-amber-500/10 to-transparent p-5 md:p-6 space-y-2">

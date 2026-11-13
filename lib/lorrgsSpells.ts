@@ -21,6 +21,7 @@ export interface LorrgsSpell {
   query: boolean;              // false: a synthetic marker lorrgs generates itself
   tags: string[];              // SpellTag names: DAMAGE, DEFENSIVE, TANK, RAID_CD, MOVE, DYNAMIC_CD
   variations: number[];        // alternate spell ids for the same button
+  duration?: number;           // seconds the effect lasts, where lorrgs states it (absent on entries cached before this field)
 }
 
 const CLASS_FILES = ['deathknight', 'demonhunter', 'druid', 'evoker', 'hunter', 'mage', 'monk', 'paladin', 'priest', 'rogue', 'shaman', 'warlock', 'warrior'];
@@ -101,6 +102,7 @@ export function parseLorrgsClassFile(src: string): LorrgsSpell[] {
       query: kw(args, 'query') !== 'False',
       tags: [...args.matchAll(/SpellTag\.(\w+)/g)].map(x => x[1]),
       variations: (kw(args, 'variations') ?? '').match(/\d+/g)?.map(Number) ?? [],
+      duration: Number(kw(args, 'duration') ?? 0) || 0,
     });
   }
   return out;
@@ -188,6 +190,22 @@ export function lorrgsNonMajorsForSpec(all: LorrgsSpell[], className: string, sp
     const denied = s.tags.includes('DEFENSIVE') || s.tags.includes('MOVE') || (s.tags.includes('RAID_CD') && !healer);
     if (!denied || out.some(o => o.spellId === s.spellId)) continue;
     out.push({ spellId: s.spellId, name: s.name, ids: [s.spellId, ...s.variations], cooldown: s.cooldown, kind: s.kind });
+  }
+  return out;
+}
+
+// lorrgs' spells for a spec carrying one of its tags: TANK is a tank's own defensive
+// cooldowns (Shield Wall, Demoralizing Shout), RAID_CD on a healer spec is its raid
+// healing cooldowns (Healing Tide Totem, Divine Hymn). Procs with no button (debuff
+// markers like Purgatory) are left out. Used by the role checks in lib/roleRules.ts.
+export function lorrgsTaggedForSpec(all: LorrgsSpell[], className: string, spec: string, tag: 'TANK' | 'RAID_CD'): Array<MajorSpell & { duration: number }> {
+  const specId = SPEC_IDS[className]?.[spec];
+  if (!specId) return [];
+  const out: Array<MajorSpell & { duration: number }> = [];
+  for (const s of all) {
+    if (!s.specIds.includes(specId) || !s.tags.includes(tag) || !s.query || s.kind === 'debuff') continue;
+    if (out.some(o => o.spellId === s.spellId || o.name === s.name)) continue;
+    out.push({ spellId: s.spellId, name: s.name, ids: [s.spellId, ...s.variations], cooldown: s.cooldown, kind: s.kind, duration: s.duration ?? 0 });
   }
   return out;
 }

@@ -48,7 +48,10 @@ export function costOf(category: string, severity: Severity): number {
   return severity === 'bad' ? base * 2 : severity === 'warn' ? base : severity === 'good' ? -base : 0;
 }
 
-export function composeSummary(opts: { verdict: string; problems: SummaryItem[]; strengths: SummaryItem[]; subject: 'raid' | 'you' }): string {
+// `minor`: the pull was already at the top players' level with nobody dead and nothing
+// rated bad, so whatever is left is polish. It is still named, but as "smaller things",
+// never as "the things that mattered most" — one stray hit did not matter most.
+export function composeSummary(opts: { verdict: string; problems: SummaryItem[]; strengths: SummaryItem[]; subject: 'raid' | 'you'; minor?: boolean }): string {
   const problems = opts.problems.filter(p => p.severity === 'bad' || p.severity === 'warn').sort((a, b) => b.cost - a.cost);
   const strengths = opts.strengths.filter(s => s.severity === 'good').sort((a, b) => a.cost - b.cost);
   const parts: string[] = [opts.verdict.trim().replace(/\.?$/, '.')];
@@ -63,8 +66,13 @@ export function composeSummary(opts: { verdict: string; problems: SummaryItem[];
   }
   const top = picked.map(p => p.brief.trim().replace(/\.$/, ''));
   if (top.length === 0) parts.push(opts.subject === 'raid' ? 'Nothing here the raid needs to change.' : 'Nothing here you need to change.');
+  else if (opts.minor) parts.push(`Nothing big to fix. ${top.length === 1 ? 'One smaller thing' : 'Smaller things'}: ${top.join('; and ')}.`);
   else if (top.length === 1) parts.push(`The one thing that mattered: ${top[0]}.`);
   else parts.push(`The two things that mattered most: ${top[0]}; and ${top[1]}.`);
+  // A strength that only repeats the verdict ("nobody died") is skipped for the next one.
+  const said = opts.verdict.toLowerCase();
+  const fresh = strengths.filter(x => !(/nobody died|stayed alive|alive until/i.test(x.brief) && /nobody died|alive the whole pull/.test(said)));
+  strengths.splice(0, strengths.length, ...fresh);
   if (strengths[0]) parts.push(`On the plus side: ${strengths[0].brief.trim().replace(/\.$/, '').replace(/^You /, 'you ')}.`);
   return parts.join(' ');
 }

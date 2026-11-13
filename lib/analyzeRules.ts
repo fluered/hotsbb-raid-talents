@@ -4,6 +4,8 @@ import { lookupJournal, lookupLabel, lookupNote, MECHANIC_WORDS, type BossKnowle
 import { BASELINE_BY_CLASS, DEFENSIVES, REPLACED_BY, TWO_STEP, isMovement, isUtility, noChargeModel, chargesFromTalents, defensiveKey, defensivesAt, minReuseGap, wastedDoublePresses } from './defensives';
 import { LORRGS_CREDIT, MAJOR_CD_SEC, MAJOR_UNDER_60, type MajorSpell } from './lorrgsSpells';
 import { timesWord } from './summary';
+import { alignPoolToPhases, sameHeroMembers, subsetPool } from './poolFrame';
+import { reviewRole, type RoleData } from './roleRules';
 
 // ─── Log review: the rules ─────────────────────────────────────────────────────
 //
@@ -31,6 +33,9 @@ export interface Finding {
   href?: string;
   hrefLabel?: string;
   impact: number; // sort weight within a severity; roughly "how much is this costing"
+  // Rank in the short version, when the category's flat cost would overstate it (one
+  // stray hit is a mechanics finding, but not what the pull turned on). See lib/summary.ts.
+  cost?: number;
 }
 
 export interface ReviewStat { label: string; value: string; note?: string }
@@ -76,6 +81,8 @@ export interface Timeline {
   // When Bloodlust landed on this player, and the top players' median.
   lustSec: number | null;
   lustPoolMedian: number | null;
+  // The top players' times are placed on this pull's phases (see lib/poolFrame.ts).
+  phaseAligned?: boolean;
 }
 
 export interface DefensiveRow {
@@ -94,6 +101,9 @@ export interface Review {
   // The verdict sentence for the short version (the page recomposes the summary once
   // the boss-mechanic cards are in).
   verdict: string;
+  // Output within a tenth of the top players' median and no death of the player's own:
+  // what is left is polish, and the short version says so.
+  strong: boolean;
   stats: ReviewStat[];
   findings: Finding[];
   timeline: Timeline | null;
@@ -121,6 +131,9 @@ export interface ReviewInput {
   profile: PlayerProfile;
   pool: PoolSummary | null;
   talents?: TalentContext | null;
+  // The player's hero talent tree (Blizzard's id), to compare with the top players on
+  // the same tree; null or 0 when unknown.
+  heroTree?: number | null;
   boss?: BossKnowledge | null;
   raidStats?: RaidMechanicStats | null;
   // Defensive cooldown lengths by buff name (Wowhead), for "died with X available".
@@ -135,6 +148,9 @@ export interface ReviewInput {
   // spells lorrgs tags as not major (defensive, movement, another role's raid cooldown).
   majorSpells?: MajorSpell[] | null;
   notMajorSpells?: MajorSpell[] | null;
+  // What the tank and healer checks need beyond the profile and the pool (see
+  // lib/roleData.ts); null for a damage dealer or when it could not be gathered.
+  role?: RoleData | null;
   // What the boss did to this player, by the second (from the Wipefest-defined
   // mechanics): the context that explains a gap in casting or a late cooldown.
   context?: {
@@ -241,7 +257,7 @@ export function classifyAbility(boss: BossKnowledge | null | undefined, raidStat
 
 // ─── The review ───────────────────────────────────────────────────────────────
 
-export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, boss, raidStats, cooldowns, charges, trinkets, poolItemUses, majorSpells, notMajorSpells, context }: ReviewInput): Review {
+export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, heroTree, boss, raidStats, cooldowns, charges, trinkets, poolItemUses, majorSpells, notMajorSpells, role, context }: ReviewInput): Review {
   const mechanicEvents = (context?.mechanicEvents ?? []).slice().sort((a, b) => a.atSec - b.atSec);
   // Every cast this player made, in order — the raw material for "what were you doing then".
   const allCastTimes = Object.values(profile.castTimes).flat().sort((a, b) => a - b);
@@ -253,7 +269,7 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, bo
     if (aliveSecLimit < fromSec) return 'you were already dead';
     // An intermission the whole raid sits through is not this player's downtime.
     const inter = phases.find(p => /intermission|transition/i.test(p.name) && Math.min(p.toSec, toSec) - Math.max(p.fromSec, fromSec) >= 0.5 * (toSec - fromSec));
-    if (inter) return `the intermission (${inter.name.replace(/^Intermission:?s*/i, '').trim()}) ran ${fmtClock(inter.fromSec)}–${fmtClock(inter.toSec)}`;
+    if (inter) return `the intermission (${inter.name.replace(/^Intermission:?\s*/i, '').trim()}) ran ${fmtClock(inter.fromSec)}–${fmtClock(inter.toSec)}`;
     const hit = mechanicEvents.find(e => e.atSec >= fromSec - 3 && e.atSec <= toSec);
     if (hit) {
       const span = hit.text.match(/^\S+ had (.+?): (\d+:\d+) → (\d+:\d+)/);
@@ -264,7 +280,13 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, bo
     if (move) return `you used ${move.name} at ${fmtClock(move.t)}`;
     return null;
   };
-  const pool = poolIn && poolIn.n >= 3 ? poolIn : null;
+  // The pool in this pull's frame: the top players on the same hero talents (when there
+  // are enough), with their timings placed on this pull's phases.
+  const wholePool = poolIn && poolIn.n >= 3 ? poolIn : null;
+  const heroIdx = wholePool ? sameHeroMembers(wholePool, heroTree) : null;
+  const framed = wholePool ? alignPoolToPhases(heroIdx ? subsetPool(wholePool, heroIdx, heroTree) : wholePool, fight.phases) : null;
+  const pool = framed?.pool ?? null;
+  const phaseAligned = framed?.aligned ?? false;
   const findings: Finding[] = [];
   // Damage numbers only compare like with like: members on this fight's difficulty when
   // there are at least three, otherwise everyone (casts, buffs and consumables don't
@@ -298,7 +320,11 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, bo
     const item = itemForCast(castName);
     return !!item && !myItemNames.has(item);
   };
-  const myCast = (name: string) => profile.casts.find(c => c.name === name)?.total ?? 0;
+  // Rates are judged over the time until the first death, so the counts must stop there
+  // too: a player who was resurrected kept casting, and those casts used to be divided
+  // by the shorter span, overstating every rate and every "possible uses" figure.
+  const whileAlive = (times: number[]) => times.filter(t => t <= aliveSec + 0.5);
+  const myCast = (name: string) => (profile.castTimes[name] ? whileAlive(profile.castTimes[name]).length : profile.casts.find(c => c.name === name)?.total ?? 0);
   const myBuff = (name: string) => profile.buffs.find(b => b.name === name);
 
   // What a boss ability IS: DBM's label first, then the whole-raid pattern in the top
@@ -372,9 +398,13 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, bo
   // cooldown). Uses are exact cast times, with buff windows as a fallback.
   const defensiveNames = new Set<string>();
   const defSpell: Record<string, { spellId: number; icon: string }> = {};
+  // A defensive that is a talent this player did not take (and never pressed) is not
+  // theirs, however many of the top players have it.
+  const lacksTalent = (k: string) => !!talentNames && k in talentNames.share && !talentNames.mine.has(k)
+    && !profile.casts.some(c => defensiveKey(c.name) === k) && !profile.buffs.some(b => defensiveKey(b.name) === k);
   const noteDef = (name: string, spellId: number, icon: string) => {
     const k = defensiveKey(name);
-    if (!DEFENSIVES.has(k) || isTalentGap(k)) return;
+    if (!DEFENSIVES.has(k) || isTalentGap(k) || lacksTalent(k)) return;
     defensiveNames.add(k);
     if (!defSpell[k] || (!defSpell[k].spellId && spellId)) defSpell[k] = { spellId, icon: defSpell[k]?.icon || icon };
   };
@@ -387,12 +417,15 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, bo
   }
   if (talentNames) for (const n of talentNames.mine) if (DEFENSIVES.has(n)) noteDef(n, 0, '');
   for (const n of BASELINE_BY_CLASS[player.className] ?? []) noteDef(n, 0, '');
-  noteDef('Healthstone', 0, '');
+  // A Healthstone needs a Warlock to hand it out: listed only when the raid had one (or
+  // the log shows this player using one anyway).
+  const raidKnown = profile.raid.length > 1;
+  if (!raidKnown || player.className === 'Warlock' || profile.raid.some(r => r.className === 'Warlock') || player.healthstoneUse > 0 || profile.casts.some(c => /healthstone/i.test(c.name))) noteDef('Healthstone', 0, '');
   for (const [orig, repl] of Object.entries(REPLACED_BY)) if (defensiveNames.has(repl)) defensiveNames.delete(orig);
   const defUses: Record<string, number[]> = {};
   for (const [name, times] of Object.entries(profile.castTimes)) {
     const k = defensiveKey(name);
-    if (defensiveNames.has(k)) (defUses[k] ??= []).push(...times);
+    if (defensiveNames.has(k)) (defUses[k] ??= []).push(...whileAlive(times));
   }
   const defBands: Record<string, Array<[number, number]>> = {};
   for (const k of defensiveNames) {
@@ -589,10 +622,13 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, bo
       return '';
     })();
       if (ratio < 0.4) {
+        // Unused defensives cost something only when the player died. Alive all pull, it is
+        // headroom worth knowing about, not a mistake to rank beside a death.
+        const died = realDeaths.length > 0;
         findings.push({
-          id: 'defensive-usage', severity: 'warn', category: 'survival', impact: 36,
+          id: 'defensive-usage', severity: died ? 'warn' : 'info', category: 'survival', impact: 36,
           title: `Defensives mostly unused: ${used} of about ${possible} possible presses`,
-          text: `Possible presses come from each ability's cooldown and the time you were alive. Yours: ${detail}.${poolDefensiveNote}`,
+          text: `Possible presses come from each ability's cooldown and the time you were alive. Yours: ${detail}.${poolDefensiveNote}${died ? '' : " You did not die, so it cost nothing this pull; it is room to take less damage and make the healers' job easier."}`,
         });
       } else if (ratio >= 0.7) {
         findings.push({
@@ -642,7 +678,8 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, bo
       const landed = t.hits > 0 ? `hit you ${plural(t.hits, 'time')}` : `ticked on you ${plural(t.ticks, 'time')}`;
       if (frac <= 0.3) {
         const who = e ? `Only ${countPresent(dmgSlice(e.perMin))} of ${dmgN}` : `None of the ${dmgN}`;
-        const count = t.hits + t.ticks;
+        // A hit that leaves a burn is one mistake, not one per tick.
+        const count = t.hits > 0 ? t.hits : t.ticks;
         avoidableTotal += t.total;
         const what = kind === 'tank'
           ? ` ${t.name} is a tank mechanic. If you were not meant to be in it, that is the whole fix.`
@@ -651,8 +688,13 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, bo
           : kind === 'fixate' ? ` ${ucFirst(t.name)} is ${MECHANIC_WORDS.fixate}: keep moving when it is on you.`
           : kind === 'avoid' ? ' That is a mechanic to step out of, not one to heal through.'
           : ` That is a mechanic to step out of, not one to heal through.${t.hits >= 10 || (t.hits === 0 && t.ticks >= 20) ? ' If you were assigned to soak it, ignore this one.' : ''}`;
+        // One hit for a few percent of the damage taken ranks below a wasted cooldown in
+        // the short version; several hits, or a real share of the damage, rank above.
+        const weight = Math.min(1, Math.max(0.3, share / 0.05, count / 4));
+        const sev: Severity = count >= 3 && share >= 0.02 ? 'bad' : 'warn';
         mech.push({
-          id: `avoid-${t.name}`, severity: count >= 3 && share >= 0.02 ? 'bad' : 'warn', category: 'mechanics', icon: t.icon, spellId: t.spellId, explain: explain(t.name, t.spellId),
+          cost: (sev === 'bad' ? 8 : 4) * weight,
+          id: `avoid-${t.name}`, severity: sev, category: 'mechanics', icon: t.icon, spellId: t.spellId, explain: explain(t.name, t.spellId),
           impact: 55 + Math.min(20, count * 2) + Math.round(25 * share),
           title: `${t.name} ${landed}`,
           text: `${who} top ${specLabel}s on this boss took any damage from ${t.name}.${what}`,
@@ -686,6 +728,7 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, bo
       if (boss?.sources.journal && !lookupJournal(boss, d.name, d.spellId) && !lookupLabel(boss, d.name, d.spellId)) continue;
       const who = e ? `Only ${countPresent(dmgSlice(e.perMin))} of ${dmgN}` : `None of the ${dmgN}`;
       mech.push({
+        cost: 4 * Math.min(1, Math.max(0.3, d.count / 4)),
         id: `debuff-${d.name}`, severity: 'warn', category: 'mechanics', icon: d.icon, spellId: d.spellId, explain: explain(d.name, d.spellId),
         impact: 38 + Math.min(15, d.count * 3),
         title: `Picked up ${d.name} ${plural(d.count, 'time')}`,
@@ -789,7 +832,7 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, bo
   if (judgeable) {
     for (const t of onUseTrinkets) {
       const cast = profile.casts.find(c => (t.useSpellId && c.spellId === t.useSpellId) || c.name === t.useSpellName || c.name === t.name);
-      const uses = cast ? (profile.castTimes[cast.name]?.length ?? cast.total) : 0;
+      const uses = cast ? (profile.castTimes[cast.name] ? whileAlive(profile.castTimes[cast.name]).length : cast.total) : 0;
       // Never used, but no top player's log shows this effect being cast either: it may
       // not log as a cast at all. Say nothing rather than something wrong.
       if (uses === 0 && !(t.useSpellName && pool?.casts[t.useSpellName]) && !pool?.casts[t.name]) continue;
@@ -872,7 +915,7 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, bo
     return m && m.cooldown > 0 ? m.cooldown : null;
   };
   if (timeline) for (const row of timeline.rows) {
-    row.used = row.mine.length;
+    row.used = row.mine.filter(([s]) => s <= aliveSec + 0.5).length;
     const cd = row.kind === 'cooldown' && row.origin !== 'potion' && row.origin !== 'external' ? majorCooldownOf(row) : null;
     row.cooldownSec = cd;
     row.possible = cd && cd >= MAJOR_CD_SEC ? Math.max(1, charges?.[row.poolName] ?? 1) + Math.floor(Math.max(0, aliveSec - 15) / cd) : null;
@@ -892,7 +935,7 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, bo
       const preCast = buffKey
         ? { pool: countPresent(pool.buffs[buffKey].atPull) / pool.n >= 0.5, mine: !!profile.buffs.find(b => b.name === buffKey)?.atPull }
         : null;
-      const j = judgeTiming(row, aliveSec, preCast);
+      const j = judgeTiming(row, aliveSec, preCast, phaseAligned ? (fight.phases ?? []).map(ph => ph.atSec) : [0]);
       row.medians = j.medians;
       row.bands = j.bands;
       // Pre-pull potions happen before the log's events start, so the pool's "first" potion
@@ -1285,10 +1328,12 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, bo
     stats.push({ label: 'Build', value: talentDiffNames.length <= 2 ? 'Meta' : talentDiffNames.length <= 5 ? 'Near meta' : 'Off-meta', note: talentDiffNames.length ? `${plural(talentDiffNames.length, 'pick')} differ` : 'matches top players' });
   }
   let verdict = `${fmtNum(perSec)} ${metricLabel}${aliveSec < durationSec - 5 ? `, dead at ${fmtClock(aliveSec)}` : ', alive the whole pull'}`;
+  let strong = false;
   if (pool && pool.output.length) {
     const med = median(pool.output);
     const ratio = med > 0 ? perSec / med : 0;
     stats[0].note = `${pct(100 * ratio)} of top-${pool.n} median`;
+    strong = ratio >= 0.9 && realDeaths.length === 0;
     verdict = `${fmtNum(perSec)} ${metricLabel}, ${pct(100 * ratio)} of the top-${pool.n} median${aliveSec < durationSec - 5 ? `, dead at ${fmtClock(aliveSec)}` : ', alive the whole pull'}`;
     const deadNote = aliveSec < durationSec - 5 ? ` You were dead for ${fmtClock(durationSec - aliveSec)} of a ${fmtClock(durationSec)} pull, which is most of the gap on its own.` : '';
     const healerNote = player.role === 'healer' ? ' Healing parses reward raids that take damage, so a low number here is not automatically a problem.' : '';
@@ -1306,6 +1351,31 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, bo
     const sorted = profile.raid.slice().sort((a, b) => b.total - a.total);
     const rank = sorted.findIndex(r => r.id === player.id) + 1;
     if (rank > 0) stats.push({ label: `Raid ${outputWord}`, value: `#${rank} of ${sorted.length}` });
+  }
+
+  // ── Tanks and healers: the checks that belong to the role (lib/roleRules.ts) ──
+  // They add their own cards and tiles, replace or reword the generic findings that
+  // judge the role as a damage dealer, and put survival (tanks) or the HPS caveat
+  // (healers) into the verdict.
+  const poolMedianOutput = pool && pool.output.length ? median(pool.output) : 0;
+  const roleOut = reviewRole({
+    player, fight, profile, pool, dmgIdx, role, cooldowns, findings, perSec, judgeable, specLabel,
+    outputRatio: poolMedianOutput > 0 ? perSec / poolMedianOutput : null,
+    kindOf: (name, spellId) => classify(name, spellId)?.type,
+    isWipeDeath,
+    canJudge: name => !buildDiffers && !isTalentGap(name) && !unownedItemCast(name),
+  });
+  if (roleOut) {
+    const dropped = new Set(roleOut.drop);
+    for (let i = findings.length - 1; i >= 0; i--) if (dropped.has(findings[i].id)) findings.splice(i, 1);
+    for (const f of findings) {
+      if (roleOut.patch[f.id]) Object.assign(f, roleOut.patch[f.id]);
+      if (roleOut.append[f.id]) f.text += roleOut.append[f.id];
+    }
+    findings.push(...roleOut.findings);
+    stats.unshift(...roleOut.stats);
+    if (roleOut.verdict) verdict = roleOut.verdict;
+    if (roleOut.strong != null) strong = roleOut.strong;
   }
 
   findings.sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity] || b.impact - a.impact);
@@ -1334,10 +1404,13 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, bo
   const sourcesNote = sourceParts.length ? ucFirst(sourceParts.join(', ')) + '.' : null;
 
   let poolNote: string | null = null;
+  const heroNote = heroIdx && wholePool && heroIdx.length <= wholePool.n * 0.8 ? `Compared against the ${heroIdx.length} of the top ${wholePool.n} ${specLabel}s who play your hero talents; the rest play the other tree, with different buttons and timings.` : '';
   if (!pool) poolNote = `No top-parse pool was available for ${specLabel} on ${diffLabel} ${fight.name}, so this review only covers what can be read from your own log.`;
   else if (pool.difficulty !== fight.difficulty) poolNote = `Compared against ${DIFFICULTY_LABELS[pool.difficulty] ?? 'another'} top parses because there is no ranked pool for ${diffLabel}.`;
   else if (sameDiffIdx.length < pool.n) poolNote = `Compared against ${pool.n} top ${specLabel} parses: ${sameDiffIdx.length} on ${diffLabel}, the rest on Heroic. Damage comparisons use only the ${diffLabel} ones.`;
-  else if (pool.n < 10) poolNote = `Compared against the ${pool.n} top ${specLabel} parses available for this boss.`;
+  else if (pool.n < 10 && !heroNote) poolNote = `Compared against the ${pool.n} top ${specLabel} parses available for this boss.`;
+  if (heroNote) poolNote = poolNote ? `${heroNote} ${poolNote.replace(/^Compared against [^:]*: /, 'Of those, ')}` : heroNote;
+  if (roleOut?.poolNote) poolNote = [poolNote, roleOut.poolNote].filter(Boolean).join(' ');
 
   const debug = {
     poolN: pool?.n ?? 0, poolTalentN: pool?.talentN ?? 0, poolGearN: pool?.gearN ?? 0,
@@ -1356,9 +1429,10 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, bo
     timelineRows: (timeline?.rows ?? []).map(r => `${r.name} <${r.poolName}> ${r.kind}/${r.origin} #${r.spellId} mine=${r.mine.length} pool=${r.pool.length} medians=${r.medians.map(fmtClock).join('/')} verdict=${r.verdict ? r.verdict.kind + ':' + r.verdict.text : '-'}`),
     majorSpells: (majorSpells ?? []).map(m => `${m.name}#${m.spellId}${m.cooldown ? '@' + m.cooldown : ''}:${m.kind}`), notMajorSpells: (notMajorSpells ?? []).map(m => m.name), lorrgsLoaded: !!majorSpells,
     dbmLabels: boss?.labels.length ?? 0, journalAbilities: boss?.journal.length ?? 0, raidStatFights: raidStats?.n ?? 0,
+    role: roleOut?.debug ?? null,
     classified: profile.damageTaken.map(t => `${t.name}: ${classify(t.name, t.spellId)?.type ?? '-'} (${classify(t.name, t.spellId)?.via ?? ''})`),
   };
-  return { headline, summary, verdict, stats, findings, timeline: timeline ? { durationSec: timeline.durationSec, aliveSec: timeline.aliveSec, phases: context?.phases ?? [], bossCasts: (context?.bossCasts ?? []).filter(c => c.atSec <= durationSec), lustSec, lustPoolMedian, rows: timeline.rows.map(r => ({ name: r.name, icon: r.icon, spellId: r.spellId, kind: r.kind, mine: r.mine, pool: r.pool, poolN: r.poolN, medians: r.medians, bands: r.bands, verdict: r.verdict, used: r.used, possible: r.possible, cooldownSec: r.cooldownSec, prePull: r.prePull })) } : null, defensives: defensiveRows, poolNote, sourcesNote, debug };
+  return { headline, summary, verdict, strong, stats, findings, timeline: timeline ? { durationSec: timeline.durationSec, aliveSec: timeline.aliveSec, phases: context?.phases ?? [], bossCasts: (context?.bossCasts ?? []).filter(c => c.atSec <= durationSec), lustSec, lustPoolMedian, phaseAligned, rows: timeline.rows.map(r => ({ name: r.name, icon: r.icon, spellId: r.spellId, kind: r.kind, mine: r.mine, pool: r.pool, poolN: r.poolN, medians: r.medians, bands: r.bands, verdict: r.verdict, used: r.used, possible: r.possible, cooldownSec: r.cooldownSec, prePull: r.prePull })) } : null, defensives: defensiveRows, poolNote, sourcesNote, debug };
 }
 
 // ─── Timeline ─────────────────────────────────────────────────────────────────
@@ -1388,20 +1462,33 @@ interface TimingJudgement {
   worstAt?: { mine: number; med: number } | null;
 }
 
-function judgeTiming(row: TimelineRowInternal, aliveSec: number, preCast: { pool: boolean; mine: boolean } | null): TimingJudgement {
+// `segments` are this pull's phase starts when the pool has been placed on them (see
+// lib/poolFrame.ts), else [0]. Presses are paired within a phase — your second press of
+// stage two against the top players' second press of stage two — because pairing by
+// overall count breaks as soon as one pull's first phase is long enough for one more
+// press: every later press then reads as a whole cooldown early.
+function judgeTiming(row: TimelineRowInternal, aliveSec: number, preCast: { pool: boolean; mine: boolean } | null, segments: number[] = [0]): TimingJudgement {
   const none: TimingJudgement = { medians: [], bands: [], verdict: null, finding: null };
   const members = row.members.map(s => s.slice().sort((a, b) => a - b));
   if (members.length < 3) return none;
   const n = members.length;
   const mine = row.mine.map(([s]) => s).sort((a, b) => a - b);
-  const bands: Array<{ k: number; med: number; lo: number; hi: number; agree: boolean }> = [];
-  for (let k = 0; k < 40; k++) { // every press the top players make, not just the first few
-    const kth = members.map(s => s[k]).filter((x): x is number => x != null).sort((a, b) => a - b);
-    if (kth.length < n * TIMING_MIN_SHARE) break;
-    const lo = kth[Math.floor(kth.length * 0.25)];
-    const hi = kth[Math.min(kth.length - 1, Math.floor(kth.length * 0.75))];
-    bands.push({ k, med: median(kth), lo, hi, agree: hi - lo <= TIMING_BAND_SEC });
-  }
+  const segs = segments.length ? segments : [0];
+  const byPhase = segs.length > 1;
+  const bands: Array<{ k: number; med: number; lo: number; hi: number; agree: boolean; mineAt: number | null }> = [];
+  segs.forEach((start, si) => {
+    const end = segs[si + 1] ?? Infinity;
+    const inSeg = (t: number) => t >= start && t < end;
+    const mem = byPhase ? members.map(m => m.filter(inSeg)) : members;
+    const my = byPhase ? mine.filter(inSeg) : mine;
+    for (let k = 0; k < 40; k++) { // every press the top players make, not just the first few
+      const kth = mem.map(m => m[k]).filter((x): x is number => x != null).sort((a, b) => a - b);
+      if (kth.length < n * TIMING_MIN_SHARE) break;
+      const lo = kth[Math.floor(kth.length * 0.25)];
+      const hi = kth[Math.min(kth.length - 1, Math.floor(kth.length * 0.75))];
+      bands.push({ k: bands.length, med: median(kth), lo, hi, agree: hi - lo <= TIMING_BAND_SEC, mineAt: my[k] ?? null });
+    }
+  });
   const medians = bands.filter(b => b.agree).map(b => b.med);
   const agreed = bands.filter(b => b.agree).map(b => ({ k: b.k, med: b.med, lo: b.lo, hi: b.hi }));
   if (!bands.length) return none;
@@ -1413,7 +1500,8 @@ function judgeTiming(row: TimelineRowInternal, aliveSec: number, preCast: { pool
   // indexes are shifted: +1 means this player's first press matches their second
   // (a press missing at the start), -1 means this player's second matches their first
   // (one press more at the start — usually the top players pre-cast before the pull,
-  // which the log's events do not contain, and this player did not).
+  // which the log's events do not contain, and this player did not). Only meaningful
+  // when presses are paired by overall count.
   const fit = (shift: number) => {
     let sum = 0, cnt = 0;
     for (const b of bands) {
@@ -1424,7 +1512,7 @@ function judgeTiming(row: TimelineRowInternal, aliveSec: number, preCast: { pool
     }
     return cnt >= 2 ? sum / cnt : null;
   };
-  const f0 = fit(0), fPlus = fit(1), fMinus = fit(-1);
+  const f0 = byPhase ? null : fit(0), fPlus = byPhase ? null : fit(1), fMinus = byPhase ? null : fit(-1);
   const shifted = f0 != null && ((fPlus != null && fPlus < 0.5 * f0 && fPlus <= 30) ? 1 : (fMinus != null && fMinus < 0.5 * f0 && fMinus <= 30) ? -1 : 0);
   if (shifted === -1) {
     // Facts first: did the top players have the buff up at the pull while this player did not?
@@ -1444,44 +1532,60 @@ function judgeTiming(row: TimelineRowInternal, aliveSec: number, preCast: { pool
       },
     };
   }
+  // A press the cooldown did not allow at the top players' time (this player's previous
+  // press was too recent) is neither late nor missing: with phases of different lengths
+  // the cooldown simply comes back at a different point. Only checked phase by phase.
+  const cd = row.cooldownSec ?? null;
+  const onCooldownAt = (b: { med: number; lo: number; hi: number }) => {
+    if (!byPhase || !cd) return false;
+    const prev = mine.filter(t => t < b.med - 1).pop();
+    return prev != null && prev + cd > b.med + tol(b);
+  };
   // Presses the top players had made while this player was still alive (with a little
   // slack: a press due at 2:00 is not "missed" by someone who died at 2:05).
-  const due = bands.filter(b => b.med <= aliveSec - 15).length;
-  const offs: Array<{ k: number; diff: number; med: number }> = [];
+  const dueBands = bands.filter(b => b.med <= aliveSec - 15 && !onCooldownAt(b));
+  const due = dueBands.length;
+  const offs: Array<{ k: number; myK: number; mineAt: number; diff: number; med: number }> = [];
   let judged = 0;
   for (const b of bands) {
-    if (!b.agree || mine[b.k] == null) continue;
+    if (!b.agree || b.mineAt == null || onCooldownAt(b)) continue;
+    const diff = b.mineAt - b.med;
+    // Phase by phase, an early press is not judged: the top players' cooldown may simply
+    // not have been back yet at that point of their (shorter) kill.
+    if (byPhase && diff < -tol(b)) continue;
     judged++;
-    const diff = mine[b.k] - b.med;
-    if (Math.abs(diff) > tol(b)) offs.push({ k: b.k, diff, med: b.med });
+    if (Math.abs(diff) > tol(b)) offs.push({ k: b.k, myK: mine.indexOf(b.mineAt), mineAt: b.mineAt, diff, med: b.med });
   }
-  const missing = Math.max(0, due - mine.length);
+  const missing = dueBands.filter(b => b.mineAt == null).length;
+  const pressed = due - missing;
   if (!judged && !missing) return { medians, bands: agreed, verdict: null, finding: null };
   offs.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
   const parts: string[] = [];
   const two = offs.slice(0, 2);
   if (two.length === 2 && (two[0].diff > 0) === (two[1].diff > 0)) {
-    parts.push(`${shortOrdinal(two[0].k)} ${Math.round(Math.abs(two[0].diff))}s, ${shortOrdinal(two[1].k)} ${Math.round(Math.abs(two[1].diff))}s ${two[0].diff > 0 ? 'late' : 'early'}`);
+    parts.push(`${shortOrdinal(two[0].myK)} ${Math.round(Math.abs(two[0].diff))}s, ${shortOrdinal(two[1].myK)} ${Math.round(Math.abs(two[1].diff))}s ${two[0].diff > 0 ? 'late' : 'early'}`);
   } else {
-    for (const o of two) parts.push(`${shortOrdinal(o.k)} ${Math.round(Math.abs(o.diff))}s ${o.diff > 0 ? 'late' : 'early'}`);
+    for (const o of two) parts.push(`${shortOrdinal(o.myK)} ${Math.round(Math.abs(o.diff))}s ${o.diff > 0 ? 'late' : 'early'}`);
   }
-  if (missing) parts.push(`${plural(mine.length, 'use')} vs ${due}`);
+  if (missing) parts.push(`${plural(pressed, 'use')} vs ${due}`);
   if (!parts.length) {
     return { medians, bands: agreed, verdict: { kind: 'good', text: judged === 1 ? 'on time' : `${judged} of ${judged} on time` }, finding: null };
   }
   const worst = offs[0];
   const title = missing && !worst
-    ? `${row.name}: ${plural(mine.length, 'use')} where top players get ${due}`
-    : `${row.name} ${ordinal(worst.k)} use at ${fmtClock(mine[worst.k])}, top players at ${fmtClock(worst.med)}`;
+    ? `${row.name}: ${plural(pressed, 'use')} where top players get ${due}`
+    : `${row.name} ${ordinal(worst.myK)} use at ${fmtClock(worst.mineAt)}, top players at ${fmtClock(worst.med)}`;
   const text = missing && !worst
-    ? `had pressed it ${due} times by ${fmtClock(aliveSec)}; you pressed it ${plural(mine.length, 'time')}. A press that never happens is damage that never happens.`
-    : `press their ${ordinal(worst.k)} ${row.name} around ${fmtClock(worst.med)} — usually a phase or a damage window. Yours was ${Math.round(Math.abs(worst.diff))}s ${worst.diff > 0 ? 'later' : 'earlier'}${missing ? `, and you ended ${plural(missing, 'use')} short of them` : ''}.`;
+    ? `had pressed it ${due} times by ${fmtClock(aliveSec)}${byPhase ? ', counted phase by phase' : ''}; you pressed it ${plural(pressed, 'time')} at those points. A press that never happens is a use of the cooldown lost for good.`
+    : byPhase
+      ? `press it around ${fmtClock(worst.med)} on your pull's clock (the same distance into the phase as in their kills). Yours was ${Math.round(Math.abs(worst.diff))}s ${worst.diff > 0 ? 'later' : 'earlier'}${missing ? `, and you ended ${plural(missing, 'use')} short of them` : ''}.`
+      : `press their ${ordinal(worst.k)} ${row.name} around ${fmtClock(worst.med)} — usually a phase or a damage window. Yours was ${Math.round(Math.abs(worst.diff))}s ${worst.diff > 0 ? 'later' : 'earlier'}${missing ? `, and you ended ${plural(missing, 'use')} short of them` : ''}.`;
   return {
     medians,
     bands: agreed,
     verdict: { kind: 'warn', text: parts.join(' · ') },
     finding: { title, text, impact: 34 + Math.min(14, Math.round((worst ? Math.abs(worst.diff) : 60) / 12)) + (missing ? 6 : 0) },
-    worstAt: worst ? { mine: mine[worst.k], med: worst.med } : null,
+    worstAt: worst ? { mine: worst.mineAt, med: worst.med } : null,
   };
 }
 const baseName = (name: string) => name.replace(/\s*\([^)]*\)\s*$/, '').toLowerCase();

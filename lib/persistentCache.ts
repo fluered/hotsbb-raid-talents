@@ -1,4 +1,5 @@
 import { createClient, type RedisClientType } from 'redis';
+import { gzipSync, gunzipSync } from 'zlib';
 
 // Backs the WCL rankings/telemetry caching specifically — the data that's expensive
 // (WCL rate limits) to refetch. unstable_cache's Next.js Data Cache gets wiped on every
@@ -26,6 +27,41 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
       e => { clearTimeout(timer); reject(e); }
     );
   });
+}
+
+// ─── Stored form ────────────────────────────────────────────────────────────────
+//
+// Values over a couple of KB are stored gzipped (base64, behind a prefix no JSON text
+// can start with). The instance has a hard memory ceiling and no eviction: in
+// 2026-11 the rankings entries alone (1,000 keys of 100–190 KB of JSON) filled it,
+// after which EVERY write failed with OOM — rankings refreshes, and every log-review
+// pool, which then had to be rebuilt from Warcraft Logs on each visit. JSON of this
+// shape gzips to about a fifth. Plain JSON written before this is still read.
+const GZIP_PREFIX = 'gz1:';
+const GZIP_MIN_CHARS = 2048;
+
+function encodeValue(value: unknown): string {
+  const json = JSON.stringify(value);
+  return json.length < GZIP_MIN_CHARS ? json : GZIP_PREFIX + gzipSync(json).toString('base64');
+}
+
+function decodeValue<T>(raw: string): T {
+  const json = raw.startsWith(GZIP_PREFIX) ? gunzipSync(Buffer.from(raw.slice(GZIP_PREFIX.length), 'base64')).toString('utf8') : raw;
+  return JSON.parse(json) as T;
+}
+
+// SET with one recovery step for a full instance: Redis refuses any SET while it is
+// over its limit, even one that would replace a value with a smaller one. Deleting
+// the entry being replaced is always allowed and usually frees enough for the retry.
+async function setEncoded(redis: RedisClientType, key: string, encoded: string, ttlSeconds?: number): Promise<void> {
+  const opts = ttlSeconds ? { EX: ttlSeconds } : {};
+  try {
+    await withTimeout(redis.set(key, encoded, opts), CACHE_TIMEOUT_MS, 'Redis set');
+  } catch (err) {
+    if (!/OOM/i.test(String((err as Error)?.message ?? err))) throw err;
+    await withTimeout(redis.del(key), CACHE_TIMEOUT_MS, 'Redis del');
+    await withTimeout(redis.set(key, encoded, opts), CACHE_TIMEOUT_MS, 'Redis set');
+  }
 }
 
 let client: RedisClientType | null = null;
@@ -68,7 +104,7 @@ export async function getOrSetPersistent<T>(
   try {
     redis = await getClient();
     const cached = await withTimeout(redis.get(key), CACHE_TIMEOUT_MS, 'Redis get');
-    if (cached != null) return JSON.parse(cached) as T;
+    if (cached != null) return decodeValue<T>(cached);
   } catch (err) {
     console.error('Persistent cache unavailable, computing uncached:', err);
     redis = null;
@@ -79,7 +115,7 @@ export async function getOrSetPersistent<T>(
     // response returns, so an unawaited write may silently never land (same failure
     // mode logPointsUsage hit — confirmed live). withTimeout bounds the added latency.
     try {
-      await withTimeout(redis.set(key, JSON.stringify(fresh), { EX: ttlSeconds }), CACHE_TIMEOUT_MS, 'Redis set');
+      await setEncoded(redis, key, encodeValue(fresh), ttlSeconds);
     } catch (err) {
       console.error('Persistent cache write failed:', err);
     }
@@ -95,7 +131,7 @@ export async function getPersistentReadOnly<T>(key: string): Promise<T | null> {
   try {
     const redis = await getClient();
     const cached = await withTimeout(redis.get(key), CACHE_TIMEOUT_MS, 'Redis get');
-    return cached != null ? (JSON.parse(cached) as T) : null;
+    return cached != null ? decodeValue<T>(cached) : null;
   } catch {
     return null;
   }
@@ -107,11 +143,7 @@ export async function getPersistentReadOnly<T>(key: string): Promise<T | null> {
 export async function setPersistentValue<T>(key: string, value: T, ttlSeconds?: number): Promise<void> {
   try {
     const redis = await getClient();
-    await withTimeout(
-      redis.set(key, JSON.stringify(value), ttlSeconds ? { EX: ttlSeconds } : {}),
-      CACHE_TIMEOUT_MS,
-      'Redis set'
-    );
+    await setEncoded(redis, key, encodeValue(value), ttlSeconds);
   } catch (err) {
     console.error('Persistent value write failed:', err);
   }
@@ -133,7 +165,7 @@ export async function getSwrEntry<T>(key: string): Promise<SwrHit<T> | null> {
     const redis = await getClient();
     const cached = await withTimeout(redis.get(key), CACHE_TIMEOUT_MS, 'Redis get');
     if (cached == null) return null;
-    const parsed = JSON.parse(cached);
+    const parsed = decodeValue<{ __at?: unknown; v?: unknown } | null>(cached);
     if (parsed && typeof parsed === 'object' && typeof parsed.__at === 'number') {
       return { value: parsed.v as T, ageSeconds: (Date.now() - parsed.__at) / 1000 };
     }
@@ -147,11 +179,7 @@ export async function getSwrEntry<T>(key: string): Promise<SwrHit<T> | null> {
 export async function setSwrEntry<T>(key: string, value: T, ttlSeconds: number): Promise<void> {
   try {
     const redis = await getClient();
-    await withTimeout(
-      redis.set(key, JSON.stringify({ __at: Date.now(), v: value }), { EX: ttlSeconds }),
-      CACHE_TIMEOUT_MS,
-      'Redis set'
-    );
+    await setEncoded(redis, key, encodeValue({ __at: Date.now(), v: value }), ttlSeconds);
   } catch (err) {
     console.error('SWR cache write failed:', err);
   }

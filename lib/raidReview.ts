@@ -2,7 +2,7 @@
 import { ordinalWord } from './wipefestStats';
 import { unstable_cache } from 'next/cache';
 import { wclQuery } from './wow';
-import { buildProfile, DIFFICULTY_LABELS, PLAYER_CLASS_TYPES, type FightPlayer, type RaidDeath, type RaidMechanicStats, type ReportFight, type WclEventsPage, type WclReportData, type WclTable } from './analyze';
+import { buildProfile, DIFFICULTY_LABELS, isPlayerSourcedDamage, type FightPlayer, type RaidDeath, type RaidMechanicStats, type ReportFight, type WclEventsPage, type WclReportData, type WclTable } from './analyze';
 import { defensiveKey } from './defensives';
 import { buffFamily, classifyAbility, fmtClock, fmtNum, median, plural, ucFirst, type Severity } from './analyzeRules';
 import { lookupJournal, MECHANIC_WORDS, type BossKnowledge, type MechanicType } from './bossMechanics';
@@ -199,7 +199,7 @@ export function getRaidFightData(token: string, code: string, fight: ReportFight
       // Hostile damage abilities, merged by name, biggest first.
       const takenMap = new Map<string, { name: string; spellId: number; icon: string; source: string; total: number; hits: number; guids: number[] }>();
       for (const e of r.taken?.data?.entries ?? []) {
-        if (!e?.name || !e.guid || PLAYER_CLASS_TYPES.has(e.actorType) || !(e.total > 0)) continue;
+        if (!e?.name || !e.guid || isPlayerSourcedDamage(e) || !(e.total > 0)) continue;
         const cur = takenMap.get(e.name) ?? { name: e.name, spellId: e.guid, icon: e.abilityIcon ?? '', source: e.actorName ?? '', total: 0, hits: 0, guids: [] as number[] };
         cur.total += e.total;
         cur.hits += (e.hitCount ?? 0) + (e.tickCount ?? 0);
@@ -274,7 +274,7 @@ export function getRaidFightData(token: string, code: string, fight: ReportFight
         avgIlvl: ilvls.length ? ilvls.reduce((s, x) => s + x, 0) / ilvls.length : 0,
       };
     },
-    [`analyze-raid-v7-${code}-${fight.id}`],
+    [`analyze-raid-v8-${code}-${fight.id}`],
     { revalidate: 86400 }
   )();
 }
@@ -393,7 +393,7 @@ export function buildMechanicItems(insights: MechanicInsight[], comparison: Mech
       icon: ins.icon ?? undefined, spellId: ins.spellId ?? undefined,
       comparison: comparisonText,
       rows: ins.rows.map(r => ({ id: r.id ?? undefined, name: r.name, className: r.className, value: r.value, n: r.raw })),
-      rowsLabel: ins.rows.length && ins.rows[0].id == null ? 'entries' : 'players',
+      rowsLabel: rowsLabelFor(ins.rows),
       impact,
       events: ins.events,
       tip: ins.tip ?? undefined,
@@ -401,6 +401,13 @@ export function buildMechanicItems(insights: MechanicInsight[], comparison: Mech
   }
   const order: Record<Severity, number> = { bad: 0, warn: 1, info: 2, good: 3 };
   return items.sort((a, b) => order[a.severity] - order[b.severity] || b.impact - a.impact);
+}
+
+// What the expandable list under a card counts. Duration rules list one row per
+// application, so 98 rows on a 20-player raid are 98 applications, not "98 players".
+function rowsLabelFor(rows: MechanicInsight['rows']): string {
+  if (!rows.length || rows[0].id == null) return 'entries';
+  return new Set(rows.map(r => r.id)).size === rows.length ? 'players' : 'applications';
 }
 
 // The same mechanics, seen from one player: what hit them, what they gained, what they
@@ -417,7 +424,7 @@ export function buildPlayerMechanicItems(insights: MechanicInsight[], comparison
     const main = ins.stats.find(s => s.name === ins.mainStat) ?? ins.stats[0] ?? null;
     const cmp = comparison?.byConfig[ins.configId] ?? null;
     const hitLike = /^hit/.test(ins.type) || ins.type === 'debuff' || ins.type === 'debuffUnlessRole';
-    const base = { id: `wfp-${ins.configId}`, group: 'boss' as const, icon: ins.icon ?? undefined, spellId: ins.spellId ?? undefined, rows: ins.rows.map(r => ({ id: r.id ?? undefined, name: r.name, className: r.className, value: r.value, n: r.raw })), rowsLabel: playerRows.length ? 'players' : 'entries', events: myEvents, tip: ins.tip ?? undefined };
+    const base = { id: `wfp-${ins.configId}`, group: 'boss' as const, icon: ins.icon ?? undefined, spellId: ins.spellId ?? undefined, rows: ins.rows.map(r => ({ id: r.id ?? undefined, name: r.name, className: r.className, value: r.value, n: r.raw })), rowsLabel: rowsLabelFor(ins.rows), events: myEvents, tip: ins.tip ?? undefined };
     // My own figure on the rule's scale: the raid's statistic is raw ÷ (casts × raid size);
     // mine is my raw ÷ casts, so scale by the raid's factor and undo the raid-size split.
     const myValueOf = (row: MechanicInsight['rows'][number]) => {
@@ -459,7 +466,10 @@ export function buildPlayerMechanicItems(insights: MechanicInsight[], comparison
       let cost: number | undefined;
       if (severity === 'bad' || severity === 'warn') {
         brief = `${short(ins.name)} hit you ${timesWord(my.count)}${my.raw > 0 ? ` for ${fmtNum(my.raw)}` : ''}${ratio && ratio >= 1.3 ? `, ${ratioWords(ratio)} what an average top-raid player takes` : ''}${rank === 1 ? ', the worst in the raid' : ''}`;
-        cost = 2 + Math.min(ratio ?? 2, 8); // a death (12) still outranks any single mechanic
+        // A death (12) still outranks any single mechanic, and a single hit ranks well
+        // below a repeated one: being hit once is several times the per-player average
+        // of raids where most players are never hit at all.
+        cost = (2 + Math.min(ratio ?? 2, 8)) * Math.min(1, Math.max(1, my.count) / 3);
       } else if (severity === 'good') {
         brief = ins.goodForPlayer ? `${rank === 1 ? 'you did the most of' : 'you helped with'} ${short(ins.name)}, ${timesWord(my.count)}` : `${short(ins.name)} hit you ${timesWord(my.count)}${my.raw > 0 ? ` for ${fmtNum(my.raw)}` : ''}, under what an average top-raid player takes`;
         cost = ins.goodForPlayer ? 0.6 : (ratio ?? 0.8);
@@ -514,7 +524,10 @@ export function composeRaidSummary(review: RaidReview, fight: ReportFight, opts:
   const problems = review.items.filter(i => i.severity === 'bad' || i.severity === 'warn').map(toItem);
   const strengths = review.items.filter(i => i.severity === 'good' && (i.brief || i.group === 'ending')).map(toItem);
   review.summaryDebug = { deaths: opts.deaths, problems: problems.map(p => `${p.cost.toFixed(1)} ${p.brief}`), strengths: strengths.map(p => `${p.cost.toFixed(2)} ${p.brief}`) };
-  review.summary = composeSummary({ verdict, subject: 'raid', problems, strengths });
+  // A deathless kill with no mechanic worse than the top raids and nothing rated bad:
+  // what is left is polish.
+  const minor = fight.kill && opts.deaths === 0 && worse === 0 && !review.items.some(i => i.severity === 'bad');
+  review.summary = composeSummary({ verdict, subject: 'raid', problems, strengths, minor });
 }
 
 function fmtStatLike(v: number, kind: 'duration' | 'damage' | 'count'): string {
@@ -576,7 +589,10 @@ export function buildRaidReview(opts: { fight: ReportFight; data: RaidFightData;
     }
   }
   const wipeKillers = new Set(wipeGroups.keys());
-  const realDeaths = data.raidDeaths.filter(d => !wipeKillers.has(d.killer));
+  // Once the wipe has started, later deaths are the wipe too, whatever lands the killing
+  // blow: only deaths before the first wipe-group death are individual ones.
+  const wipeStart = wipeGroups.size ? Math.min(...[...wipeGroups.values()].flat().map(d => d.atSec)) : Infinity;
+  const realDeaths = data.raidDeaths.filter(d => !wipeKillers.has(d.killer) && d.atSec < wipeStart);
   if (wipeGroups.size) {
     for (const [killer, deaths] of wipeGroups) {
       const first = deaths.slice().sort((a, b) => a.atSec - b.atSec)[0];
@@ -666,6 +682,9 @@ export function buildRaidReview(opts: { fight: ReportFight; data: RaidFightData;
   const totalTaken = data.abilities.reduce((s, a) => s + a.total, 0) || 1;
   for (const a of data.abilities) {
     if (/^melee$/i.test(a.name) || wipeKillers.has(a.name)) continue;
+    // Nothing on a raid member: damage to pets, or an entry the per-player table could
+    // not attribute. "Hit 0 of 20 players" is not a finding.
+    if (!a.perPlayer.length) continue;
     const c = classify(a.name, a.spellId);
     const kind: MechanicType | null = c?.type ?? null;
     const share = topRaidShare(a.name);
@@ -732,7 +751,7 @@ export function buildRaidReview(opts: { fight: ReportFight; data: RaidFightData;
     if (!ic.begun) continue;
     const missed = ic.begun - ic.stopped;
     items.push({
-      id: `int-${ic.name}`, severity: missed === 0 ? 'good' : missed >= ic.begun / 2 ? 'bad' : 'warn', group: 'utility', impact: 50 + missed * 5, icon: ic.icon, spellId: ic.spellId, explain: explain(ic.name, ic.spellId),
+      id: `int-${ic.name}-${ic.spellId}`, severity: missed === 0 ? 'good' : missed >= ic.begun / 2 ? 'bad' : 'warn', group: 'utility', impact: 50 + missed * 5, icon: ic.icon, spellId: ic.spellId, explain: explain(ic.name, ic.spellId),
       title: `Interrupted ${ic.name} ${ic.stopped} of ${ic.begun} times`,
       text: missed === 0 ? 'Every cast stopped.' : `${plural(missed, 'cast')} went through.`,
       rows: ic.by.map(b => ({ ...rowLink({ id: byName.get(b.name)?.id ?? -1, name: b.name }), value: `${b.total}×`, n: b.total })), rowsLabel: 'who kicked',
@@ -755,7 +774,7 @@ export function buildRaidReview(opts: { fight: ReportFight; data: RaidFightData;
     if (!dc.begun) continue;
     const missed = dc.begun - dc.stopped;
     items.push({
-      id: `disp-${dc.name}`, severity: missed === 0 ? 'good' : dc.stopped === 0 ? 'bad' : 'warn', group: 'utility', impact: 40 + Math.min(20, missed), icon: dc.icon, spellId: dc.spellId, explain: explain(dc.name, dc.spellId),
+      id: `disp-${dc.name}-${dc.spellId}`, severity: missed === 0 ? 'good' : dc.stopped === 0 ? 'bad' : 'warn', group: 'utility', impact: 40 + Math.min(20, missed), icon: dc.icon, spellId: dc.spellId, explain: explain(dc.name, dc.spellId),
       title: `Dispelled ${dc.name} ${dc.stopped} of ${dc.begun} times`,
       text: missed === 0 ? 'Every application cleared.' : `${plural(missed, 'application')} ran its course.`,
       rows: dc.by.map(b => ({ ...rowLink({ id: byName.get(b.name)?.id ?? -1, name: b.name }), value: `${b.total}×`, n: b.total })), rowsLabel: 'who dispelled',
@@ -788,12 +807,16 @@ export function buildRaidReview(opts: { fight: ReportFight; data: RaidFightData;
     return c;
   };
   const cons = data.players.map(p => ({ p, c: consumablesOf(p.id) }));
-  const noPotion = cons.filter(x => x.c.potions === 0);
+  // Healers are left out: theirs is a mana potion, which leaves no combat-potion buff
+  // to count, so listing them under "no potion" was wrong more often than right.
+  const potters = cons.filter(x => x.p.role !== 'healer');
+  const pn = potters.length || 1;
+  const noPotion = potters.filter(x => x.c.potions === 0);
   const totalPotions = cons.reduce((s, x) => s + x.c.potions, 0);
   items.push({
-    id: 'potions', severity: noPotion.length === 0 ? 'good' : noPotion.length >= n / 2 ? 'bad' : 'warn', group: 'prep', impact: 40 + Math.min(20, noPotion.length * 2),
-    title: `${n - noPotion.length} of ${n} used a combat potion (${totalPotions} total)`,
-    text: `${potionLine(opts.potionNorm)}${noPotion.length ? ' Listed: everyone who used none.' : ' Everyone potted.'}`.trim(),
+    id: 'potions', severity: noPotion.length === 0 ? 'good' : noPotion.length >= pn / 2 ? 'bad' : 'warn', group: 'prep', impact: 40 + Math.min(20, noPotion.length * 2),
+    title: `${potters.length - noPotion.length} of ${potters.length} tanks and damage dealers used a combat potion (${totalPotions} total)`,
+    text: `${potionLine(opts.potionNorm)}${noPotion.length ? ' Listed: everyone who used none.' : ' Everyone potted.'} Healers are not counted: a mana potion leaves no combat-potion buff in the log.`.trim(),
     rows: noPotion.map(x => ({ ...rowLink(x.p), value: '0', n: 0 })), rowsLabel: 'no potion',
   });
   // Flask, food and rune as three cards: each is its own count, its own list, and its
@@ -842,7 +865,7 @@ export function buildRaidReview(opts: { fight: ReportFight; data: RaidFightData;
     { label: 'Raid', value: String(n), note: `${tanks} tank${tanks === 1 ? '' : 's'} · ${healers} heal${healers === 1 ? 'er' : 'ers'}` },
     { label: 'Deaths', value: String(data.raidDeaths.length), note: wipeKillers.size ? `${realDeaths.length} before the wipe` : undefined },
     { label: 'Avoidable', value: String(avoidable), note: 'mechanics failed' },
-    { label: 'Potions', value: `${n - noPotion.length}/${n}` },
+    { label: 'Potions', value: `${potters.length - noPotion.length}/${potters.length}`, note: 'tanks and damage' },
     { label: 'Item level', value: data.avgIlvl ? String(Math.round(data.avgIlvl)) : '—' },
   ];
   const sourceParts: string[] = [];

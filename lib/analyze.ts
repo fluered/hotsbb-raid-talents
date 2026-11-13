@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */ // raw WCL table JSON, same posture as lib/wow.ts
 import { unstable_cache } from 'next/cache';
 import { getPersistentReadOnly, setPersistentValue } from './persistentCache';
-import { getRankingsCachedSWR, wclQuery, HEALER_SPECS, SPEC_IDS } from './wow';
+import { getRankingsCachedSWR, wclQuery, getBlizzardToken, getTalentTreeId, getCachedTalentLayout, HEALER_SPECS, TANK_SPECS, SPEC_IDS } from './wow';
 import { defensiveKey, isDefensive } from './defensives';
 
 // ─── Log review: data layer ─────────────────────────────────────────────────────
@@ -60,6 +60,7 @@ interface WclOverviewFight {
   lastPhaseIsIntermission?: boolean | null;
   startTime: number;
   endTime: number;
+  phaseTransitions?: Array<{ id: number; startTime: number }> | null;
 }
 
 interface WclOverviewReport {
@@ -107,7 +108,7 @@ interface WclRecapReport {
 }
 
 interface WclPoolPlayersReport {
-  fights?: Array<{ id: number; startTime: number; endTime: number }> | null;
+  fights?: Array<{ id: number; startTime: number; endTime: number; phaseTransitions?: Array<{ id: number; startTime: number }> | null }> | null;
   playerDetails?: WclPlayerDetails | null;
 }
 
@@ -169,6 +170,22 @@ export interface ReportFight {
   startTime: number;
   endTime: number;
   durationMs: number;
+  // When each phase began, in seconds from the pull, as Warcraft Logs marks them (empty
+  // for a single-phase boss). The same marks exist on every top log, which is what lets
+  // cooldown timing be compared phase by phase instead of by the clock.
+  phases?: FightPhase[];
+}
+
+export interface FightPhase { id: number; atSec: number }
+
+// WCL's phase transitions as seconds from the pull, in order, starting at 0.
+export function mapPhases(transitions: Array<{ id: number; startTime: number }> | null | undefined, fightStart: number): FightPhase[] {
+  const out = (transitions ?? [])
+    .filter(p => p && Number.isFinite(p.startTime))
+    .map(p => ({ id: Number(p.id), atSec: Math.max(0, Math.round((p.startTime - fightStart) / 100) / 10) }))
+    .sort((a, b) => a.atSec - b.atSec);
+  if (out.length && out[0].atSec > 1) out.unshift({ id: 0, atSec: 0 });
+  return out;
 }
 
 export interface ReportOverview {
@@ -184,7 +201,7 @@ export const DIFFICULTY_LABELS: Record<number, string> = { 1: 'LFR', 2: 'Flex', 
 export async function getReportOverview(token: string, code: string): Promise<ReportOverview | null> {
   const data = await wclQuery<WclReportData<WclOverviewReport>>(
     token,
-    `{ reportData { report(code: "${code}") { title startTime fights(killType: Encounters) { id encounterID name difficulty kill fightPercentage bossPercentage lastPhase lastPhaseIsIntermission startTime endTime } } } }`,
+    `{ reportData { report(code: "${code}") { title startTime fights(killType: Encounters) { id encounterID name difficulty kill fightPercentage bossPercentage lastPhase lastPhaseIsIntermission startTime endTime phaseTransitions { id startTime } } } } }`,
     'report-overview',
     300
   );
@@ -206,6 +223,7 @@ export async function getReportOverview(token: string, code: string): Promise<Re
       startTime: f.startTime,
       endTime: f.endTime,
       durationMs: Math.max(0, (f.endTime ?? 0) - (f.startTime ?? 0)),
+      phases: mapPhases(f.phaseTransitions, f.startTime),
     }));
   return { code, title: report.title ?? code, startTime: report.startTime ?? 0, fights };
 }
@@ -337,6 +355,9 @@ export interface BuffStat {
   // [start, end] seconds from the pull, kept only for buffs applied a handful of
   // times (cooldown-shaped); rotational procs with dozens of bands stay empty.
   bands: Array<[number, number]>;
+  // Every aura id logged under this name: a damage event lists the auras on its target
+  // by id, so "was this buff up at that hit" needs them all (see lib/roleRules.ts).
+  ids?: number[];
 }
 // byId keeps each spell that shares the name (a boss ability and its pulsing aura often do).
 export interface DamageTakenStat { name: string; icon: string; spellId: number; total: number; hits: number; ticks: number; source: string; byId: Array<{ spellId: number; total: number; hits: number }> }
@@ -409,6 +430,9 @@ export interface PlayerProfile {
   lustSec: number | null;
   // Externals received, only for the player being reviewed (needs their spell ids).
   externals: ExternalBuff[];
+  // Healing that landed on a full health bar (the Healing table's own figure for this
+  // player); only meaningful for healers, whose output table is the Healing one.
+  overheal?: number;
 }
 
 const MAX_BANDS_KEPT = 12;
@@ -447,14 +471,37 @@ function playerTablesSelection(fightId: number, sourceId: number, role: Role, fu
 }
 
 // Interrupt/dispel tables nest: top-level entries per ability, each with its own
-// `entries` of what was interrupted/dispelled.
+// `entries` of what was interrupted/dispelled; the count sits on each row's `details`
+// (one per player who did it), not on the row itself.
 function countNested(entries: any[] | undefined): number {
   let n = 0;
   for (const e of entries ?? []) {
     if (Array.isArray(e?.entries)) n += countNested(e.entries);
+    else if (Array.isArray(e?.details)) n += e.details.reduce((s: number, d: any) => s + Number(d?.total ?? 0), 0);
     else n += Number(e?.total ?? 0);
   }
   return n;
+}
+
+
+// A damage-taken row that players did to themselves or each other: a rune or trinket
+// that costs health (Omnium Folio's Rune of Void-Tainted Shell), friendly fire, damage
+// redirected from an ally (Blessing of Sacrifice, Interpose). WCL files these under an
+// entry with no actor of its own, sometimes a composite with the real spells nested in
+// subentries; every actor and source underneath is a player. Not a boss mechanic, so it
+// must never reach the mechanic rules, where "no top raid takes this" reads as avoidable.
+export function isPlayerSourcedDamage(e: any): boolean {
+  if (!e) return false;
+  if (e.actorType) return PLAYER_CLASS_TYPES.has(e.actorType);
+  const types: string[] = [];
+  const walk = (x: any, depth: number) => {
+    if (!x || depth > 4) return;
+    if (x.actorType) types.push(x.actorType);
+    for (const s of Array.isArray(x.sources) ? x.sources : []) if (s?.type) types.push(s.type);
+    for (const sub of Array.isArray(x.subentries) ? x.subentries : []) walk(sub, depth + 1);
+  };
+  walk(e, 0);
+  return types.length > 0 && types.every(t => PLAYER_CLASS_TYPES.has(t));
 }
 
 const MELEE_GUID = 1;
@@ -500,9 +547,10 @@ export function buildProfile(raw: any, fight: { startTime: number; endTime: numb
   for (const a of raw?.buffs?.data?.auras ?? []) {
     if (!a?.name) continue;
     const bands: any[] = Array.isArray(a.bands) ? a.bands : [];
-    const b = buffMap.get(a.name) ?? { name: a.name, icon: a.abilityIcon ?? '', spellId: a.guid ?? 0, uptimeMs: 0, uses: 0, atPull: false, bands: [] as Array<[number, number]> };
+    const b: BuffStat = buffMap.get(a.name) ?? { name: a.name, icon: a.abilityIcon ?? '', spellId: a.guid ?? 0, uptimeMs: 0, uses: 0, atPull: false, bands: [], ids: [] };
     b.uptimeMs = Math.max(b.uptimeMs, a.totalUptime ?? 0);
     b.uses += a.totalUses ?? 0;
+    if (a.guid && !(b.ids ??= []).includes(Number(a.guid))) b.ids.push(Number(a.guid));
     b.atPull = b.atPull || (bands[0]?.startTime ?? Infinity) <= fight.startTime + 500;
     // Two auras under one name (Void Metamorphosis: 7 windows plus a stacking effect
     // with hundreds of applications): the sparser one is the cooldown, keep its windows.
@@ -515,11 +563,7 @@ export function buildProfile(raw: any, fight: { startTime: number; endTime: numb
   // Damage from players (self-damage procs, friendly fire) isn't a mechanic — drop it.
   const takenMap = new Map<string, DamageTakenStat>();
   for (const e of raw?.taken?.data?.entries ?? []) {
-    if (PLAYER_CLASS_TYPES.has(e.actorType) || !(e.total > 0) || !e.name) continue;
-    // Damage redirected from a friendly player (Blessing of Sacrifice, Interpose) has no
-    // actor of its own but every source is a player: that is a job, not a mistake.
-    const sources: any[] = Array.isArray(e.sources) ? e.sources : [];
-    if (!e.actorType && sources.length && sources.every((s: any) => PLAYER_CLASS_TYPES.has(s.type))) continue;
+    if (isPlayerSourcedDamage(e) || !(e.total > 0) || !e.name) continue;
     const t = takenMap.get(e.name) ?? { name: e.name, icon: e.abilityIcon ?? '', spellId: e.guid ?? 0, total: 0, hits: 0, ticks: 0, source: e.actorName ?? '', byId: [] as DamageTakenStat['byId'] };
     t.total += e.total;
     t.hits += e.hitCount ?? 0;
@@ -631,6 +675,7 @@ export function buildProfile(raw: any, fight: { startTime: number; endTime: numb
     raidDeaths,
     interrupts: countNested(raw?.interrupts?.data?.entries),
     dispels: countNested(raw?.dispels?.data?.entries),
+    overheal: Number(me?.overheal ?? 0),
     raid,
     gear: pdMe?.gear ?? null,
     talentNodes: pdMe?.talentNodes ?? null,
@@ -655,7 +700,7 @@ export function getPlayerProfile(token: string, code: string, fight: ReportFight
       const extra = await fetchDeathRecapsAndResources(token, code, fight, player.id, profile.deaths).catch(err => { console.error('analyze: death recap / resources unavailable', err); return { deathRecaps: [], resourceWaste: [] }; });
       return { ...profile, ...extra, gear: player.gear ?? profile.gear, talentNodes: player.talentNodes ?? profile.talentNodes };
     },
-    [`analyze-profile-v17-${code}-${fight.id}-${player.id}-${player.role}-${externalIds.length}`],
+    [`analyze-profile-v18-${code}-${fight.id}-${player.id}-${player.role}-${externalIds.length}`],
     { revalidate: 86400 }
   )();
 }
@@ -683,6 +728,60 @@ export function fetchBossCastEvents(token: string, code: string, fight: ReportFi
     },
     [`analyze-bosscasts-v1-${code}-${fight.id}-${list.join('.')}`],
     { revalidate: 7 * 86400 }
+  )();
+}
+
+// One hit a tank took from a tank mechanic (or a melee swing), with which of the auras
+// we asked about were on them at that moment. A damage event lists every aura on its
+// target by id, so no buff bands are needed to say what was running.
+export interface TankHit { atSec: number; spellId: number; amount: number; absorbed: number; unmitigated: number; tick: boolean; auras: number[] }
+
+interface WclTankHitEvent {
+  timestamp?: number;
+  type?: string;
+  abilityGameID?: number;
+  amount?: number;
+  absorbed?: number;
+  unmitigatedAmount?: number;
+  tick?: boolean;
+  buffs?: string;
+}
+type WclTankHitsData = WclReportData<{ hits?: WclEventsPage<WclTankHitEvent> | null }>;
+
+// Every hit the reviewed tank took from the given abilities, in order: one request (a
+// tank takes a few hundred of these in a long pull; a second page is followed if there
+// is one). Swings that never connected (dodged, parried, missed: no pre-mitigation
+// amount) are dropped. `auraIds` narrows each hit's aura list to the ones the rules ask
+// about, which keeps the cached value small. Only ever called for the reviewed player.
+export function fetchTankHits(token: string, code: string, fight: ReportFight, sourceId: number, abilityIds: number[], auraIds: number[]): Promise<TankHit[]> {
+  const abilities = [...new Set(abilityIds.filter(x => Number.isFinite(x) && x > 0))].sort((a, b) => a - b);
+  const auras = [...new Set(auraIds.filter(x => Number.isFinite(x) && x > 0))].sort((a, b) => a - b);
+  if (!abilities.length) return Promise.resolve([]);
+  return unstable_cache(
+    async () => {
+      const keep = new Set(auras);
+      const out: TankHit[] = [];
+      let start: number | null = fight.startTime;
+      for (let page = 0; start != null && page < 2; page++) {
+        // DamageTaken takes the taker as sourceID (the same convention as its table).
+        const data: WclTankHitsData | null | undefined = await wclQuery<WclTankHitsData>(token, `{ reportData { report(code: "${code}") { hits: events(fightIDs: [${fight.id}], dataType: DamageTaken, sourceID: ${sourceId}, startTime: ${start}, endTime: ${fight.endTime}, filterExpression: "ability.id in (${abilities.join(',')})", limit: 5000) { data nextPageTimestamp } } } }`, 'tank-hits', null);
+        const res: WclEventsPage<WclTankHitEvent> | null | undefined = data?.reportData?.report?.hits;
+        for (const e of res?.data ?? []) {
+          if (e.type !== 'damage' || !((e.unmitigatedAmount ?? 0) > 0)) continue;
+          out.push({
+            atSec: sec1(Math.max(0, (e.timestamp ?? fight.startTime) - fight.startTime)),
+            spellId: Number(e.abilityGameID) || 0,
+            amount: e.amount ?? 0, absorbed: e.absorbed ?? 0, unmitigated: e.unmitigatedAmount ?? 0,
+            tick: !!e.tick,
+            auras: String(e.buffs ?? '').split('.').filter(Boolean).map(Number).filter(id => keep.has(id)),
+          });
+        }
+        start = res?.nextPageTimestamp ?? null;
+      }
+      return out;
+    },
+    [`analyze-tankhits-v1-${code}-${fight.id}-${sourceId}-${abilities.join('.')}-${auras.join('.')}`],
+    { revalidate: 86400 }
   )();
 }
 
@@ -788,12 +887,24 @@ export interface PoolSummary {
   memberDifficulty: number[];
   // Each member's Bloodlust time in seconds (null when the log shows none).
   lustSec: Array<number | null>;
+  // Each member's phase starts in their own kill (see ReportFight.phases).
+  memberPhases?: FightPhase[][];
+  // Each member's hero talent tree (Blizzard's id; 0 when unknown), and the talent counts
+  // within each tree, so a player can be compared with the top players who play the same
+  // hero talents: their buttons, their timings and their build.
+  memberHeroTree?: number[];
+  heroTalents?: Record<string, { talentN: number; talentNodeCount: Record<string, number>; talentEntryCount: Record<string, number> }>;
   casts: Record<string, { icon: string; spellId: number; cpm: number[] }>;
   // Cast times per member for cooldown-shaped casts (20 or fewer in the fight):
   // defensives, damage cooldowns, on-use trinkets. Charges, cooldown lengths and
   // "when do the top players press this" all come from here.
   castStarts: Record<string, number[][]>;
-  buffs: Record<string, { icon: string; spellId: number; uptimePct: number[]; atPull: number[]; starts: number[][] }>;
+  // usesPerMin: applications per minute per member, kept for tank pools only — it is what
+  // tells a short buff a tank keeps re-applying (active mitigation) from a passive aura.
+  buffs: Record<string, { icon: string; spellId: number; uptimePct: number[]; atPull: number[]; starts: number[][]; usesPerMin?: number[] }>;
+  // Healer pools only: each member's overhealing as a percentage of everything they cast
+  // (effective healing plus overheal), from the Healing table already fetched.
+  overhealPct?: number[];
   taken: Record<string, { icon: string; spellId: number; source: string; perMin: number[]; hitsPerMin: number[] }>;
   debuffs: Record<string, { icon: string; spellId: number; perMin: number[] }>;
 }
@@ -818,10 +929,14 @@ function emptyPool(difficulty: number): PoolSummary {
   };
 }
 
-function summarizePool(items: Array<{ profile: PlayerProfile; output: number; player: FightPlayer; difficulty: number }>, difficulty: number): PoolSummary {
+function summarizePool(items: Array<{ profile: PlayerProfile; output: number; player: FightPlayer; difficulty: number; phases: FightPhase[] }>, difficulty: number, heroByNode: Map<number, number>, poolRole: Role = 'dps'): PoolSummary {
   const n = items.length;
   const S = emptyPool(difficulty);
   S.n = n;
+  if (poolRole === 'healer') S.overhealPct = new Array(n).fill(0);
+  S.memberPhases = items.map(i => i.phases);
+  S.memberHeroTree = items.map(i => heroTreeOf(i.player.talentNodes, heroByNode));
+  S.heroTalents = {};
   const itemNames = new Set<string>();
   const trinkets = new Map<number, string>();
   items.forEach(({ profile: p, output, player, difficulty: memberDiff }, idx) => {
@@ -831,11 +946,19 @@ function summarizePool(items: Array<{ profile: PlayerProfile; output: number; pl
     S.durations.push(p.durationMs);
     S.output.push(output);
     S.activePct.push(100 * p.activeTimeMs / p.durationMs);
+    if (S.overhealPct && p.outputTotal + (p.overheal ?? 0) > 0) S.overhealPct[idx] = Math.round(1000 * (p.overheal ?? 0) / (p.outputTotal + (p.overheal ?? 0))) / 10;
     if (player.talentNodes) {
       S.talentN++;
+      const hero = S.memberHeroTree![idx];
+      const H = hero ? (S.heroTalents![String(hero)] ??= { talentN: 0, talentNodeCount: {}, talentEntryCount: {} }) : null;
+      if (H) H.talentN++;
       for (const [node, entry] of player.talentNodes) {
         S.talentNodeCount[String(node)] = (S.talentNodeCount[String(node)] ?? 0) + 1;
         if (entry) S.talentEntryCount[String(entry)] = (S.talentEntryCount[String(entry)] ?? 0) + 1;
+        if (H) {
+          H.talentNodeCount[String(node)] = (H.talentNodeCount[String(node)] ?? 0) + 1;
+          if (entry) H.talentEntryCount[String(entry)] = (H.talentEntryCount[String(entry)] ?? 0) + 1;
+        }
       }
     }
     if (player.gear) {
@@ -863,6 +986,7 @@ function summarizePool(items: Array<{ profile: PlayerProfile; output: number; pl
       e.uptimePct[idx] = Math.max(e.uptimePct[idx], 100 * b.uptimeMs / p.durationMs);
       if (b.atPull) e.atPull[idx] = 1;
       e.starts[idx] = b.bands.map(([s]) => s);
+      if (poolRole === 'tank') (e.usesPerMin ??= new Array(n).fill(0))[idx] = Math.round(10 * b.uses / minutes) / 10;
     }
     for (const t of p.damageTaken) {
       const e = (S.taken[t.name] ??= { icon: t.icon, spellId: t.spellId, source: t.source, perMin: new Array(n).fill(0), hitsPerMin: new Array(n).fill(0) });
@@ -879,6 +1003,33 @@ function summarizePool(items: Array<{ profile: PlayerProfile; output: number; pl
   return S;
 }
 
+// Which hero talent tree a set of taken nodes belongs to: the tree most of its hero
+// nodes sit in (0 when there is no talent data or no hero node among them).
+export function heroTreeOf(nodes: Array<[number, number]> | null | undefined, heroByNode: Map<number, number>): number {
+  const count = new Map<number, number>();
+  for (const [node] of nodes ?? []) {
+    const tree = heroByNode.get(node);
+    if (tree) count.set(tree, (count.get(tree) ?? 0) + 1);
+  }
+  return [...count.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 0;
+}
+
+// Node id → hero tree id for a spec, from the Blizzard layout the finder caches. Empty
+// when the layout cannot be read: the pool is then built without hero trees.
+export async function loadHeroNodeMap(className: string, spec: string): Promise<Map<number, number>> {
+  const map = new Map<number, number>();
+  try {
+    const blizzToken = await getBlizzardToken();
+    const ids = await getTalentTreeId(spec, className, blizzToken);
+    if (!ids) return map;
+    const { layout } = await getCachedTalentLayout(ids.treeId, ids.specId, blizzToken);
+    for (const n of layout as Array<{ nodeID: number; section?: string; heroTreeId?: number | null }>) if (n.section === 'hero' && n.heroTreeId != null) map.set(n.nodeID, n.heroTreeId);
+  } catch (err) {
+    console.error('analyze: hero tree layout unavailable', err);
+  }
+  return map;
+}
+
 // Built from the finder's cached rankings (same SWR Redis entry the boss pages use)
 // plus ~4 tables per top player. Persisted a week per boss/spec/difficulty — the key
 // space is bounded by the combo count, and the summary is a few tens of KB, so it
@@ -891,7 +1042,7 @@ const POOL_THIN_TTL_SECONDS = 3600;
 export async function getPoolSummary(token: string, encounterId: number, className: string, spec: string, difficulty: number): Promise<PoolSummary> {
   const role: Role = HEALER_SPECS.some(h => h.class === className && h.spec === spec) ? 'healer' : 'dps';
   const metric = role === 'healer' ? 'hps' : undefined;
-  const key = `analyze-pool-v19-${encounterId}-${className}-${spec}-${difficulty}`;
+  const key = `analyze-pool-v21-${encounterId}-${className}-${spec}-${difficulty}`;
   const cached = await getPersistentReadOnly<PoolSummary>(key);
   if (cached) return cached;
   const compute = async (): Promise<PoolSummary> => {
@@ -915,7 +1066,7 @@ export async function getPoolSummary(token: string, encounterId: number, classNa
     for (let i = 0; i < candidates.length && members.length < POOL_SIZE; i += POOL_PHASE1_BATCH) {
       const batch = candidates.slice(i, i + POOL_PHASE1_BATCH);
       const q1 = batch.map((r, j) =>
-        `r${j}: report(code: "${r.report.code}") { fights(fightIDs: [${r.report.fightID}]) { id startTime endTime } playerDetails(fightIDs: [${r.report.fightID}], includeCombatantInfo: true) }`
+        `r${j}: report(code: "${r.report.code}") { fights(fightIDs: [${r.report.fightID}]) { id startTime endTime phaseTransitions { id startTime } } playerDetails(fightIDs: [${r.report.fightID}], includeCombatantInfo: true) }`
       ).join('\n');
       const d1 = await wclQuery<WclAliasedReportData<WclPoolPlayersReport>>(token, `{ reportData { ${q1} } }`, 'pool-players', null);
       batch.forEach((r, j) => {
@@ -932,7 +1083,7 @@ export async function getPoolSummary(token: string, encounterId: number, classNa
     }
 
     // Phase 2: tables, a few reports per request.
-    const items: Array<{ profile: PlayerProfile; output: number; player: FightPlayer; difficulty: number }> = [];
+    const items: Array<{ profile: PlayerProfile; output: number; player: FightPlayer; difficulty: number; phases: FightPhase[] }> = [];
     for (let i = 0; i < members.length; i += POOL_BATCH) {
       const batch = members.slice(i, i + POOL_BATCH);
       const q2 = batch.map((m, j) =>
@@ -942,10 +1093,12 @@ export async function getPoolSummary(token: string, encounterId: number, classNa
       batch.forEach((m, j) => {
         const raw = d2?.reportData?.[`r${j}`];
         if (!raw) return;
-        items.push({ profile: buildProfile(raw, m.fight, m.player.id), output: Number(m.row.amount) || 0, player: m.player, difficulty: m.row._difficulty });
+        items.push({ profile: buildProfile(raw, m.fight, m.player.id), output: Number(m.row.amount) || 0, player: m.player, difficulty: m.row._difficulty, phases: mapPhases(m.fight.phaseTransitions, m.fight.startTime) });
       });
     }
-    const summary = summarizePool(items, difficulty);
+    // Tanks are fetched like damage dealers (WCL ranks them by damage); only what the summary keeps differs.
+    const poolRole: Role = TANK_SPECS.some(t => t.class === className && t.spec === spec) ? 'tank' : role;
+    const summary = summarizePool(items, difficulty, await loadHeroNodeMap(className, spec), poolRole);
     summary.fights = members.map(m => ({ code: m.row.report.code as string, fightId: m.fight.id as number, difficulty: m.row._difficulty as number }));
     return summary;
   };
@@ -999,7 +1152,7 @@ export async function getRaidMechanicStats(token: string, encounterId: number, d
       if (!raidSize) continue;
       const tanks = new Set(players.filter(p => p.role === 'tank').map(p => p.name));
       const abilities: any[] = (rep?.byAbility?.data?.entries ?? [])
-        .filter((e: any) => e?.guid && e?.name && (e.total ?? 0) > 0 && !PLAYER_CLASS_TYPES.has(e.actorType))
+        .filter((e: any) => e?.guid && e?.name && (e.total ?? 0) > 0 && !isPlayerSourcedDamage(e))
         .sort((a: any, b: any) => (b.total ?? 0) - (a.total ?? 0))
         .slice(0, RAID_STAT_ABILITIES);
       if (!abilities.length) continue;
