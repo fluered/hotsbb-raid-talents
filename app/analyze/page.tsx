@@ -2,6 +2,7 @@ import React, { Suspense } from 'react';
 import Loading from './loading';
 import LinkPending from '../../components/LinkPending';
 import Link from 'next/link';
+import Image from 'next/image';
 import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
 import Script from 'next/script';
@@ -603,7 +604,7 @@ function FightList({ overview }: { overview: ReportOverview }) {
         return (
           <section key={`${first.encounterID}-${first.difficulty}`} className="space-y-2">
             <div className="flex items-center gap-3">
-              <img src={BOSS_ICON(first.encounterID)} alt="" className="w-8 h-8 rounded-lg object-cover" />
+              <Image src={BOSS_ICON(first.encounterID)} alt="" width={32} height={32} unoptimized className="w-8 h-8 rounded-lg object-cover" />
               <div className="min-w-0">
                 <h2 className="font-bold text-zinc-100 leading-tight">{first.name}</h2>
                 <p className="text-xs text-zinc-500">{DIFFICULTY_LABELS[first.difficulty] ?? ''} · {fights.length} {fights.length === 1 ? 'pull' : 'pulls'}{kills ? ` · ${kills} kill${kills === 1 ? '' : 's'}` : ''}</p>
@@ -646,7 +647,7 @@ function PlayerList({ overview, fight, players }: { overview: ReportOverview; fi
   return (
     <div className="space-y-8">
       <div className="flex items-center gap-3">
-        <img src={BOSS_ICON(fight.encounterID)} alt="" className="w-10 h-10 rounded-lg object-cover" />
+        <Image src={BOSS_ICON(fight.encounterID)} alt="" width={40} height={40} unoptimized className="w-10 h-10 rounded-lg object-cover" />
         <div>
           <h1 className="text-2xl font-black tracking-tight leading-tight">{fight.name}</h1>
           <p className="text-sm text-zinc-500">
@@ -708,7 +709,7 @@ function ReviewView({ review, mechanics, player, fight, overview, reportCode }: 
       <WowheadTooltips />
       <header className="space-y-3">
         <div className="flex items-start gap-3">
-          <img src={BOSS_ICON(fight.encounterID)} alt="" className="w-12 h-12 rounded-xl object-cover mt-0.5" />
+          <Image src={BOSS_ICON(fight.encounterID)} alt="" width={48} height={48} unoptimized className="w-12 h-12 rounded-xl object-cover mt-0.5" />
           <div className="min-w-0 space-y-1">
             <h1 className="text-2xl md:text-3xl font-black tracking-tight leading-tight">
               <span className={classColor(player.className)}>{player.name}</span>
@@ -826,7 +827,7 @@ function ReviewCard(c: ReviewCardProps) {
   const style = SEVERITY_STYLE[c.severity];
   const wowhead = c.spellId ? `https://www.wowhead.com/spell=${c.spellId}` : null;
   const icon = c.icon
-    ? <img src={ABILITY_ICON(c.icon)} alt="" className="w-9 h-9 rounded-lg shrink-0 mt-0.5 border border-zinc-800" />
+    ? <Image src={ABILITY_ICON(c.icon)} alt="" width={36} height={36} unoptimized className="w-9 h-9 rounded-lg shrink-0 mt-0.5 border border-zinc-800" />
     : <span className="w-9 h-9 rounded-lg shrink-0 mt-0.5 bg-zinc-900 border border-zinc-800 flex items-center justify-center"><span className={`w-2 h-2 rounded-full ${style.dot}`} /></span>;
   const rows = c.rows ?? [];
   return (
@@ -861,7 +862,7 @@ function ReviewCard(c: ReviewCardProps) {
                   <span className="text-xs font-mono text-zinc-500 shrink-0 w-10">{r.value}</span>
                   {r.killer && (
                     <a href={r.killer.spellId ? `https://www.wowhead.com/spell=${r.killer.spellId}` : undefined} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 min-w-0 text-zinc-200 hover:text-amber-200">
-                      {r.killer.icon && <img src={ABILITY_ICON(r.killer.icon)} alt="" className="w-5 h-5 rounded border border-zinc-700 shrink-0" />}
+                      {r.killer.icon && <Image src={ABILITY_ICON(r.killer.icon)} alt="" width={20} height={20} unoptimized className="w-5 h-5 rounded border border-zinc-700 shrink-0" />}
                       <span className="truncate">{r.killer.name}</span>
                     </a>
                   )}
@@ -871,7 +872,7 @@ function ReviewCard(c: ReviewCardProps) {
                       {r.icons!.map(ic => (
                         <a key={ic.spellId || ic.name} href={ic.spellId ? `https://www.wowhead.com/spell=${ic.spellId}` : undefined} target="_blank" rel="noopener noreferrer" title={ic.name} className="shrink-0">
                           {ic.icon
-                            ? <img src={ABILITY_ICON(ic.icon)} alt={ic.name} className="w-5 h-5 rounded border border-zinc-700" />
+                            ? <Image src={ABILITY_ICON(ic.icon)} alt={ic.name} width={20} height={20} unoptimized className="w-5 h-5 rounded border border-zinc-700" />
                             : <span className="inline-block w-5 h-5 rounded border border-zinc-700 bg-zinc-900 text-[9px] leading-5 text-center text-zinc-300">{ic.name.slice(0, 2)}</span>}
                         </a>
                       ))}
@@ -887,7 +888,7 @@ function ReviewCard(c: ReviewCardProps) {
                     {r.icons?.map(ic => (
                       <a key={ic.spellId || ic.name} href={ic.spellId ? `https://www.wowhead.com/spell=${ic.spellId}` : undefined} target="_blank" rel="noopener noreferrer" title={ic.name} className="shrink-0">
                         {ic.icon
-                          ? <img src={ABILITY_ICON(ic.icon)} alt={ic.name} className="w-5 h-5 rounded border border-zinc-700" />
+                          ? <Image src={ABILITY_ICON(ic.icon)} alt={ic.name} width={20} height={20} unoptimized className="w-5 h-5 rounded border border-zinc-700" />
                           : <span className="inline-block w-5 h-5 rounded border border-zinc-700 bg-zinc-900 text-[9px] leading-5 text-center text-zinc-300">{ic.name.slice(0, 2)}</span>}
                       </a>
                     ))}
@@ -928,7 +929,7 @@ function DefensivesPanel({ rows }: { rows: Review['defensives'] }) {
           return (
             <div key={r.name} className="flex items-center gap-3 px-4 py-2 text-sm">
               {r.icon
-                ? <img src={ABILITY_ICON(r.icon)} alt="" className="w-6 h-6 rounded border border-zinc-800 shrink-0" />
+                ? <Image src={ABILITY_ICON(r.icon)} alt="" width={24} height={24} unoptimized className="w-6 h-6 rounded border border-zinc-800 shrink-0" />
                 : <span className="w-6 h-6 rounded bg-zinc-900 border border-zinc-800 shrink-0" />}
               <span className="font-semibold text-zinc-200 min-w-0 flex-1 truncate">
                 {r.spellId ? <a href={`https://www.wowhead.com/spell=${r.spellId}`} target="_blank" rel="noopener noreferrer" className="hover:text-amber-200">{r.name}</a> : r.name}
@@ -1001,7 +1002,7 @@ function RaidView({ review, fight, overview }: { review: RaidReview; fight: Repo
       <WowheadTooltips />
       <header className="space-y-4">
         <div className="flex items-start gap-3">
-          <img src={BOSS_ICON(fight.encounterID)} alt="" className="w-12 h-12 rounded-xl object-cover mt-0.5" />
+          <Image src={BOSS_ICON(fight.encounterID)} alt="" width={48} height={48} unoptimized className="w-12 h-12 rounded-xl object-cover mt-0.5" />
           <div className="min-w-0 space-y-1">
             <h1 className="text-2xl md:text-3xl font-black tracking-tight leading-tight">{fight.name} <span className="text-zinc-400 font-bold">· raid summary</span></h1>
             <p className="text-sm text-zinc-400">

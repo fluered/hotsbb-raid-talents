@@ -1,4 +1,5 @@
-import LoadingProgress, { BUILD_STAGES } from '../components/LoadingProgress';
+import LoadingProgress from '../components/LoadingProgress';
+import { BUILD_STAGES } from '../lib/loadingStages';
 
 export default function Loading() {
   return (

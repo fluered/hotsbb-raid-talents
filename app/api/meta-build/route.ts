@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getMetaBuild } from '../../../lib/metaBuild';
-import { SPEC_IDS } from '../../../lib/wow';
+import { SPEC_IDS, isRateLimitError, errorMessage } from '../../../lib/wow';
 import { isAuthorizedInternalCaller } from '../../../lib/internalAuth';
 import { logServerError } from '../../../lib/persistentCache';
 
@@ -38,16 +38,16 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(result, {
       headers: { 'Cache-Control': 'public, s-maxage=21600, stale-while-revalidate=86400' },
     });
-  } catch (e: any) {
+  } catch (e: unknown) {
     // Surfaced distinctly from a generic error so batch callers (the export script) can
     // detect "we're rate-limited, stop entirely" rather than "this one combo failed."
-    if (e?.isRateLimit) {
+    if (isRateLimitError(e)) {
       return NextResponse.json(
         { status: 'rate_limited', message: e.message, retryAfter: e.retryAfter ?? null },
         { status: 429 }
       );
     }
     await logServerError(`meta-build ${className}/${spec} boss=${bossId} diff=${difficulty}`, e);
-    return NextResponse.json({ status: 'error', message: e?.message ?? String(e) }, { status: 500 });
+    return NextResponse.json({ status: 'error', message: errorMessage(e) }, { status: 500 });
   }
 }

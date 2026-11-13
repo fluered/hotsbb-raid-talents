@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useEffect, useTransition } from 'react';
+import { useState, useTransition } from 'react';
+import Image from 'next/image';
 import { useRouter } from 'next/navigation';
 import DungeonCardImage from '../components/DungeonCardImage';
 
@@ -41,10 +42,15 @@ export default function BossPicker({
   const [isPending, startTransition] = useTransition();
   const router = useRouter();
 
-  useEffect(() => {
+  // When the selection changes (the picked encounter's page arrived, or it was
+  // cleared) the phone picker collapses to its chip, or opens if nothing is selected.
+  // Adjusted during render, not in an effect. pendingKey needs no reset: it is only
+  // read while a navigation is pending.
+  const [seenKey, setSeenKey] = useState(activeKey);
+  if (seenKey !== activeKey) {
+    setSeenKey(activeKey);
     setExpanded(!activeKey);
-    if (!isPending) setPendingKey(null);
-  }, [activeKey, isPending]);
+  }
 
   return (
     <div className="space-y-5">
@@ -54,7 +60,7 @@ export default function BossPicker({
       {activeKey && !expanded && (
         <div className="md:hidden flex items-center gap-2.5 px-3 py-2 bg-zinc-900/60 border border-zinc-700/50 rounded-xl">
           {activeImageUrl && (
-            <img src={activeImageUrl} alt="" className="w-7 h-7 rounded-lg object-cover flex-shrink-0" />
+            <Image src={activeImageUrl} alt="" width={28} height={28} unoptimized className="w-7 h-7 rounded-lg object-cover flex-shrink-0" />
           )}
           <span className="text-sm font-bold text-amber-300 flex-1 truncate">{activeName}</span>
           <button

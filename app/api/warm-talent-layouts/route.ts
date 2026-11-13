@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getBlizzardToken, getTalentTreeId, getCachedTalentLayout, SPEC_IDS } from '../../../lib/wow';
+import { getBlizzardToken, getTalentTreeId, getCachedTalentLayout, SPEC_IDS, errorMessage } from '../../../lib/wow';
 
 // Allow up to 5 minutes — sequentially fetching 36 specs with rate-limited icon calls takes time
 export const maxDuration = 300;
@@ -32,8 +32,8 @@ export async function GET(request: NextRequest) {
           ms: Date.now() - t0,
           ...(missingIcons.length ? { missingIcons } : {}),
         });
-      } catch (e: any) {
-        results.push({ class: className, spec: specName, status: `error: ${e?.message ?? e}`, ms: Date.now() - t0 });
+      } catch (e: unknown) {
+        results.push({ class: className, spec: specName, status: `error: ${errorMessage(e)}`, ms: Date.now() - t0 });
       }
     }
   }

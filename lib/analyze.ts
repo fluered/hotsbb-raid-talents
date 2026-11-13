@@ -18,6 +18,112 @@ import { defensiveKey, isDefensive } from './defensives';
 // ids (ranks, talent overrides, "Volatile Purge" ×2), and a per-id comparison then
 // reads as "you never used X" twice while the player pressed it plenty.
 
+// ─── WCL responses ────────────────────────────────────────────────────────────
+//
+// The fields each query's caller reads, not WCL's schema. `table` and `playerDetails`
+// are JSON scalars; where a caller only hands one on (to buildProfile or
+// mapPlayerDetails, which pick it apart themselves) it stays unknown here.
+
+export interface WclReportData<R> {
+  reportData?: { report?: R | null } | null;
+}
+
+// Queries that alias `report` once per log (r0, r1, …): reportData is keyed by alias,
+// and a private/deleted report comes back null under its alias.
+interface WclAliasedReportData<R> {
+  reportData?: Record<string, R | null> | null;
+}
+
+export interface WclEventsPage<E> {
+  data?: E[] | null;
+  nextPageTimestamp?: number | null;
+}
+
+// A table's rows sit under `entries`, or under `auras` for Buffs and Debuffs.
+export interface WclTable<Row> {
+  data?: { entries?: Row[] | null; auras?: Row[] | null } | null;
+}
+
+interface WclPlayerDetails {
+  data?: { playerDetails?: unknown } | null;
+}
+
+interface WclOverviewFight {
+  id: number;
+  encounterID: number;
+  name: string;
+  difficulty?: number | null;
+  kill?: boolean | null;
+  fightPercentage?: number | null;
+  bossPercentage?: number | null;
+  lastPhase?: number | null;
+  lastPhaseIsIntermission?: boolean | null;
+  startTime: number;
+  endTime: number;
+}
+
+interface WclOverviewReport {
+  title?: string | null;
+  startTime?: number | null;
+  fights?: WclOverviewFight[] | null;
+}
+
+interface WclBossCastEvent {
+  timestamp?: number;
+  type?: string;
+  abilityGameID?: number;
+  sourceID?: number;
+  sourceInstance?: number;
+}
+
+interface WclRecapEvent {
+  timestamp: number;
+  type?: string;
+  abilityGameID?: number;
+  sourceID?: number;
+  amount?: number;
+  absorbed?: number;
+  overkill?: number;
+  buffs?: string; // aura ids active at the hit, dot-separated
+}
+
+interface WclResourceEvent {
+  type?: string;
+  sourceID?: number;
+  resourceChangeType?: number;
+  resourceChange?: number;
+  waste?: number;
+}
+
+// d0/h0, d1/h1, …: damage taken and healing received in the window before each death.
+interface WclRecapReport {
+  [damage: `d${number}`]: WclEventsPage<WclRecapEvent> | null;
+  [healing: `h${number}`]: WclEventsPage<WclRecapEvent> | null;
+  res?: WclEventsPage<WclResourceEvent> | null;
+  masterData?: {
+    actors?: Array<{ id: number; name?: string | null }> | null;
+    abilities?: Array<{ gameID: number; name?: string | null; icon?: string | null }> | null;
+  } | null;
+}
+
+interface WclPoolPlayersReport {
+  fights?: Array<{ id: number; startTime: number; endTime: number }> | null;
+  playerDetails?: WclPlayerDetails | null;
+}
+
+interface WclAbilityTakenRow {
+  guid?: number;
+  name?: string;
+  total?: number;
+  actorType?: string;
+  abilityIcon?: string;
+}
+
+interface WclRaidAbilitiesReport {
+  byAbility?: WclTable<WclAbilityTakenRow> | null;
+  pd?: WclPlayerDetails | null;
+}
+
 // ─── Input ────────────────────────────────────────────────────────────────────
 
 export interface ReportRef {
@@ -76,7 +182,7 @@ export const DIFFICULTY_LABELS: Record<number, string> = { 1: 'LFR', 2: 'Flex', 
 
 // Short revalidate: a report that's still being live-logged grows new fights.
 export async function getReportOverview(token: string, code: string): Promise<ReportOverview | null> {
-  const data = await wclQuery(
+  const data = await wclQuery<WclReportData<WclOverviewReport>>(
     token,
     `{ reportData { report(code: "${code}") { title startTime fights(killType: Encounters) { id encounterID name difficulty kill fightPercentage bossPercentage lastPhase lastPhaseIsIntermission startTime endTime } } } }`,
     'report-overview',
@@ -210,7 +316,7 @@ export function mapPlayerDetails(pd: any): FightPlayer[] {
 export function getFightPlayers(token: string, code: string, fightId: number): Promise<FightPlayer[]> {
   return unstable_cache(
     async () => {
-      const data = await wclQuery(token, `{ reportData { report(code: "${code}") { playerDetails(fightIDs: [${fightId}], includeCombatantInfo: true) } } }`, 'player-details');
+      const data = await wclQuery<WclReportData<{ playerDetails?: WclPlayerDetails | null }>>(token, `{ reportData { report(code: "${code}") { playerDetails(fightIDs: [${fightId}], includeCombatantInfo: true) } } }`, 'player-details');
       return mapPlayerDetails(data?.reportData?.report?.playerDetails?.data?.playerDetails);
     },
     [`analyze-players-v2-${code}-${fightId}`],
@@ -539,7 +645,7 @@ export function getPlayerProfile(token: string, code: string, fight: ReportFight
   const externalIds = (opts?.externalIds ?? []).filter(x => Number.isFinite(x)).sort((a, b) => a - b);
   return unstable_cache(
     async () => {
-      const data = await wclQuery(
+      const data = await wclQuery<WclReportData<unknown>>(
         token,
         `{ reportData { report(code: "${code}") { ${playerTablesSelection(fight.id, player.id, player.role, true, externalIds)} } } }`,
         'player-tables',
@@ -561,7 +667,7 @@ export function fetchBossCastEvents(token: string, code: string, fight: ReportFi
   if (!list.length) return Promise.resolve([]);
   return unstable_cache(
     async () => {
-      const data = await wclQuery(token, `{ reportData { report(code: "${code}") { events(fightIDs: [${fight.id}], hostilityType: Enemies, filterExpression: "type in ('cast','begincast') and ability.id in (${list.join(',')})", limit: 2000) { data } } } }`, 'boss-casts', null);
+      const data = await wclQuery<WclReportData<{ events?: WclEventsPage<WclBossCastEvent> | null }>>(token, `{ reportData { report(code: "${code}") { events(fightIDs: [${fight.id}], hostilityType: Enemies, filterExpression: "type in ('cast','begincast') and ability.id in (${list.join(',')})", limit: 2000) { data } } } }`, 'boss-casts', null);
       const evs: any[] = (data?.reportData?.report?.events?.data ?? []).slice().sort((a: any, b: any) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
       const out: Array<{ atSec: number; spellId: number }> = [];
       const last = new Map<string, number>();
@@ -591,7 +697,7 @@ async function fetchDeathRecapsAndResources(token: string, code: string, fight: 
     return `d${i}: events(fightIDs: [${fight.id}], dataType: DamageTaken, sourceID: ${sourceId}, startTime: ${start}, endTime: ${end}, limit: 500) { data }
     h${i}: events(fightIDs: [${fight.id}], dataType: Healing, targetID: ${sourceId}, startTime: ${start}, endTime: ${end}, limit: 500) { data }`;
   }).join('\n');
-  const data = await wclQuery(token, `{ reportData { report(code: "${code}") {
+  const data = await wclQuery<WclReportData<WclRecapReport>>(token, `{ reportData { report(code: "${code}") {
     ${windows}
     res: events(fightIDs: [${fight.id}], dataType: Resources, sourceID: ${sourceId}, limit: 5000) { data nextPageTimestamp }
     masterData { actors { id name } abilities { gameID name icon } }
@@ -601,7 +707,7 @@ async function fetchDeathRecapsAndResources(token: string, code: string, fight: 
   const resEvents: any[] = [...(r.res?.data ?? [])];
   let next = r.res?.nextPageTimestamp;
   for (let page = 0; next && page < 4; page++) {
-    const more = await wclQuery(token, `{ reportData { report(code: "${code}") { res: events(fightIDs: [${fight.id}], dataType: Resources, sourceID: ${sourceId}, startTime: ${next}, limit: 5000) { data nextPageTimestamp } } } }`, 'player-recap', null);
+    const more = await wclQuery<WclReportData<WclRecapReport>>(token, `{ reportData { report(code: "${code}") { res: events(fightIDs: [${fight.id}], dataType: Resources, sourceID: ${sourceId}, startTime: ${next}, limit: 5000) { data nextPageTimestamp } } } }`, 'player-recap', null);
     resEvents.push(...(more?.reportData?.report?.res?.data ?? []));
     next = more?.reportData?.report?.res?.nextPageTimestamp;
   }
@@ -811,7 +917,7 @@ export async function getPoolSummary(token: string, encounterId: number, classNa
       const q1 = batch.map((r, j) =>
         `r${j}: report(code: "${r.report.code}") { fights(fightIDs: [${r.report.fightID}]) { id startTime endTime } playerDetails(fightIDs: [${r.report.fightID}], includeCombatantInfo: true) }`
       ).join('\n');
-      const d1 = await wclQuery(token, `{ reportData { ${q1} } }`, 'pool-players', null);
+      const d1 = await wclQuery<WclAliasedReportData<WclPoolPlayersReport>>(token, `{ reportData { ${q1} } }`, 'pool-players', null);
       batch.forEach((r, j) => {
         if (members.length >= POOL_SIZE) return;
         const rep = d1?.reportData?.[`r${j}`];
@@ -832,7 +938,7 @@ export async function getPoolSummary(token: string, encounterId: number, classNa
       const q2 = batch.map((m, j) =>
         `r${j}: report(code: "${m.row.report.code}") { ${playerTablesSelection(m.fight.id, m.player.id, role, false)} }`
       ).join('\n');
-      const d2 = await wclQuery(token, `{ reportData { ${q2} } }`, 'pool-tables', null);
+      const d2 = await wclQuery<WclAliasedReportData<unknown>>(token, `{ reportData { ${q2} } }`, 'pool-tables', null);
       batch.forEach((m, j) => {
         const raw = d2?.reportData?.[`r${j}`];
         if (!raw) return;
@@ -884,7 +990,7 @@ export async function getRaidMechanicStats(token: string, encounterId: number, d
     const q1 = use.map((f, i) =>
       `r${i}: report(code: "${f.code}") { byAbility: table(dataType: DamageTaken, fightIDs: [${f.fightId}], viewBy: Ability) pd: playerDetails(fightIDs: [${f.fightId}]) }`
     ).join('\n');
-    const d1 = await wclQuery(token, `{ reportData { ${q1} } }`, 'raid-mechanics-abilities', null);
+    const d1 = await wclQuery<WclAliasedReportData<WclRaidAbilitiesReport>>(token, `{ reportData { ${q1} } }`, 'raid-mechanics-abilities', null);
 
     for (let i = 0; i < use.length; i++) {
       const rep = d1?.reportData?.[`r${i}`];
@@ -903,7 +1009,7 @@ export async function getRaidMechanicStats(token: string, encounterId: number, d
         const q2 = batch.map((a: any, k: number) =>
           `a${k}: table(dataType: DamageTaken, fightIDs: [${use[i].fightId}], abilityID: ${a.guid})`
         ).join('\n');
-        const d2 = await wclQuery(token, `{ reportData { report(code: "${use[i].code}") { ${q2} } } }`, 'raid-mechanics-targets', null);
+        const d2 = await wclQuery<WclReportData<Record<string, WclTable<{ name?: string; total?: number }> | null>>>(token, `{ reportData { report(code: "${use[i].code}") { ${q2} } } }`, 'raid-mechanics-targets', null);
         batch.forEach((a: any, k: number) => {
           const hit: any[] = (d2?.reportData?.report?.[`a${k}`]?.data?.entries ?? []).filter((e: any) => (e.total ?? 0) > 0);
           const e = (S.abilities[a.name] ??= { spellId: a.guid, icon: a.abilityIcon ?? '', share: [], tankShare: [] });

@@ -2,7 +2,7 @@
 import { wclQuery } from './wow';
 import { fmtClock, fmtNum, median } from './analyzeRules';
 import { filterAbilityIds, filterTypes, requireIds, type WipefestEventConfig, type WipefestFightConfig, type WipefestInsightConfig } from './wipefestConfig';
-import type { FightPlayer, ReportFight } from './analyze';
+import type { FightPlayer, ReportFight, WclEventsPage, WclReportData } from './analyze';
 
 // ─── Evaluating Wipefest's mechanic definitions against a log ──────────────────
 //
@@ -74,9 +74,29 @@ const BATCH = 8;
 
 interface Pending { alias: string; args: string }
 
+interface WclFightMeta {
+  id?: number;
+  startTime?: number;
+  endTime?: number;
+  enemyNPCs?: Array<{ id: number; gameID: number; instanceCount?: number | null }> | null;
+  phaseTransitions?: Array<{ id: number; startTime: number }> | null;
+}
+
+interface WclMetaReport {
+  fights?: WclFightMeta[] | null;
+  phases?: Array<{
+    encounterID?: number;
+    phases?: Array<{ id?: number | null; name?: string | null } | null> | null;
+  } | null> | null;
+  masterData?: {
+    actors?: Array<{ id: number; name?: string | null }> | null;
+    abilities?: Array<{ gameID?: number | null; name?: string | null; icon?: string | null } | null> | null;
+  } | null;
+}
+
 export async function fetchFightEvents(token: string, code: string, fight: ReportFight, players: FightPlayer[], config: WipefestFightConfig): Promise<FightEvents> {
   const fid = fight.id;
-  const meta = await wclQuery(token, `{ reportData { report(code: "${code}") {
+  const meta = await wclQuery<WclReportData<WclMetaReport>>(token, `{ reportData { report(code: "${code}") {
     fights(fightIDs: [${fid}]) { id startTime endTime enemyNPCs { id gameID instanceCount } phaseTransitions { id startTime } }
     phases { encounterID phases { id name isIntermission } }
     masterData { actors(type: "NPC") { id gameID name } abilities { gameID name icon } }
@@ -157,7 +177,7 @@ export async function fetchFightEvents(token: string, code: string, fight: Repor
         const p = pending.get(k)!;
         return `${p.alias}: events(fightIDs: [${fid}], ${p.args}, limit: ${EVENT_LIMIT}${start != null ? `, startTime: ${start}` : ''}) { data nextPageTimestamp }`;
       }).join('\n');
-      const d = await wclQuery(token, `{ reportData { report(code: "${code}") { ${q} } } }`, 'wipefest-events', null);
+      const d = await wclQuery<WclReportData<Record<string, WclEventsPage<WfEvent> | null>>>(token, `{ reportData { report(code: "${code}") { ${q} } } }`, 'wipefest-events', null);
       const r = d?.reportData?.report ?? {};
       const next = new Map<string, number | null>();
       for (const [k] of cursors) {

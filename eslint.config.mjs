@@ -12,7 +12,14 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // An old copy of the finder page kept for reference; not a route, not maintained.
+    "app/Backups/**",
   ]),
+  // The maintenance scripts are plain CommonJS run directly with node.
+  {
+    files: ["scripts/**/*.js"],
+    rules: { "@typescript-eslint/no-require-imports": "off" },
+  },
 ]);
 
 export default eslintConfig;

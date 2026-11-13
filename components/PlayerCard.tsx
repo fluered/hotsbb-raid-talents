@@ -1,8 +1,22 @@
 'use client';
 import React from 'react';
 import Image from 'next/image';
-import NewFeature from './NewFeature';
+import NewFeature, { type TalentNode, type TalentTelemetry } from './NewFeature';
 import CopyBuildButton from './CopyBuildButton';
+
+export interface RankedPlayer {
+  name: string;
+  server?: { name?: string } | null;
+  report?: { code?: string; fightID?: number } | null;
+  telemetry?: (TalentTelemetry & { sourceId?: number | null }) | null;
+  talentString?: string | null;
+  renderUrl?: string | null;
+  entryIds?: Record<number, number>;
+  amount: number;
+  rankPercent?: number | null;
+  score?: number | null;
+  hardModeLevel?: number | null;
+}
 
 export default function PlayerCard({
   player,
@@ -16,8 +30,8 @@ export default function PlayerCard({
   metaTelemetry,
   searchQuery,
 }: {
-  player: any;
-  layout: any[];
+  player: RankedPlayer;
+  layout: TalentNode[];
   colors: { color: string; border: string; activeBg: string };
   idx: number;
   wowClass?: string;
@@ -31,8 +45,8 @@ export default function PlayerCard({
   // Page-wide talent-name search, owned by BossView — see NewFeature.searchQuery.
   searchQuery?: string;
 }) {
-  const activeNodeIds = new Set<number>((player.telemetry?.event?.talentTree ?? []).map((t: any) => t.nodeID));
-  const activeHeroTreeId = layout.find((n: any) => n.section === 'hero' && n.heroTreeId != null && activeNodeIds.has(n.nodeID))?.heroTreeId ?? null;
+  const activeNodeIds = new Set<number>((player.telemetry?.event?.talentTree ?? []).map((t) => t.nodeID));
+  const activeHeroTreeId = layout.find((n) => n.section === 'hero' && n.heroTreeId != null && activeNodeIds.has(n.nodeID))?.heroTreeId ?? null;
   const heroTree = activeHeroTreeId != null ? heroTrees?.find(ht => ht.id === activeHeroTreeId) : undefined;
 
   return (

@@ -6,14 +6,18 @@ import type { Metadata } from 'next';
 import BossContent from './BossContent';
 import BossPicker from './BossPicker';
 import ClassNav from '../components/ClassNav';
+import MobileNav from '../components/MobileNav';
 import SiteFooter, { ADDON_RELEASES_URL } from '../components/SiteFooter';
 import { ogImageMeta } from '../lib/ogImage';
-import LoadingProgress, { BUILD_STAGES } from '../components/LoadingProgress';
+import { raidCanonical, dungeonCanonical, validClassSpec, raidBossName, dungeonNameFor } from '../lib/seo';
+import LoadingProgress from '../components/LoadingProgress';
+import { BUILD_STAGES } from '../lib/loadingStages';
 import {
   getWclToken, getBlizzardToken, getRaidStructure, getDungeonRoster,
   POPULAR_SPECS, SPEC_IDS, MIDNIGHT_RAIDS, CLASS_IDS,
   MPLUS_DIFFICULTY, HEALER_SPECS, getSeasonState,
-  parseRaidDifficulty,
+  parseRaidDifficulty, errorMessage,
+  type WclZone,
 } from '../lib/wow';
 
 // BossContent awaits up to 50 concurrent WCL telemetry fetches + 25 Blizzard profile
@@ -32,9 +36,8 @@ interface PageProps {
 export async function generateMetadata({ searchParams }: PageProps): Promise<Metadata> {
   const sp = await searchParams;
   const season = await getSeasonState();
-  const cls = sp.class;
-  const spec = sp.spec;
-  const bossName = sp.bossName;
+  // Names come from the class list and the rosters, never from the URL (see lib/seo.ts).
+  const { cls, spec } = validClassSpec(sp.class, sp.spec);
   const diff = parseRaidDifficulty(sp.difficulty, season.defaultRaidDifficulty);
   const diffLabel = diff === 4 ? 'Heroic' : 'Mythic';
 
@@ -45,7 +48,8 @@ export async function generateMetadata({ searchParams }: PageProps): Promise<Met
   // branch those URLs got raid-flavored titles ("Mythic Raid Talents") that don't
   // apply to M+.
   if (sp.mode === 'dungeons') {
-    const dungeonName = sp.dungeonName;
+    const dungeonId = sp.dungeon ? parseInt(sp.dungeon) : null;
+    const dungeonName = cls && spec ? await dungeonNameFor(dungeonId) : null;
     if (cls && spec && dungeonName) {
       title = `Best ${spec} ${cls} Talents for ${dungeonName} Mythic+ | HotsBB`;
       description = `Best ${spec} ${cls} talent build for ${dungeonName} in Mythic+. Consensus talents and meta gear from top World of Warcraft M+ parses.`;
@@ -59,6 +63,7 @@ export async function generateMetadata({ searchParams }: PageProps): Promise<Met
     return {
       title,
       description,
+      alternates: { canonical: dungeonCanonical({ cls, spec, dungeon: dungeonName ? dungeonId : null, dungeonName }) },
       ...ogImageMeta({
         title, description,
         imageTitle: cls && spec ? `${spec} ${cls}` : 'Mythic+ Talents',
@@ -68,6 +73,9 @@ export async function generateMetadata({ searchParams }: PageProps): Promise<Met
       }),
     };
   }
+
+  const bossId = sp.boss ? parseInt(sp.boss) : null;
+  const bossName = cls && spec ? await raidBossName(bossId) : null;
 
   if (cls && spec && bossName) {
     title = `Best ${spec} ${cls} Talents for ${diffLabel} ${bossName} | HotsBB`;
@@ -86,6 +94,7 @@ export async function generateMetadata({ searchParams }: PageProps): Promise<Met
   return {
     title,
     description,
+    alternates: { canonical: raidCanonical({ cls, spec, difficulty: diff, boss: bossName ? bossId : null, bossName }) },
     ...ogImageMeta({
       title, description,
       imageTitle: cls && spec ? `${spec} ${cls}` : cls ? `${cls} Builds` : 'HotsBB Talents',
@@ -101,6 +110,9 @@ export async function generateMetadata({ searchParams }: PageProps): Promise<Met
     }),
   };
 }
+
+// A section of Blizzard's journal-encounter text, as far as the fight tags read it.
+interface JournalSection { title?: string; body_text?: string; sections?: JournalSection[] }
 
 // ─── Loading skeleton for boss content ────────────────────────────────────────
 
@@ -147,7 +159,7 @@ export default async function Home(props: PageProps) {
   const activeMetric: 'hps' | 'dps' = searchParams.metric === 'dps' ? 'dps' : searchParams.metric === 'hps' ? 'hps' : (isHealer ? 'hps' : 'dps');
 
   // Phase 1: zone structure (always needed for sidebar + boss grid)
-  let zones: any[] = [];
+  let zones: WclZone[] = [];
   let dungeons: Array<{ id: number; name: string; wclCdnId?: number; blizzardInstanceId?: number }> = [];
   let error: string | null = null;
   try {
@@ -156,22 +168,22 @@ export default async function Home(props: PageProps) {
       getRaidStructure(wclToken),
       getDungeonRoster(wclToken),
     ]);
-  } catch (err: any) {
-    error = err.message;
+  } catch (err: unknown) {
+    error = errorMessage(err);
   }
 
   // Phase 2: spec icons, boss images, class icons (all fast/cached)
-  let specIconMap: Record<string, string> = {};
-  let bossImageMap: Record<number, string> = {};
-  let dungeonImageMap: Record<number, string> = {};
-  let classIconMap: Record<string, string> = {};
-  let bossTagMap: Record<number, string[]> = {};
+  const specIconMap: Record<string, string> = {};
+  const bossImageMap: Record<number, string> = {};
+  const dungeonImageMap: Record<number, string> = {};
+  const classIconMap: Record<string, string> = {};
+  const bossTagMap: Record<number, string[]> = {};
 
   try {
     const blizzardToken = await getBlizzardToken();
     const raidEncounters = zones
-      .filter((z: any) => z.name in MIDNIGHT_RAIDS)
-      .flatMap((z: any) => z.encounters ?? []);
+      .filter(z => z.name in MIDNIGHT_RAIDS)
+      .flatMap(z => z.encounters ?? []);
 
     const fetches: Promise<void>[] = [
       // Dungeon images from Blizzard journal-instance media
@@ -211,7 +223,7 @@ export default async function Home(props: PageProps) {
         if (iconUrl) classIconMap[className] = iconUrl;
       })).then(() => {}),
       // Boss thumbnail images — try Blizzard journal first, fall back to WCL CDN
-      Promise.all(raidEncounters.map(async (enc: any) => {
+      Promise.all(raidEncounters.map(async enc => {
         const url = enc.journalID
           ? await unstable_cache(
               async () => {
@@ -230,7 +242,7 @@ export default async function Home(props: PageProps) {
       })).then(() => {}),
 
       // Fight profile tags from Blizzard journal encounter
-      Promise.all(raidEncounters.filter((enc: any) => enc.journalID).map(async (enc: any) => {
+      Promise.all(raidEncounters.filter(enc => enc.journalID).map(async enc => {
         const tags = await unstable_cache(
           async () => {
             const r = await fetch(
@@ -238,12 +250,12 @@ export default async function Home(props: PageProps) {
               { headers: { 'Authorization': `Bearer ${blizzardToken}` } }
             );
             if (!r.ok) throw new Error(`Blizzard boss tags fetch failed: ${r.status}`);
-            const data = await r.json();
+            const data: { sections?: JournalSection[] } = await r.json();
             const text = (data.sections ?? [])
-              .flatMap((s: any) => [
+              .flatMap(s => [
                 s.title ?? '',
                 s.body_text ?? '',
-                ...((s.sections ?? []).flatMap((sub: any) => [sub.title ?? '', sub.body_text ?? ''])),
+                ...((s.sections ?? []).flatMap(sub => [sub.title ?? '', sub.body_text ?? ''])),
               ])
               .join(' ')
               .replace(/<[^>]+>/g, ' ')
@@ -288,8 +300,8 @@ export default async function Home(props: PageProps) {
     await Promise.all(fetches);
   } catch {}
 
-  const activeRaids = zones.filter((z: any) => z.encounters?.length > 0 && z.name in MIDNIGHT_RAIDS);
-  const activeZone = activeRaids.find((z: any) => z.encounters?.some((e: any) => e.id === activeBossId));
+  const activeRaids = zones.filter(z => (z.encounters?.length ?? 0) > 0 && z.name in MIDNIGHT_RAIDS);
+  const activeZone = activeRaids.find(z => z.encounters?.some(e => e.id === activeBossId));
   const wclZoneId: number | null = activeZone?.id ?? null;
   const currentClassObj = POPULAR_SPECS.find(c => c.class === activeClass);
   const nodeColors = currentClassObj
@@ -331,6 +343,29 @@ export default async function Home(props: PageProps) {
     return `?${params.join('&')}`;
   };
 
+  // The page heading. Built from the class list and the rosters, not the URL's own
+  // bossName/dungeonName text, so it can only ever name a real encounter.
+  const headingSpec = currentClassObj?.specs.find(s => s === activeSpec) ?? null;
+  const headingBoss: string | null = headingSpec && activeMode === 'raids' && activeBossId
+    ? activeRaids.flatMap(z => z.encounters ?? []).find(e => e.id === activeBossId)?.name ?? null
+    : null;
+  const headingDungeon = headingSpec && activeMode === 'dungeons' && activeDungeonId
+    ? dungeons.find(d => d.id === activeDungeonId)?.name ?? null
+    : null;
+
+  const regionToggle = (
+    <div className="flex items-center gap-1 bg-zinc-900 rounded-lg p-0.5 border border-zinc-800/80">
+      <Link
+        href={activeMode === 'dungeons' ? getDungeonUrl({ region: 'global' }) : getFilterUrl({ region: 'global' })}
+        className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${activeRegion === 'global' ? 'bg-blue-500/15 text-blue-400 border border-blue-500/30' : 'text-zinc-500 hover:text-zinc-300'}`}
+      >Global</Link>
+      <Link
+        href={activeMode === 'dungeons' ? getDungeonUrl({ region: 'us-eu' }) : getFilterUrl({ region: 'us-eu' })}
+        className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${activeRegion === 'us-eu' ? 'bg-blue-500/15 text-blue-400 border border-blue-500/30' : 'text-zinc-500 hover:text-zinc-300'}`}
+      >US+EU</Link>
+    </div>
+  );
+
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-zinc-100 font-sans antialiased">
 
@@ -339,7 +374,7 @@ export default async function Home(props: PageProps) {
         <div className="px-4 md:px-5 h-12 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2 text-sm min-w-0 overflow-hidden">
             <Link href="/" className="font-black text-amber-400 tracking-widest uppercase text-xs hover:text-amber-300 transition-colors whitespace-nowrap">
-              HotsBB Talents
+              HotsBB<span className="hidden min-[360px]:inline"> Talents</span>
             </Link>
             {/* Only once an encounter is chosen — with both rosters on one page there is
                 no "mode" to name before that. */}
@@ -378,17 +413,9 @@ export default async function Home(props: PageProps) {
             className="hidden sm:inline-flex px-2.5 py-1 rounded-md text-xs font-bold text-amber-500/80 hover:text-amber-400 transition-colors whitespace-nowrap"
           >Addon</Link>
           {/* Region toggle — Global pools every region WCL has (including CN); US+EU
-              narrows to just those two for anyone who wants a Western-only view. */}
-          <div className="flex items-center gap-1 bg-zinc-900 rounded-lg p-0.5 border border-zinc-800/80">
-            <Link
-              href={activeMode === 'dungeons' ? getDungeonUrl({ region: 'global' }) : getFilterUrl({ region: 'global' })}
-              className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${activeRegion === 'global' ? 'bg-blue-500/15 text-blue-400 border border-blue-500/30' : 'text-zinc-500 hover:text-zinc-300'}`}
-            >Global</Link>
-            <Link
-              href={activeMode === 'dungeons' ? getDungeonUrl({ region: 'us-eu' }) : getFilterUrl({ region: 'us-eu' })}
-              className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${activeRegion === 'us-eu' ? 'bg-blue-500/15 text-blue-400 border border-blue-500/30' : 'text-zinc-500 hover:text-zinc-300'}`}
-            >US+EU</Link>
-          </div>
+              narrows to just those two for anyone who wants a Western-only view. On a
+              phone it lives in the menu: the header only fits one toggle beside it. */}
+          <div className="hidden sm:flex">{regionToggle}</div>
           {/* Difficulty toggle — raid only */}
           {activeMode === 'raids' && <div className="flex items-center gap-1 bg-zinc-900 rounded-lg p-0.5 border border-zinc-800/80">
             <Link
@@ -412,6 +439,12 @@ export default async function Home(props: PageProps) {
               Mythic
             </Link>
           </div>}
+          <MobileNav difficulty={activeDifficulty}>
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Region</span>
+              {regionToggle}
+            </div>
+          </MobileNav>
           </div>
         </div>
       </header>
@@ -531,6 +564,14 @@ export default async function Home(props: PageProps) {
               </div>
             ) : (
               <>
+                {currentClassObj && (
+                  <h1 className="text-lg md:text-xl font-black text-zinc-100 tracking-tight">
+                    <span className={currentClassObj.color}>{headingSpec ? `${headingSpec} ` : ''}{currentClassObj.class}</span>
+                    {headingBoss ? ` talents for ${activeDifficulty === 4 ? 'Heroic' : 'Mythic'} ${headingBoss}`
+                      : headingDungeon ? ` talents for ${headingDungeon} (Mythic+)`
+                      : ' talent builds'}
+                  </h1>
+                )}
                 {/* Spec pills. No Raid/Dungeon mode toggle any more: picking a spec shows
                     every raid boss AND every dungeon at once (below), so the only click
                     left is the encounter itself. ?mode=dungeons still exists in URLs —
@@ -591,10 +632,10 @@ export default async function Home(props: PageProps) {
                   return (
                     <BossPicker
                       groups={[
-                        ...activeRaids.map((raid: any) => ({
+                        ...activeRaids.map(raid => ({
                           id: raid.id as number,
                           displayName: MIDNIGHT_RAIDS[raid.name] ?? raid.name,
-                          bosses: raid.encounters.map((boss: any) => ({
+                          bosses: (raid.encounters ?? []).map(boss => ({
                             id: boss.id,
                             name: boss.name,
                             href: getFilterUrl({ boss: boss.id, bossName: boss.name }),

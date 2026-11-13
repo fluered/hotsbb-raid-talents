@@ -1,13 +1,25 @@
 'use client';
-import React, { useState, useEffect, useRef, use, Suspense } from 'react';
+import React, { useState, useEffect, useRef, use, Suspense, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import Image from 'next/image';
-import NewFeature from './NewFeature';
+import NewFeature, { type TalentNode } from './NewFeature';
 import CopyBuildButton from './CopyBuildButton';
-import PlayerCard from './PlayerCard';
+import PlayerCard, { type RankedPlayer } from './PlayerCard';
 import { useIsTouch } from './useIsTouch';
 import type { GearPhaseResult } from '../app/BossContent';
 import { loadMorePlayers } from '../app/actions/loadMorePlayers';
+
+// A per-mount clock for useSyncExternalStore: the first client read stamps Date.now()
+// and every later read returns that same value, so the snapshot is stable for the
+// lifetime of the mount (nothing ever notifies — hence the no-op subscribe).
+function createMountClock() {
+  let now: number | null = null;
+  return {
+    subscribe: () => () => {},
+    getSnapshot: () => (now ??= Date.now()),
+  };
+}
+const getServerNow = () => null;
 
 function hexFromTwColor(twColor: string): string {
   const m = twColor.match(/#[0-9A-Fa-f]{6}/);
@@ -41,7 +53,7 @@ export interface HeroVariant {
     trinketSynergy?: { names: [string, string]; count: number; pct: number } | null;
     ringSynergy?: { names: [string, string]; count: number; pct: number } | null;
   } | null;
-  players: any[];
+  players: RankedPlayer[];
   hasData?: boolean;
   avgDps?: number | null;
   topDps?: number | null;
@@ -148,13 +160,13 @@ function GearSection({
   variants: HeroVariant[];
   accentHex: string;
   colors: { color: string; border: string; activeBg: string };
-  layout: any[];
+  layout: TalentNode[];
   wowClass?: string;
   spec: string;
   wclUrl?: string;
   metric: string;
   onReady: () => void;
-  additionalPlayers: any[];
+  additionalPlayers: RankedPlayer[];
   canLoadMore: boolean;
   loadMorePoolSize?: number;
   loadingMore: boolean;
@@ -201,8 +213,8 @@ function GearSection({
   // additionalPlayers only ever applies to the Overall variant (see canLoadMore in the
   // parent) — appended here rather than in variantPlayers itself, since that array is
   // frozen inside the already-resolved gearPromise.
-  const basePlayers: any[] = variantPlayers[safeIdx] ?? [];
-  const players: any[] = active.id === null ? [...basePlayers, ...additionalPlayers] : basePlayers;
+  const basePlayers: RankedPlayer[] = variantPlayers[safeIdx] ?? [];
+  const players: RankedPlayer[] = active.id === null ? [...basePlayers, ...additionalPlayers] : basePlayers;
   const gearHasContent = gear && (gear.trinkets.length > 0 || gear.stats != null);
 
   const SLOT_LABELS: Record<string, string> = {
@@ -494,7 +506,7 @@ function GearSection({
             )}
           </div>
           <div className="space-y-4">
-            {players.map((player: any, idx: number) => (
+            {players.map((player, idx) => (
               <PlayerCard
                 key={`${active.id ?? 'all'}-${idx}`}
                 player={player}
@@ -548,7 +560,7 @@ export default function BossView({
 }: {
   variants: HeroVariant[];
   gearPromise?: Promise<GearPhaseResult>;
-  layout: any[];
+  layout: TalentNode[];
   colors: { color: string; border: string; activeBg: string };
   difficulty: number;
   spec: string;
@@ -575,14 +587,15 @@ export default function BossView({
   // doesn't know how to reproduce, so their player list stays fixed at the initial
   // batch. Reset whenever the active variant changes so switching tabs doesn't carry
   // over another variant's extra-loaded players.
-  const [additionalPlayers, setAdditionalPlayers] = useState<any[]>([]);
+  const [additionalPlayers, setAdditionalPlayers] = useState<RankedPlayer[]>([]);
   const [loadingMore, setLoadingMore] = useState(false);
   // "updated Xm ago" must not be computed during render: the server stamps its own
   // Date.now() into the SSR HTML and the client recomputes at hydration — crossing a
   // minute boundary in between logs a hydration mismatch and forces a client re-render.
-  // Client-only after mount instead.
-  const [clientNow, setClientNow] = useState<number | null>(null);
-  useEffect(() => { setClientNow(Date.now()); }, []);
+  // Client-only after mount instead: null on the server and through hydration, then
+  // this mount's own timestamp (see createMountClock).
+  const [mountClock] = useState(createMountClock);
+  const clientNow = useSyncExternalStore<number | null>(mountClock.subscribe, mountClock.getSnapshot, getServerNow);
 
   // Talent-name search: one box in the Consensus header drives every tree on the page
   // (consensus + each player card) — see NewFeature.searchQuery for the visual rules.
@@ -635,7 +648,7 @@ export default function BossView({
     ? active.id
     : (variants.filter(v => v.id !== null).sort((a, b) => b.count - a.count)[0]?.id ?? undefined);
   const talentSearchMatches = talentSearchNeedle
-    ? layout.filter((n: any) =>
+    ? layout.filter((n) =>
         (n.section !== 'hero' || n.heroTreeId == null || n.heroTreeId === consensusHeroTreeId)
         && ((n.name ?? '').toLowerCase().includes(talentSearchNeedle)
           || (n.choiceB?.name ?? '').toLowerCase().includes(talentSearchNeedle))
@@ -643,7 +656,7 @@ export default function BossView({
     : null;
 
   const canLoadMore = active.id === null && bossId != null && region != null && loadMorePoolSize != null && wowClass != null;
-  const handleLoadMore = async (_alreadyShown: number) => {
+  const handleLoadMore = async () => {
     if (!canLoadMore || loadingMore) return;
     setLoadingMore(true);
     try {
@@ -651,7 +664,7 @@ export default function BossView({
       // skips these, so it can never re-serve someone the page is already showing
       // (raw-index slicing could, whenever the initial telemetry-filtered selection
       // skipped a candidate).
-      const exclude = [...active.players, ...additionalPlayers].map((p: any) => ({
+      const exclude = [...active.players, ...additionalPlayers].map((p) => ({
         code: p.report?.code ?? '',
         fightId: p.report?.fightID ?? 0,
         name: p.name ?? '',
@@ -963,7 +976,7 @@ export default function BossView({
               )}
             </div>
             <div className="space-y-4">
-              {active.players.slice(0, 10).map((player: any, idx: number) => (
+              {active.players.slice(0, 10).map((player, idx) => (
                 <PlayerCard
                   key={`${active.id ?? 'all'}-${idx}`}
                   player={player}

@@ -5,13 +5,55 @@ import Image from 'next/image';
 import { normalizeTalentTree } from '../lib/talentNormalize';
 import { useIsTouch } from './useIsTouch';
 
-function makeColMap(nodes: any[]): Map<number, number> {
-  const unique = [...new Set(nodes.map((n: any) => n.column as number))].sort((a, b) => a - b);
+export interface TalentChoice {
+  name: string;
+  spellId?: number | null;
+  iconUrl?: string;
+  description?: string;
+  castTime?: string;
+  range?: string;
+  cost?: string;
+  cooldown?: string;
+}
+
+export interface TalentNode {
+  nodeID: number;
+  row: number;
+  column: number;
+  section?: 'class' | 'hero' | 'spec';
+  heroTreeId: number | null;
+  name: string;
+  maxRanks: number;
+  spellId?: number | null;
+  iconUrl?: string;
+  description?: string;
+  castTime?: string;
+  range?: string;
+  cost?: string;
+  cooldown?: string;
+  isChoice?: boolean;
+  choiceBEntryId?: number | null;
+  choiceB?: TalentChoice | null;
+  isTieredApex?: boolean;
+}
+
+export interface TalentTreeEntry {
+  nodeID: number;
+  rank: number;
+  id?: number;
+}
+
+export interface TalentTelemetry {
+  event?: { talentTree?: TalentTreeEntry[] } | null;
+}
+
+function makeColMap(nodes: TalentNode[]): Map<number, number> {
+  const unique = [...new Set(nodes.map((n) => n.column as number))].sort((a, b) => a - b);
   return new Map(unique.map((c, i) => [c, i + 1]));
 }
 
 interface TooltipState {
-  node: any;
+  node: TalentNode;
   rank: number;
   showRank: boolean;
   rect: DOMRect;
@@ -133,7 +175,7 @@ function ChoicePopup({
   pinned,
   onClose,
 }: {
-  node: any;
+  node: TalentNode;
   rect: DOMRect;
   aChosen: boolean;
   choiceFreq?: { aPct: number; bPct: number };
@@ -237,8 +279,8 @@ export default function NewFeature({
   metaTelemetry,
   searchQuery,
 }: {
-  telemetry: any;
-  layout: any[];
+  telemetry: TalentTelemetry | null | undefined;
+  layout: TalentNode[];
   colors: { color: string; border: string; activeBg: string };
   frequencyMap?: Record<number, number>;
   rankDistributionMap?: Record<number, Record<number, number>>;
@@ -249,7 +291,7 @@ export default function NewFeature({
   specName?: string;
   heroTrees?: Array<{ name: string; imageUrl?: string; pct: number }>;
   onHeroTreeClick?: (name: string) => void;
-  topPlayerTelemetry?: any;
+  topPlayerTelemetry?: TalentTelemetry | null;
   activeHeroTreeId?: number;
   consensusEntryIds?: Record<number, number>;
   choiceFreqMap?: Record<number, { aEntryId: number; bEntryId: number; aPct: number; bPct: number }>;
@@ -271,16 +313,16 @@ export default function NewFeature({
   // jumping straight to Wowhead. Desktop keeps hover-to-preview / click-to-open.
   const isTouch = useIsTouch();
   // pinned = opened via click/tap and stays open until an outside tap or re-click; unpinned = mouse-hover preview
-  const [choiceHover, setChoiceHover] = useState<{ node: any; rect: DOMRect; aChosen: boolean; pinned: boolean } | null>(null);
+  const [choiceHover, setChoiceHover] = useState<{ node: TalentNode; rect: DOMRect; aChosen: boolean; pinned: boolean } | null>(null);
   // Normalizing here (not just upstream) matters specifically for individual player
   // cards, which feed this component a player's raw WCL telemetry directly rather than
   // the already-normalized consensus data — a no-op when the data's already clean.
   const activeNodes = normalizeTalentTree(telemetry?.event?.talentTree || []);
-  const activeNodeIds = new Set<number>(activeNodes.map((t: any) => t.nodeID));
+  const activeNodeIds = new Set<number>(activeNodes.map((t) => t.nodeID));
 
   // Nodes where the #1 parser diverges from consensus: they take it but consensus doesn't (or vice versa)
   const topPlayerNodeIds = topPlayerTelemetry
-    ? new Set<number>((topPlayerTelemetry?.event?.talentTree || []).map((t: any) => t.nodeID))
+    ? new Set<number>((topPlayerTelemetry?.event?.talentTree || []).map((t) => t.nodeID))
     : null;
   const divergentNodeIds = topPlayerNodeIds
     ? new Set<number>([...activeNodeIds, ...topPlayerNodeIds].filter(id => activeNodeIds.has(id) !== topPlayerNodeIds!.has(id)))
@@ -292,7 +334,7 @@ export default function NewFeature({
   // but this player skipped it") — mirroring topPlayerTakes' asymmetry above, since
   // "picked something extra" is the noteworthy divergence, not "missing a pick."
   const metaNodeIds = metaTelemetry
-    ? new Set<number>(normalizeTalentTree(metaTelemetry?.event?.talentTree || []).map((t: any) => t.nodeID))
+    ? new Set<number>(normalizeTalentTree(metaTelemetry?.event?.talentTree || []).map((t) => t.nodeID))
     : null;
   const offMetaNodeIds = metaNodeIds
     ? new Set<number>([...activeNodeIds].filter(id => !metaNodeIds!.has(id)))
@@ -317,7 +359,7 @@ export default function NewFeature({
 
   // Keep only the active hero tree (or all if none active).
   // Shared gateway nodes (heroTreeId === null) always show regardless of which tree is active.
-  const visibleLayout = layout.filter((n: any) => {
+  const visibleLayout = layout.filter((n) => {
     if (n.section !== 'hero') return true;
     if (effectiveHeroTreeIds.size === 0) return true;
     if (n.heroTreeId === null) return true;
@@ -325,9 +367,9 @@ export default function NewFeature({
   });
 
   if (process.env.NODE_ENV === 'development') {
-    const allHeroNodes = layout.filter((n: any) => n.section === 'hero');
-    const visibleHeroNodes = visibleLayout.filter((n: any) => n.section === 'hero');
-    const heroTreeIdSet = new Set(allHeroNodes.map((n: any) => n.heroTreeId));
+    const allHeroNodes = layout.filter((n) => n.section === 'hero');
+    const visibleHeroNodes = visibleLayout.filter((n) => n.section === 'hero');
+    const heroTreeIdSet = new Set(allHeroNodes.map((n) => n.heroTreeId));
     console.log('[HeroTree]', {
       activeHeroTreeId,
       activeHeroTreeIds: [...activeHeroTreeIds],
@@ -339,9 +381,9 @@ export default function NewFeature({
   }
 
   // Per-section sequential column normalization
-  const classSectionNodes = visibleLayout.filter((n: any) => n.section === 'class');
-  const heroSectionNodes  = visibleLayout.filter((n: any) => n.section === 'hero');
-  const specSectionNodes  = visibleLayout.filter((n: any) => n.section === 'spec');
+  const classSectionNodes = visibleLayout.filter((n) => n.section === 'class');
+  const heroSectionNodes  = visibleLayout.filter((n) => n.section === 'hero');
+  const specSectionNodes  = visibleLayout.filter((n) => n.section === 'spec');
 
   const heroColMap  = makeColMap(heroSectionNodes);
   const specColMap  = makeColMap(specSectionNodes);
@@ -356,31 +398,31 @@ export default function NewFeature({
   // gap of 16) from gateway nodes that sit just outside the main class range (like Mistweaver's
   // col-10 gateway, gap of only 3). Only nodes strictly beyond classClusterMax are treated as
   // true bridge nodes that need to be repositioned into the hero section area.
-  const sortedClassCols = [...new Set(classSectionNodes.map((n: any) => n.column as number))].sort((a, b) => a - b);
+  const sortedClassCols = [...new Set(classSectionNodes.map((n) => n.column as number))].sort((a, b) => a - b);
   let classClusterMax = sortedClassCols.at(-1) ?? 0;
   for (let i = 1; i < sortedClassCols.length; i++) {
     if (sortedClassCols[i] - sortedClassCols[i - 1] > 5) { classClusterMax = sortedClassCols[i - 1]; break; }
   }
 
   // Stored by nodeID to avoid any column-type ambiguity in later lookups.
-  const heroColValues = heroSectionNodes.map((n: any) => n.column);
+  const heroColValues = heroSectionNodes.map((n) => n.column);
   const bridgeClassNodeIds = new Set<number>(
     classSectionNodes
-      .filter((n: any) => heroColValues.includes(n.column) && (n.column as number) > classClusterMax)
-      .map((n: any) => n.nodeID as number)
+      .filter((n) => heroColValues.includes(n.column) && (n.column as number) > classClusterMax)
+      .map((n) => n.nodeID as number)
   );
 
   // Full set of columns used by ANY hero tree (including inactive ones).
   // Used to suppress class nodes that are bridges for a different hero tree than the active one.
   const allHeroColSet = new Set(
-    layout.filter((n: any) => n.section === 'hero').map((n: any) => n.column)
+    layout.filter((n) => n.section === 'hero').map((n) => n.column)
   );
 
   // Outlier class nodes (any class node at a column beyond classClusterMax that overlaps any hero
   // tree column) are repositioned into the hero section area when their tree is active, or
   // suppressed when inactive. Either way their column must not inflate classMaxCol and heroOffset.
   const classColMap = makeColMap(
-    classSectionNodes.filter((n: any) => !(allHeroColSet.has(n.column) && (n.column as number) > classClusterMax))
+    classSectionNodes.filter((n) => !(allHeroColSet.has(n.column) && (n.column as number) > classClusterMax))
   );
   const classMaxCol = classColMap.size || 0;
 
@@ -394,7 +436,7 @@ export default function NewFeature({
   let legacyColMap: Map<number, number> | null = null;
   let legacyMaxCol = 0;
   if (!hasSections) {
-    const uniqueCols = [...new Set(visibleLayout.map((n: any) => n.column || 0))].sort((a, b) => a - b);
+    const uniqueCols = [...new Set(visibleLayout.map((n) => n.column || 0))].sort((a, b) => a - b);
     let remapped = 0;
     legacyColMap = new Map();
     for (let i = 0; i < uniqueCols.length; i++) {
@@ -418,19 +460,19 @@ export default function NewFeature({
   // Shift hero nodes so they start below the portrait (row 4+) when a portrait is shown.
   // Portrait is 4.5rem tall starting at 1.875rem, clearing at ~row 4 (7.625rem from top).
   // When no portrait, fall back to the old "bring nodes close to class nodes" heuristic.
-  const classMinRow  = classSectionNodes.length > 0 ? Math.min(...classSectionNodes.map((n: any) => n.row)) : 1;
-  const heroMinRow   = heroSectionNodes.length  > 0 ? Math.min(...heroSectionNodes.map((n: any) => n.row))  : 1;
+  const classMinRow  = classSectionNodes.length > 0 ? Math.min(...classSectionNodes.map((n) => n.row)) : 1;
+  const heroMinRow   = heroSectionNodes.length  > 0 ? Math.min(...heroSectionNodes.map((n) => n.row))  : 1;
   const hasPortrait  = HERO_ROW_OFFSET > 0 && (!!heroTreeImageUrl || (heroTrees != null && heroTrees.length > 0));
   // Portrait is 4.5rem tall starting at 1.875rem. Hero nodes must start after it clears.
   // Use the 2nd distinct class row to determine when the portrait is clear — specs like Evoker
   // have a gap at class row 3 (rows: 2, 4, 5…) which means classMinRow alone underestimates
   // how far down the portrait extends relative to the first hero row.
   const classSortedRows = classSectionNodes.length > 0
-    ? [...new Set(classSectionNodes.map((n: any) => n.row as number))].sort((a, b) => a - b)
+    ? [...new Set(classSectionNodes.map((n) => n.row as number))].sort((a, b) => a - b)
     : [1];
   // A class node is a true outlier only if it sits strictly beyond the main cluster max.
   // classClusterMax is already computed above alongside bridgeClassNodeIds.
-  const hasOutlierClassCol = classSectionNodes.some((n: any) => allHeroColSet.has(n.column) && (n.column as number) > classClusterMax);
+  const hasOutlierClassCol = classSectionNodes.some((n) => allHeroColSet.has(n.column) && (n.column as number) > classClusterMax);
   const classRowOffset = hasOutlierClassCol ? (classMinRow - 1) : 0;
   // When the class tree has a row gap (classRowOffset > 0) but no bridge class node is visible
   // (e.g. Flameshaper view), hero nodes would start one row higher than in bridge views — apply +1
@@ -448,7 +490,7 @@ export default function NewFeature({
     ? Math.min(heroRowShiftRaw, heroMinRow - classRowOffset - 3)
     : heroRowShiftRaw;
 
-  function getMappedRow(node: any): number {
+  function getMappedRow(node: TalentNode): number {
     const r = node.row - classRowOffset;
     if (hasSections && !heroOnly && heroMaxCol > 0) {
       if (node.section === 'hero') return r - heroRowShift + HERO_ROW_OFFSET;
@@ -460,16 +502,16 @@ export default function NewFeature({
   }
 
   // Center any hero node that is the only node in its row
-  const heroRows         = [...new Set(heroSectionNodes.map((n: any) => n.row))].sort((a: number, b: number) => a - b);
+  const heroRows         = [...new Set(heroSectionNodes.map((n) => n.row))].sort((a: number, b: number) => a - b);
   const heroCenterCol    = Math.ceil(heroMaxCol / 2);
   const heroSingleRows   = new Set<number>(
-    heroRows.filter(row => heroSectionNodes.filter((n: any) => n.row === row).length === 1)
+    heroRows.filter(row => heroSectionNodes.filter((n) => n.row === row).length === 1)
   );
   const heroGatewayIds   = new Set<number>(
-    heroSectionNodes.filter((n: any) => heroSingleRows.has(n.row)).map((n: any) => n.nodeID)
+    heroSectionNodes.filter((n) => heroSingleRows.has(n.row)).map((n) => n.nodeID)
   );
 
-  function getMappedCol(node: any): number {
+  function getMappedCol(node: TalentNode): number {
     if (heroOnly) return heroOnlyColMap!.get(node.column) ?? 1;
     if (!hasSections) return legacyColMap!.get(node.column) ?? 1;
     if (node.section === 'class') {
@@ -494,7 +536,7 @@ export default function NewFeature({
 
   // Gateway nodes in even-column hero sections span 2 columns so the icon floats
   // in the gap between the two center nodes of each regular row.
-  function getColSpan(node: any): number {
+  function getColSpan(node: TalentNode): number {
     if (hasSections && !heroOnly && node.section === 'hero' && heroGatewayIds.has(node.nodeID) && heroMaxCol % 2 === 0 && effectiveHeroTreeIds.size === 1) {
       return 2;
     }
@@ -504,7 +546,7 @@ export default function NewFeature({
   // Plain functions, not useCallback: nothing downstream is memoized, so the
   // callbacks bought nothing, and the react-hooks lint rules reject manual
   // dependency lists (these now close over isTouch) that don't match inference.
-  const handleMouseEnter = (e: React.MouseEvent, node: any, rank: number, showRank: boolean, freq?: number) => {
+  const handleMouseEnter = (e: React.MouseEvent, node: TalentNode, rank: number, showRank: boolean, freq?: number) => {
     if (isTouch || !node.name) return;
     const target = e.currentTarget as HTMLElement | null;
     // Suspense can replay a queued hover event after its target has already been
@@ -527,7 +569,7 @@ export default function NewFeature({
   // Touch: a tap pins the tooltip for this node (it carries the Wowhead link).
   // Dismissal is the backdrop's job — once pinned, it covers every node, so a
   // second tap can only ever land on it.
-  const handleTouchPin = (e: React.MouseEvent, node: any, rank: number, showRank: boolean, freq?: number) => {
+  const handleTouchPin = (e: React.MouseEvent, node: TalentNode, rank: number, showRank: boolean, freq?: number) => {
     if (!node.name) return;
     const target = e.currentTarget as HTMLElement | null;
     if (!target) return;
@@ -623,8 +665,8 @@ export default function NewFeature({
           </div>
         )}
 
-        {renderNodes.map((node: any) => {
-          const activeNode = activeNodes.find((t: any) => t.nodeID === node.nodeID);
+        {renderNodes.map((node) => {
+          const activeNode = activeNodes.find((t) => t.nodeID === node.nodeID);
           const isActive = !!activeNode;
           const rank = activeNode?.rank ?? 0;
           const showRank = isActive && node.maxRanks > 1;
@@ -670,7 +712,7 @@ export default function NewFeature({
           const chosenIsB = node.isChoice && node.choiceB != null
             && node.choiceBEntryId != null
             && consensusEntryId === node.choiceBEntryId;
-          const displayNode = chosenIsB
+          const displayNode = chosenIsB && node.choiceB
             ? { ...node, name: node.choiceB.name, spellId: node.choiceB.spellId, iconUrl: node.choiceB.iconUrl, description: node.choiceB.description, castTime: node.choiceB.castTime, range: node.choiceB.range, cost: node.choiceB.cost, cooldown: node.choiceB.cooldown }
             : node;
 
@@ -815,11 +857,11 @@ export default function NewFeature({
       {offMetaNodeIds && renderNodes.some(n => offMetaNodeIds.has(n.nodeID) && activeNodeIds.has(n.nodeID)) && (
         <div className="flex items-center gap-1.5 mt-1.5 text-[9px] text-zinc-500">
           <span className="w-3.5 h-3.5 rounded-full border-2 border-amber-400 flex-shrink-0" />
-          <span>This player's build includes a talent not in the meta consensus</span>
+          <span>This player&apos;s build includes a talent not in the meta consensus</span>
         </div>
       )}
 
-      {renderNodes.some((n: any) => n.isTieredApex) && (
+      {renderNodes.some((n) => n.isTieredApex) && (
         <div className="flex items-center gap-1.5 mt-1.5 text-[9px] text-zinc-500">
           <span className="w-3.5 h-3.5 rounded-full ring-2 ring-violet-400/70 flex-shrink-0" />
           <span>Apex Talent — some top players take fewer points here to invest elsewhere</span>

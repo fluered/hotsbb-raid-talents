@@ -1,15 +1,19 @@
 import React from 'react';
-import { unstable_cache } from 'next/cache';
 import BossView, { type HeroVariant } from '../components/BossView';
+import type { TalentNode } from '../components/NewFeature';
+import type { RankedPlayer } from '../components/PlayerCard';
 import { logServerError } from '../lib/persistentCache';
+import { isRateLimitError } from '../lib/wclTypes';
 import {
   getWclToken, getBlizzardToken, getRankingsCachedSWR, fetchTelemetryBatchCachedUnstable,
   getTalentTreeId, getCachedTalentLayout, playerRegion, getBlizzardTokensForRegions,
   computeConsensus, getActiveHeroTreeId, makeTelemetry, computeFrequencyPct, computeRankDistribution,
-  mapConcurrent, normalizeTalentTree, deriveTalentStringAndProfileNodes, blizzardCharacterProfileFetch,
+  normalizeTalentTree, deriveTalentStringAndProfileNodes, blizzardCharacterProfileFetch,
   selectPlayersWithValidTelemetry, resolveMetaBuildPick,
   harvestEntryTalentPairs, translateEntryIds, harvestLoadoutStrings, generatePlayerTalentString,
-  SPEC_IDS, ENCHANT_SLOT_LABELS, ENCHANT_SLOT_ORDER,
+  ENCHANT_SLOT_LABELS, ENCHANT_SLOT_ORDER,
+  type WclRankingRow, type WclTelemetry, type WclCombatantInfoEvent,
+  type BlizzardLoadoutNode, type BlizzardCharacterMedia,
 } from '../lib/wow';
 
 function stripWowCodes(text: string): string {
@@ -22,6 +26,73 @@ function stripWowCodes(text: string): string {
     .trim();
 }
 
+// The fields this file reads from Blizzard's character equipment and statistics
+// profiles, and from the static item endpoint's stats/spells lists.
+interface BlizzardItemStat {
+  is_negated?: boolean;
+  display?: { display_string?: string };
+}
+
+interface BlizzardItemSpell {
+  description?: string;
+}
+
+// Blizzard has returned item level both as a bare number and as { value }.
+type BlizzardItemLevel = number | { value?: number } | null;
+
+interface BlizzardEquippedItem {
+  name?: string;
+  slot?: { type?: string };
+  item?: { id?: number };
+  item_level?: BlizzardItemLevel;
+  level?: BlizzardItemLevel;
+  quality?: { type?: string };
+  crafted_quality?: unknown;
+  bonus_list?: number[];
+  sockets?: Array<{ item?: { id?: number; name?: string } }>;
+  spells?: BlizzardItemSpell[];
+  stats?: BlizzardItemStat[];
+  enchantments?: Array<{
+    display_string?: string;
+    enchantment_id?: number;
+    enchantment_slot?: { type?: string };
+    source_item?: { id?: number; name?: string };
+  }>;
+}
+
+interface BlizzardEquipmentProfile {
+  equipped_items?: BlizzardEquippedItem[];
+}
+
+interface BlizzardStatisticsProfile {
+  spell_haste?: { value?: number };
+  melee_haste?: { value?: number };
+  ranged_haste?: { value?: number };
+  spell_crit?: { value?: number };
+  melee_crit?: { value?: number };
+  ranged_crit?: { value?: number };
+  mastery?: { value?: number };
+  versatility_damage_done_bonus?: number;
+}
+
+// Real CombatantInfo events also list the player's active auras (flask, food, rune).
+type GearPhaseTelemetry = Omit<WclTelemetry, 'event'> & {
+  event: (WclCombatantInfoEvent & { auras?: Array<{ name?: string; ability?: number }> }) | null;
+};
+
+// One player card as the client receives it: the ranking row (minus _tp/_tg) plus
+// everything resolved for it here. entryIds is attached after the bridge harvest.
+type DetailedPlayer = WclRankingRow & {
+  telemetry: WclTelemetry | null;
+  talentString: string | null;
+  renderUrl: string | null;
+  profileNodes: BlizzardLoadoutNode[];
+  entryIds?: Record<number, number>;
+};
+
+type TalentLayout = Awaited<ReturnType<typeof getCachedTalentLayout>>['layout'];
+type VariantGear = NonNullable<HeroVariant['gear']>;
+
 interface HeroTreeConsensusBase {
   id: number;
   name: string;
@@ -30,7 +101,7 @@ interface HeroTreeConsensusBase {
   count: number;
   treeEquipIndices: number[];
   talentString: string | null;
-  telemetry: any;
+  telemetry: ReturnType<typeof makeTelemetry>;
   entryIds: Record<number, number>;
   frequencyPct: Record<number, number>;
   rankDistribution: Record<number, Record<number, number>>;
@@ -43,7 +114,7 @@ interface HeroTreeConsensusBase {
 
 export type GearPhaseResult = {
   variantGear: Array<HeroVariant['gear']>;
-  variantPlayers: Array<any[]>;
+  variantPlayers: RankedPlayer[][];
 };
 
 async function computeGearPhase({
@@ -55,30 +126,28 @@ async function computeGearPhase({
   detailedRankingsBase,
   heroTreeConsensusBase,
   blizzardToken,
-  CONSENSUS_N,
   DISPLAY_N,
   skeletonMap,
 }: {
-  blizzardEquipmentP: Promise<any[]>;
-  blizzardStatsP: Promise<any[]>;
-  blizzardMediaP: Promise<any[]>;
-  allTelemetryData: any[];
+  blizzardEquipmentP: Promise<Array<BlizzardEquipmentProfile | null>>;
+  blizzardStatsP: Promise<Array<BlizzardStatisticsProfile | null>>;
+  blizzardMediaP: Promise<Array<BlizzardCharacterMedia | null>>;
+  allTelemetryData: Array<GearPhaseTelemetry | null>;
   wclItemData: Map<number, { ilvl: number; bonusIds: number[]; icon: string }>;
-  detailedRankingsBase: any[];
+  detailedRankingsBase: DetailedPlayer[];
   heroTreeConsensusBase: HeroTreeConsensusBase[];
   blizzardToken: string;
-  CONSENSUS_N: number;
   DISPLAY_N: number;
-  skeletonMap: any[];
+  skeletonMap: TalentLayout;
 }): Promise<GearPhaseResult> {
   const [blizzardEquipment, blizzardStats, blizzardMedia] = await Promise.all([
     blizzardEquipmentP, blizzardStatsP, blizzardMediaP,
   ]);
 
   // Enrich player records with avatar URLs now that media is available
-  const detailedRankings = detailedRankingsBase.map((player: any, idx: number) => ({
+  const detailedRankings = detailedRankingsBase.map((player, idx): DetailedPlayer => ({
     ...player,
-    renderUrl: blizzardMedia[idx]?.assets?.find((a: any) => a.key === 'avatar')?.value ?? null,
+    renderUrl: blizzardMedia[idx]?.assets?.find(a => a.key === 'avatar')?.value ?? null,
   }));
 
   const TRACKED_GEAR_SLOTS = ['HEAD', 'NECK', 'SHOULDER', 'BACK', 'CHEST', 'WRIST', 'HANDS', 'WAIST', 'LEGS', 'FEET', 'FINGER', 'MAIN_HAND', 'OFF_HAND'];
@@ -105,7 +174,7 @@ async function computeGearPhase({
       const eqIlvl: number = (rawIlvl !== null && typeof rawIlvl === 'object' ? rawIlvl.value : rawIlvl) ?? 0;
 
       if (slot === 'TRINKET_1' || slot === 'TRINKET_2') {
-        const itemName: string = item.name;
+        const itemName = item.name;
         if (itemName && eqIlvl > 0) {
           const key = `${itemName}|${eqIlvl}`;
           if (!trinketPlayerSets.has(key)) trinketPlayerSets.set(key, { players: new Set(), itemId: eqItemId, ilvl: eqIlvl, name: itemName });
@@ -115,7 +184,7 @@ async function computeGearPhase({
         }
       }
       if (slot === 'FINGER_1' || slot === 'FINGER_2') {
-        const itemName: string = item.name;
+        const itemName = item.name;
         if (itemName) {
           if (!playerRingNames.has(i)) playerRingNames.set(i, []);
           playerRingNames.get(i)!.push(itemName);
@@ -150,10 +219,10 @@ async function computeGearPhase({
       if (eqItemId && eqIlvl > 0) {
         const existing = itemDescFromEquip.get(eqItemId);
         if (!existing || existing.ilvl < eqIlvl) {
-          const spellDescs = (item.spells ?? []).map((s: any) => stripWowCodes(s.description ?? '')).filter(Boolean);
+          const spellDescs = (item.spells ?? []).map(s => stripWowCodes(s.description ?? '')).filter(Boolean);
           const statsStr = (item.stats ?? [])
-            .filter((s: any) => s.is_negated !== true)
-            .map((s: any) => s.display?.display_string ?? '')
+            .filter(s => s.is_negated !== true)
+            .map(s => s.display?.display_string ?? '')
             .filter(Boolean)
             .join(' · ')
             .replace(/\+(\d[\d,]*) (?:\[[^\]]+\]|Strength|Intellect|Agility)/g, '+$1 Primary Stat');
@@ -181,10 +250,10 @@ async function computeGearPhase({
   let wclGearPlayerCount = 0;
   for (let i = 0; i < allTelemetryData.length; i++) {
     if (blizzardEquipment[i]) continue;
-    const gear = (allTelemetryData[i]?.event?.gear ?? []) as any[];
+    const gear = allTelemetryData[i]?.event?.gear ?? [];
     if (!gear.length) continue;
     wclGearPlayerCount++;
-    gear.forEach((slot: any, idx: number) => {
+    gear.forEach((slot, idx) => {
       const itemId: number = slot.id ?? 0;
       const ilvl: number = slot.itemLevel ?? 0;
       if (!itemId) return;
@@ -348,7 +417,7 @@ async function computeGearPhase({
   // Consumables from CombatantInfo auras
   const consumableMap = new Map<string, { players: Set<number>; spellId: number; type: ConsumeType }>();
   for (let i = 0; i < allTelemetryData.length; i++) {
-    for (const aura of (allTelemetryData[i]?.event?.auras ?? []) as any[]) {
+    for (const aura of allTelemetryData[i]?.event?.auras ?? []) {
       const name: string = aura.name ?? '';
       if (!name) continue;
       let type: ConsumeType | null = null;
@@ -371,20 +440,26 @@ async function computeGearPhase({
   }
 
   // ── Per-hero-tree gear aggregation ──────────────────────────────────────
+  type TreeSlotItem = { name: string; count: number; pct: number; itemId: number; quality: string; iconUrl: string };
   const heroTreeGear: Array<{
     gear: {
-      trinkets: any[]; gems: any[]; enchants: any[]; consumables: any[];
+      trinkets: Array<{ name: string; count: number; pct: number; itemId: number; iconUrl: string; description?: string }>;
+      gems: Array<{ name: string; count: number; pct: number; itemId: number; iconUrl: string; description: string }>;
+      enchants: Array<{ slot: string; name: string; count: number; pct: number; sourceItemId?: number; iconUrl: string; description: string }>;
+      consumables: Array<{ name: string; type: ConsumeType; count: number; pct: number; spellId: number; iconUrl: string }>;
       avgItemLevel: number | null;
       stats: { haste: number; crit: number; mastery: number; versatility: number } | null;
-      playerCount: number; gearBySlotRaw: Record<string, any[]>;
+      playerCount: number;
+      gearBySlotRaw?: Record<string, TreeSlotItem[]>;
+      gearBySlot?: Record<string, Array<TreeSlotItem & { description: string }>>;
     };
-    topPlayers: any[];
+    topPlayers: DetailedPlayer[];
   }> = [];
 
   for (const htBase of heroTreeConsensusBase) {
     const { id, treeEquipIndices } = htBase;
 
-    const treeTopPlayers = detailedRankings.filter((player: any) =>
+    const treeTopPlayers = detailedRankings.filter(player =>
       getActiveHeroTreeId(player.telemetry?.event?.talentTree || [], skeletonMap) === id
     );
 
@@ -398,7 +473,7 @@ async function computeGearPhase({
       for (const item of equip.equipped_items ?? []) {
         const slot = item.slot?.type ?? '';
         if (slot === 'TRINKET_1' || slot === 'TRINKET_2') {
-          const itemName: string = item.name;
+          const itemName = item.name;
           if (!itemName) continue;
           if (!treeTrinketSets.has(itemName)) treeTrinketSets.set(itemName, { players: new Set(), itemId: item.item?.id ?? 0 });
           treeTrinketSets.get(itemName)!.players.add(i);
@@ -472,7 +547,7 @@ async function computeGearPhase({
     // Consumables per hero path
     const treeConsumableMap = new Map<string, { players: Set<number>; spellId: number; type: ConsumeType }>();
     for (const i of treeEquipIndices) {
-      for (const aura of (allTelemetryData[i]?.event?.auras ?? []) as any[]) {
+      for (const aura of allTelemetryData[i]?.event?.auras ?? []) {
         const auraName: string = aura.name ?? '';
         if (!auraName) continue;
         let auraType: ConsumeType | null = null;
@@ -579,7 +654,7 @@ async function computeGearPhase({
     for (const t of htGear.gear?.trinkets ?? []) if (t.itemId) allItemIds.add(t.itemId);
     for (const g of htGear.gear?.gems ?? []) if (g.itemId) allItemIds.add(g.itemId);
     for (const items of Object.values(htGear.gear?.gearBySlotRaw ?? {})) {
-      for (const item of items as any[]) if (item.itemId) allItemIds.add(item.itemId);
+      for (const item of items) if (item.itemId) allItemIds.add(item.itemId);
     }
   }
   for (const items of Object.values(gearBySlotRaw)) {
@@ -676,8 +751,8 @@ async function computeGearPhase({
           const preview = itemData.preview_item ?? itemData;
           const gemBonus = stripWowCodes(preview.gem_properties?.bonus?.name ?? preview.gem_properties?.bonus?.properties ?? '');
           const blizzardStatsStr = (preview.stats ?? [])
-            .filter((s: any) => s.is_negated !== true)
-            .map((s: any) => s.display?.display_string ?? '')
+            .filter((s: BlizzardItemStat) => s.is_negated !== true)
+            .map((s: BlizzardItemStat) => s.display?.display_string ?? '')
             .filter(Boolean).join(' · ')
             .replace(/\+(\d[\d,]*) (?:\[[^\]]+\]|Strength|Intellect|Agility)/g, '+$1 Primary Stat');
           descById.set(itemId, wowheadDesc || itemDescFromEquip.get(itemId)?.text || blizzardStatsStr || gemBonus || stripWowCodes(preview.description ?? ''));
@@ -694,7 +769,7 @@ async function computeGearPhase({
         if (r.ok) {
           const itemData = await r.json();
           const preview = itemData.preview_item ?? itemData;
-          const spellDescs: string[] = (preview.spells ?? []).map((s: any) => stripWowCodes(s.description ?? '')).filter(Boolean);
+          const spellDescs: string[] = (preview.spells ?? []).map((s: BlizzardItemSpell) => stripWowCodes(s.description ?? '')).filter(Boolean);
           descById.set(itemId, spellDescs.join('\n') || stripWowCodes(preview.description ?? ''));
         }
       } catch {}
@@ -708,7 +783,7 @@ async function computeGearPhase({
         const name = nameById.get(itemId);
         if (!name) continue;
         if (!gearBySlotRaw[slotName]) gearBySlotRaw[slotName] = [];
-        const existing = gearBySlotRaw[slotName].find((x: any) => x.itemId === itemId && x.avgIlvl === ilvl);
+        const existing = gearBySlotRaw[slotName].find(x => x.itemId === itemId && x.avgIlvl === ilvl);
         if (existing) {
           existing.count += players.size;
         } else {
@@ -719,8 +794,8 @@ async function computeGearPhase({
         }
       }
       gearBySlotRaw[slotName] = gearBySlotRaw[slotName]
-        .map((item: any) => ({ ...item, pct: Math.round(item.count / totalGearPlayerCount * 100) }))
-        .sort((a: any, b: any) => b.count - a.count)
+        .map(item => ({ ...item, pct: Math.round(item.count / totalGearPlayerCount * 100) }))
+        .sort((a, b) => b.count - a.count)
         .slice(0, 5);
     }
     for (const { players, itemId, ilvl } of wclTrinketAggr.values()) {
@@ -745,17 +820,17 @@ async function computeGearPhase({
   for (const htGear of heroTreeGear) {
     if (!htGear.gear) continue;
     htGear.gear.trinkets = applyTrinketIcons(htGear.gear.trinkets);
-    htGear.gear.gems = (htGear.gear.gems ?? []).map((g: any) => ({ ...g, iconUrl: iconById.get(g.itemId) ?? '', description: descById.get(g.itemId) ?? '' }));
-    htGear.gear.consumables = (htGear.gear.consumables ?? []).map((c: any) => ({ ...c, iconUrl: consumableIconById.get(c.spellId) ?? '' }));
+    htGear.gear.gems = (htGear.gear.gems ?? []).map(g => ({ ...g, iconUrl: iconById.get(g.itemId) ?? '', description: descById.get(g.itemId) ?? '' }));
+    htGear.gear.consumables = (htGear.gear.consumables ?? []).map(c => ({ ...c, iconUrl: consumableIconById.get(c.spellId) ?? '' }));
     for (const e of htGear.gear.enchants ?? []) {
       e.description = e.sourceItemId ? (descById.get(e.sourceItemId) ?? '') : '';
     }
-    const treeGearBySlot: Record<string, any[]> = {};
+    const treeGearBySlot: Record<string, Array<TreeSlotItem & { description: string }>> = {};
     for (const [slotKey, items] of Object.entries(htGear.gear.gearBySlotRaw ?? {})) {
-      treeGearBySlot[slotKey] = (items as any[]).map(item => ({ ...item, iconUrl: iconById.get(item.itemId) ?? '', description: descById.get(item.itemId) ?? '' }));
+      treeGearBySlot[slotKey] = items.map(item => ({ ...item, iconUrl: iconById.get(item.itemId) ?? '', description: descById.get(item.itemId) ?? '' }));
     }
-    (htGear.gear as any).gearBySlot = treeGearBySlot;
-    delete (htGear.gear as any).gearBySlotRaw;
+    htGear.gear.gearBySlot = treeGearBySlot;
+    delete htGear.gear.gearBySlotRaw;
   }
 
   const topTrinkets = applyTrinketIcons(topTrinketsRaw);
@@ -773,7 +848,7 @@ async function computeGearPhase({
 
   // ── Build GearPhaseResult ────────────────────────────────────────────────
   const variantGear: Array<HeroVariant['gear']> = [];
-  const variantPlayers: Array<any[]> = [];
+  const variantPlayers: RankedPlayer[][] = [];
 
   // [0] = All
   variantGear.push({
@@ -789,10 +864,10 @@ async function computeGearPhase({
     const htBase = heroTreeConsensusBase[i];
     const { gear, topPlayers } = heroTreeGear[i];
     variantGear.push(htBase.hasData ? {
-      trinkets: gear.trinkets, gems: gear.gems, enchants: gear.enchants,
+      trinkets: gear.trinkets as VariantGear['trinkets'], gems: gear.gems, enchants: gear.enchants,
       consumables: gear.consumables, avgItemLevel: gear.avgItemLevel,
       stats: gear.stats, playerCount: gear.playerCount,
-      gearBySlot: (gear as any).gearBySlot,
+      gearBySlot: gear.gearBySlot as VariantGear['gearBySlot'],
     } : null);
     variantPlayers.push(topPlayers.slice(0, DISPLAY_N));
   }
@@ -800,25 +875,42 @@ async function computeGearPhase({
   return { variantGear, variantPlayers };
 }
 
-export default async function BossContent({
+// Everything BossContent can end up rendering, as plain data: the loader below does
+// all the awaited work inside its try/catch, and the component only turns this into JSX.
+type BossContentResult =
+  | { kind: 'no-tree' }
+  | { kind: 'no-rankings' }
+  | {
+      kind: 'consensus';
+      variants: HeroVariant[];
+      gearPromise: Promise<GearPhaseResult>;
+      layout: TalentNode[];
+      dataFetchedAt: number;
+      wclUrl: string | null;
+      loadMorePoolSize: number;
+    }
+  | { kind: 'players-only'; variants: HeroVariant[]; layout: TalentNode[]; dataFetchedAt: number; wclUrl: string | null }
+  | { kind: 'no-data' }
+  | { kind: 'rate-limited' }
+  | { kind: 'error'; message: string | undefined };
+
+async function loadBossContent({
   bossId,
   className,
   spec,
   difficulty,
-  nodeColors,
-  region = 'global',
+  region,
   wclZoneId,
-  metric = 'dps',
+  metric,
 }: {
   bossId: number;
   className: string;
   spec: string;
   difficulty: number;
-  nodeColors: { color: string; border: string; activeBg: string };
-  region?: string; // region MODE: 'global' (all regions pooled) | 'us-eu' (US+EU pooled)
+  region: string;
   wclZoneId?: number | null;
-  metric?: string;
-}) {
+  metric: string;
+}): Promise<BossContentResult> {
   try {
     // Static game data (talent tree layout) is identical across regions — a fixed 'us'
     // token authenticates it regardless of which rankings region mode is selected.
@@ -834,35 +926,14 @@ export default async function BossContent({
       getRankingsCachedSWR(wclToken, bossId, className, spec, difficulty, region, metric),
     ]);
     if (!treeInfo) {
-      return <div className="text-center py-12 text-zinc-600 text-sm">Talent tree not found for this spec.</div>;
+      return { kind: 'no-tree' };
     }
 
     const { layout: skeletonMap, heroTreeNames: allHeroTreeNames } = await getCachedTalentLayout(treeInfo.treeId, treeInfo.specId, staticBlizzardToken);
     const rawRankings = rankingsResult.rankings;
     const dataFetchedAt = rankingsResult.fetchedAt;
     if (rawRankings.length === 0) {
-      const isRaidDifficulty = difficulty === 4 || difficulty === 5;
-      const diffLabel = isRaidDifficulty ? (difficulty === 5 ? 'Mythic' : 'Heroic') : 'Mythic+';
-      const altDiff = isRaidDifficulty ? (difficulty === 5 ? 'Heroic' : 'Mythic') : null;
-      const contentNoun = isRaidDifficulty ? 'boss' : 'dungeon';
-      return (
-        <div className="flex flex-col items-center justify-center py-20 text-center space-y-4">
-          <div className="w-16 h-16 rounded-full bg-zinc-900 border border-zinc-800 flex items-center justify-center text-2xl opacity-40">
-            —
-          </div>
-          <div>
-            <p className="text-zinc-300 font-bold">No {diffLabel} data</p>
-            <p className="text-zinc-600 text-sm mt-1">
-              No {diffLabel} {spec} {className} parses found for this {contentNoun}.
-            </p>
-            {altDiff && (
-              <p className="text-zinc-700 text-xs mt-3">
-                Try switching to {altDiff} using the toggle in the header.
-              </p>
-            )}
-          </div>
-        </div>
-      );
+      return { kind: 'no-rankings' };
     }
 
     const CONSENSUS_N = Math.min(rawRankings.length, 50);
@@ -883,7 +954,7 @@ export default async function BossContent({
     const consensusSelection = await selectPlayersWithValidTelemetry(
       rawRankings,
       CONSENSUS_N,
-      (players: any[]) => fetchTelemetryBatchCachedUnstable(wclToken, players),
+      players => fetchTelemetryBatchCachedUnstable(wclToken, players),
       { batchSize: 10, concurrency: 5 }
     );
     const consensusRankings = consensusSelection.map(s => s.player);
@@ -893,27 +964,23 @@ export default async function BossContent({
     // own region's Blizzard token — consensusRankings (post-backfill) is a superset of
     // DISPLAY_N's slice, so fetching tokens for its regions covers every profile fetch below.
     const blizzardTokensByRegion = await getBlizzardTokensForRegions(
-      consensusRankings.map((p: any) => playerRegion(p, 'us'))
+      consensusRankings.map(p => playerRegion(p, 'us'))
     );
-
-    function blizzardProfileFetch(player: any, endpoint: string, cacheTag: string) {
-      return blizzardCharacterProfileFetch(player, blizzardTokensByRegion, endpoint, cacheTag);
-    }
 
     // ── Start remaining fetch groups concurrently ─────────────────────────────
     // Equipment/stats/media start immediately so they run in parallel with profiles.
     // We only await profiles for the fast talent-tree path.
     const _profilesP = Promise.all(
-      consensusRankings.slice(0, DISPLAY_N).map((player: any) => blizzardProfileFetch(player, 'specializations', 'spec'))
+      consensusRankings.slice(0, DISPLAY_N).map(player => blizzardCharacterProfileFetch(player, blizzardTokensByRegion, 'specializations', 'spec'))
     );
     const _equipP = Promise.all(
-      consensusRankings.map((player: any) => blizzardProfileFetch(player, 'equipment', 'equip'))
+      consensusRankings.map(player => blizzardCharacterProfileFetch<BlizzardEquipmentProfile>(player, blizzardTokensByRegion, 'equipment', 'equip'))
     );
     const _statsP = Promise.all(
-      consensusRankings.map((player: any) => blizzardProfileFetch(player, 'statistics', 'stats'))
+      consensusRankings.map(player => blizzardCharacterProfileFetch<BlizzardStatisticsProfile>(player, blizzardTokensByRegion, 'statistics', 'stats'))
     );
     const _mediaP = Promise.all(
-      consensusRankings.slice(0, DISPLAY_N).map((player: any) => blizzardProfileFetch(player, 'character-media', 'media'))
+      consensusRankings.slice(0, DISPLAY_N).map(player => blizzardCharacterProfileFetch(player, blizzardTokensByRegion, 'character-media', 'media'))
     );
 
     const blizzardProfiles = await _profilesP;
@@ -921,7 +988,7 @@ export default async function BossContent({
     // ── wclItemData from telemetry (icon pre-population) ─────────────────
     const wclItemData = new Map<number, { ilvl: number; bonusIds: number[]; icon: string }>();
     for (const tel of allTelemetryData) {
-      for (const slot of (tel?.event?.gear ?? []) as any[]) {
+      for (const slot of tel?.event?.gear ?? []) {
         const itemId: number = slot.id ?? 0;
         const ilvl: number = slot.itemLevel ?? 0;
         if (!itemId || !ilvl) continue;
@@ -943,10 +1010,12 @@ export default async function BossContent({
     }
 
     // ── Build detailedRankingsBase (renderUrl = null; filled in gear phase) ─
-    const detailedRankingsBase = await Promise.all(consensusRankings.map(async (player: any, idx: number) => {
+    const detailedRankingsBase = await Promise.all(consensusRankings.map(async (player, idx): Promise<DetailedPlayer> => {
       const telemetryData = allTelemetryData[idx];
       const profileData = blizzardProfiles[idx];
-      let { talentString, profileNodes } = deriveTalentStringAndProfileNodes(telemetryData, profileData, treeInfo.specId);
+      const derived = deriveTalentStringAndProfileNodes(telemetryData, profileData, treeInfo.specId);
+      const profileNodes = derived.profileNodes;
+      let talentString = derived.talentString;
       // No matching saved loadout? Encode the fight build itself (see
       // generatePlayerTalentString) — null only when codec knowledge is missing.
       if (!talentString && idx < DISPLAY_N) {
@@ -954,7 +1023,9 @@ export default async function BossContent({
       }
       // _tp/_tg are server-side cache compaction (see getWclRankings) — spreading them
       // into client props would bloat the RSC payload by tens of KB per player.
-      const { _tp, _tg, ...playerClean } = player;
+      const playerClean = { ...player };
+      delete playerClean._tp;
+      delete playerClean._tg;
       return { ...playerClean, telemetry: telemetryData, talentString, renderUrl: null, profileNodes };
     }));
 
@@ -965,8 +1036,8 @@ export default async function BossContent({
     // actually took (previously always option A, whatever they picked).
     const entryTalentBridge = await harvestEntryTalentPairs(detailedRankingsBase);
     // Same self-teaching pass for the loadout-string codec (hash/selectors/apex caps).
-    await harvestLoadoutStrings(className, detailedRankingsBase.map((p: any) => p.talentString));
-    for (const p of detailedRankingsBase as any[]) {
+    await harvestLoadoutStrings(className, detailedRankingsBase.map(p => p.talentString));
+    for (const p of detailedRankingsBase) {
       const ids: Record<number, number> = {};
       for (const row of p.telemetry?.event?.talentTree ?? []) {
         if (row?.nodeID != null && row?.id != null) ids[row.nodeID] = entryTalentBridge[row.id] ?? row.id;
@@ -979,22 +1050,21 @@ export default async function BossContent({
     // consensus player with their raw profileData (possibly undefined) so
     // resolveMetaBuildPick can score the FULL sample and fetch on demand for whichever
     // real player actually wins, not just whoever happened to be in the eager batch.
-    const pickPool = consensusRankings.map((player: any, idx: number) => ({
+    const pickPool = consensusRankings.map((player, idx) => ({
       player, telemetry: allTelemetryData[idx], profileData: blizzardProfiles[idx],
     }));
 
     // ── Choice node frequency (phase-1 only) ─────────────────────────────
     const choiceFreqRaw: Record<number, { aEntryId: number; bEntryId: number; aCount: number; bCount: number }> = {};
-    for (const n of skeletonMap) {
-      const node = n as any;
+    for (const node of skeletonMap) {
       if (node.isChoice && node.choiceAEntryId != null && node.choiceBEntryId != null)
         choiceFreqRaw[node.nodeID] = { aEntryId: node.choiceAEntryId, bEntryId: node.choiceBEntryId, aCount: 0, bCount: 0 };
     }
     for (const player of detailedRankingsBase) {
-      for (const pn of (player as any).profileNodes ?? []) {
+      for (const pn of player.profileNodes ?? []) {
         const entry = choiceFreqRaw[pn.id];
         if (!entry) continue;
-        const eid: number = pn.tooltip?.talent?.id;
+        const eid = pn.tooltip?.talent?.id;
         if (eid === entry.aEntryId) entry.aCount++;
         else if (eid === entry.bEntryId) entry.bCount++;
       }
@@ -1029,7 +1099,7 @@ export default async function BossContent({
     // underlying entries sharing one visual icon, each independently ranked — which is
     // exactly the thing worth flagging distinctly in the UI so "3/4" doesn't read like
     // an arbitrary number. isTieredApex is true only for nodes actually corrected here.
-    const correctedSkeletonMap = skeletonMap.map((n: any) => {
+    const correctedSkeletonMap = skeletonMap.map(n => {
       const observed = observedMaxRanks.get(n.nodeID);
       return observed != null && observed > n.maxRanks
         ? { ...n, maxRanks: observed, isTieredApex: true }
@@ -1110,24 +1180,24 @@ export default async function BossContent({
         }
 
         // DPS/score stats from telemetry (phase-1 data)
-        const treeTopPlayers = detailedRankingsBase.filter((player: any) =>
+        const treeTopPlayers = detailedRankingsBase.filter(player =>
           getActiveHeroTreeId(player.telemetry?.event?.talentTree || [], skeletonMap) === id
         );
         const treeDps = treeTopPlayers.length > 0
-          ? Math.round(treeTopPlayers.reduce((s: number, p: any) => s + (p.amount ?? 0), 0) / treeTopPlayers.length)
+          ? Math.round(treeTopPlayers.reduce((s, p) => s + (p.amount ?? 0), 0) / treeTopPlayers.length)
           : null;
         const treeTopDps = treeTopPlayers.length > 0
-          ? Math.round(Math.max(...treeTopPlayers.map((p: any) => p.amount ?? 0)))
+          ? Math.round(Math.max(...treeTopPlayers.map(p => p.amount ?? 0)))
           : null;
-        const hasScore = treeTopPlayers.some((p: any) => p.score != null);
+        const hasScore = treeTopPlayers.some(p => p.score != null);
         const treeAvgScore = hasScore && treeTopPlayers.length > 0
-          ? treeTopPlayers.reduce((s: number, p: any) => s + (p.score ?? 0), 0) / treeTopPlayers.length
+          ? treeTopPlayers.reduce((s, p) => s + (p.score ?? 0), 0) / treeTopPlayers.length
           : null;
         const treeTopScore = hasScore && treeTopPlayers.length > 0
-          ? Math.max(...treeTopPlayers.map((p: any) => p.score ?? 0))
+          ? Math.max(...treeTopPlayers.map(p => p.score ?? 0))
           : null;
         const treeAvgPct = treeTopPlayers.length > 0
-          ? Math.round(treeTopPlayers.reduce((s: number, p: any) => s + (p.rankPercent ?? 0), 0) / treeTopPlayers.length)
+          ? Math.round(treeTopPlayers.reduce((s, p) => s + (p.rankPercent ?? 0), 0) / treeTopPlayers.length)
           : null;
 
         heroTreeConsensusBase.push({
@@ -1152,7 +1222,7 @@ export default async function BossContent({
         players: detailedRankingsBase.slice(0, DISPLAY_N),
       });
       for (const htBase of heroTreeConsensusBase) {
-        const htTopPlayers = detailedRankingsBase.filter((player: any) =>
+        const htTopPlayers = detailedRankingsBase.filter(player =>
           getActiveHeroTreeId(player.telemetry?.event?.talentTree || [], skeletonMap) === htBase.id
         ).slice(0, DISPLAY_N);
         talentVariants.push({
@@ -1190,30 +1260,19 @@ export default async function BossContent({
         detailedRankingsBase,
         heroTreeConsensusBase,
         blizzardToken: staticBlizzardToken,
-        CONSENSUS_N,
         DISPLAY_N,
         skeletonMap,
       });
 
-      return (
-        <>
-          <BossView
-            variants={talentVariants}
-            gearPromise={gearPromise}
-            layout={correctedSkeletonMap}
-            colors={nodeColors}
-            difficulty={difficulty}
-            spec={spec}
-            dataFetchedAt={dataFetchedAt}
-            wclUrl={wclUrl ?? undefined}
-            wowClass={className}
-            metric={metric}
-            bossId={bossId}
-            region={region}
-            loadMorePoolSize={CONSENSUS_N}
-          />
-        </>
-      );
+      return {
+        kind: 'consensus',
+        variants: talentVariants,
+        gearPromise,
+        layout: correctedSkeletonMap,
+        dataFetchedAt,
+        wclUrl,
+        loadMorePoolSize: CONSENSUS_N,
+      };
     }
 
     // Not enough data for consensus
@@ -1227,23 +1286,114 @@ export default async function BossContent({
         gear: null,
         players: detailedRankingsBase,
       }];
-      return (
-        <>
-          <BossView
-            variants={heroVariants}
-            layout={correctedSkeletonMap}
-            colors={nodeColors}
-            difficulty={difficulty}
-            spec={spec}
-            dataFetchedAt={dataFetchedAt}
-            wclUrl={wclUrl ?? undefined}
-            wowClass={className}
-            metric={metric}
-          />
-        </>
-      );
+      return { kind: 'players-only', variants: heroVariants, layout: correctedSkeletonMap, dataFetchedAt, wclUrl };
     }
 
+    return { kind: 'no-data' };
+  } catch (err) {
+    // Fire-and-forget would be dropped by Vercel's post-response freeze — await it.
+    await logServerError(`BossContent ${className}/${spec} boss=${bossId} diff=${difficulty} region=${region}`, err);
+    if (isRateLimitError(err)) {
+      return { kind: 'rate-limited' };
+    }
+    const message = typeof err === 'object' && err !== null && 'message' in err && typeof err.message === 'string'
+      ? err.message
+      : undefined;
+    return { kind: 'error', message };
+  }
+}
+
+export default async function BossContent({
+  bossId,
+  className,
+  spec,
+  difficulty,
+  nodeColors,
+  region = 'global',
+  wclZoneId,
+  metric = 'dps',
+}: {
+  bossId: number;
+  className: string;
+  spec: string;
+  difficulty: number;
+  nodeColors: { color: string; border: string; activeBg: string };
+  region?: string; // region MODE: 'global' (all regions pooled) | 'us-eu' (US+EU pooled)
+  wclZoneId?: number | null;
+  metric?: string;
+}) {
+  const result = await loadBossContent({ bossId, className, spec, difficulty, region, wclZoneId, metric });
+
+  if (result.kind === 'no-tree') {
+    return <div className="text-center py-12 text-zinc-600 text-sm">Talent tree not found for this spec.</div>;
+  }
+
+  if (result.kind === 'no-rankings') {
+    const isRaidDifficulty = difficulty === 4 || difficulty === 5;
+    const diffLabel = isRaidDifficulty ? (difficulty === 5 ? 'Mythic' : 'Heroic') : 'Mythic+';
+    const altDiff = isRaidDifficulty ? (difficulty === 5 ? 'Heroic' : 'Mythic') : null;
+    const contentNoun = isRaidDifficulty ? 'boss' : 'dungeon';
+    return (
+      <div className="flex flex-col items-center justify-center py-20 text-center space-y-4">
+        <div className="w-16 h-16 rounded-full bg-zinc-900 border border-zinc-800 flex items-center justify-center text-2xl opacity-40">
+          —
+        </div>
+        <div>
+          <p className="text-zinc-300 font-bold">No {diffLabel} data</p>
+          <p className="text-zinc-600 text-sm mt-1">
+            No {diffLabel} {spec} {className} parses found for this {contentNoun}.
+          </p>
+          {altDiff && (
+            <p className="text-zinc-700 text-xs mt-3">
+              Try switching to {altDiff} using the toggle in the header.
+            </p>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  if (result.kind === 'consensus') {
+    return (
+      <>
+        <BossView
+          variants={result.variants}
+          gearPromise={result.gearPromise}
+          layout={result.layout}
+          colors={nodeColors}
+          difficulty={difficulty}
+          spec={spec}
+          dataFetchedAt={result.dataFetchedAt}
+          wclUrl={result.wclUrl ?? undefined}
+          wowClass={className}
+          metric={metric}
+          bossId={bossId}
+          region={region}
+          loadMorePoolSize={result.loadMorePoolSize}
+        />
+      </>
+    );
+  }
+
+  if (result.kind === 'players-only') {
+    return (
+      <>
+        <BossView
+          variants={result.variants}
+          layout={result.layout}
+          colors={nodeColors}
+          difficulty={difficulty}
+          spec={spec}
+          dataFetchedAt={result.dataFetchedAt}
+          wclUrl={result.wclUrl ?? undefined}
+          wowClass={className}
+          metric={metric}
+        />
+      </>
+    );
+  }
+
+  if (result.kind === 'no-data') {
     const isRaidDifficulty2 = difficulty === 4 || difficulty === 5;
     const diffLabel2 = isRaidDifficulty2 ? (difficulty === 5 ? 'Mythic' : 'Heroic') : 'Mythic+';
     return (
@@ -1264,21 +1414,20 @@ export default async function BossContent({
         </div>
       </div>
     );
-  } catch (err: any) {
-    // Fire-and-forget would be dropped by Vercel's post-response freeze — await it.
-    await logServerError(`BossContent ${className}/${spec} boss=${bossId} diff=${difficulty} region=${region}`, err);
-    if (err?.isRateLimit) {
-      return (
-        <div className="bg-amber-950/40 border border-amber-800/50 text-amber-300 px-4 py-3 rounded-xl text-sm">
-          <span className="font-bold">High demand right now — </span>
-          this data source is temporarily rate-limited. Try again in a few minutes.
-        </div>
-      );
-    }
+  }
+
+  if (result.kind === 'rate-limited') {
     return (
-      <div className="bg-red-950/40 border border-red-800/50 text-red-300 px-4 py-3 rounded-xl text-sm">
-        <span className="font-bold">Error: </span>{err.message}
+      <div className="bg-amber-950/40 border border-amber-800/50 text-amber-300 px-4 py-3 rounded-xl text-sm">
+        <span className="font-bold">High demand right now — </span>
+        this data source is temporarily rate-limited. Try again in a few minutes.
       </div>
     );
   }
+
+  return (
+    <div className="bg-red-950/40 border border-red-800/50 text-red-300 px-4 py-3 rounded-xl text-sm">
+      <span className="font-bold">Error: </span>{result.message}
+    </div>
+  );
 }

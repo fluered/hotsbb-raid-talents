@@ -1,5 +1,6 @@
 import { unstable_cache } from 'next/cache';
 import Link from 'next/link';
+import Image from 'next/image';
 import { getWclRankingsForRegionMode, getBlizzardToken, POPULAR_SPECS, SPEC_IDS } from '../../lib/wow';
 
 function fixedTierAssignments(sortedAvgDps: number[], thresholds: { S: number; A: number; B: number }): Array<'S' | 'A' | 'B' | 'C'> {
@@ -37,9 +38,13 @@ function computeTierAssignments(sortedAvgDps: number[]): Array<'S' | 'A' | 'B' |
   });
 }
 
+// Class colours are Tailwind arbitrary values (text-[#C41E3A]) except Priest's, which
+// is the named text-white: without that case both Priest specs fell through to the
+// grey fallback and their bars read as "no data".
 function classHex(color: string): string {
   const m = color.match(/\[([^\]]+)\]/);
-  return m ? m[1] : '#71717a';
+  if (m) return m[1];
+  return color === 'text-white' ? '#ffffff' : '#71717a';
 }
 
 function fmtDps(dps: number): string {
@@ -81,11 +86,11 @@ async function computeOverall(
     bossIds.map(bossId => async () => {
       try {
         const rankings = await getWclRankingsForRegionMode(wclToken, bossId, cls, spec, difficulty, undefined, metric, true);
-        const top = (rankings as any[])
+        const top = rankings
           .sort((a, b) => (b.amount ?? 0) - (a.amount ?? 0))
           .slice(0, 50);
         if (top.length >= 5) {
-          const avg = top.reduce((s: number, r: any) => s + (r.amount ?? 0), 0) / top.length;
+          const avg = top.reduce((s, r) => s + (r.amount ?? 0), 0) / top.length;
           if (avg > 0) return { cls, spec, bossId, avgDps: avg };
         }
       } catch {}
@@ -275,7 +280,7 @@ export default async function OverallTierListContent({
                       </span>
 
                       {s.iconUrl
-                        ? <img src={s.iconUrl} alt="" className="w-8 h-8 rounded-lg flex-shrink-0 border border-zinc-700/60" />
+                        ? <Image src={s.iconUrl} alt="" width={32} height={32} className="w-8 h-8 rounded-lg flex-shrink-0 border border-zinc-700/60" />
                         : <div className="w-8 h-8 rounded-lg bg-zinc-800 flex-shrink-0 border border-zinc-700/60" />
                       }
 

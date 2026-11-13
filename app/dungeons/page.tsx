@@ -1,16 +1,20 @@
 import React, { Suspense } from 'react';
 import Link from 'next/link';
+import Image from 'next/image';
 import type { Metadata } from 'next';
 import { unstable_cache } from 'next/cache';
 import BossContent from '../BossContent';
 import DungeonCardImage from '../../components/DungeonCardImage';
 import ClassNav from '../../components/ClassNav';
+import MobileNav from '../../components/MobileNav';
 import SiteFooter from '../../components/SiteFooter';
 import { ogImageMeta } from '../../lib/ogImage';
-import LoadingProgress, { BUILD_STAGES } from '../../components/LoadingProgress';
+import { dungeonCanonical, validClassSpec, dungeonNameFor } from '../../lib/seo';
+import LoadingProgress from '../../components/LoadingProgress';
+import { BUILD_STAGES } from '../../lib/loadingStages';
 import {
   getWclToken, getBlizzardToken, getDungeonRoster,
-  POPULAR_SPECS, SPEC_IDS, CLASS_IDS, MPLUS_DIFFICULTY, getSeasonState,
+  POPULAR_SPECS, SPEC_IDS, CLASS_IDS, MPLUS_DIFFICULTY, getSeasonState, isRateLimitError,
 } from '../../lib/wow';
 
 // See app/page.tsx for why this is needed: BossContent's cold-cache path can exceed
@@ -24,9 +28,10 @@ interface PageProps {
 export async function generateMetadata({ searchParams }: PageProps): Promise<Metadata> {
   const sp = await searchParams;
   const season = await getSeasonState();
-  const cls = sp.class;
-  const spec = sp.spec;
-  const dungeonName = sp.dungeonName;
+  // Names come from the class list and the roster, never from the URL (see lib/seo.ts).
+  const { cls, spec } = validClassSpec(sp.class, sp.spec);
+  const dungeonId = sp.dungeon ? parseInt(sp.dungeon) : null;
+  const dungeonName = cls && spec ? await dungeonNameFor(dungeonId) : null;
 
   let title: string;
   let description: string;
@@ -45,6 +50,7 @@ export async function generateMetadata({ searchParams }: PageProps): Promise<Met
   return {
     title,
     description,
+    alternates: { canonical: dungeonCanonical({ cls, spec, dungeon: dungeonName ? dungeonId : null, dungeonName }) },
     ...ogImageMeta({
       title, description,
       imageTitle: cls && spec ? `${spec} ${cls}` : 'Mythic+ Talents',
@@ -83,17 +89,17 @@ export default async function DungeonsPage(props: PageProps) {
   const activeSpec = searchParams.spec || null;
   const activeRegion = (searchParams.region === 'us-eu' ? 'us-eu' : 'global') as 'global' | 'us-eu';
 
-  let specIconMap: Record<string, string> = {};
-  let classIconMap: Record<string, string> = {};
-  let dungeonImageMap: Record<number, string> = {};
+  const specIconMap: Record<string, string> = {};
+  const classIconMap: Record<string, string> = {};
+  const dungeonImageMap: Record<number, string> = {};
   let dungeons: Array<{ id: number; name: string; wclCdnId?: number; blizzardInstanceId?: number }> = [];
   let dungeonsRateLimited = false;
 
   try {
     const wclToken = await getWclToken();
     dungeons = await getDungeonRoster(wclToken);
-  } catch (e: any) {
-    if (e?.isRateLimit) dungeonsRateLimited = true;
+  } catch (e) {
+    if (isRateLimitError(e)) dungeonsRateLimited = true;
   }
 
   try {
@@ -230,6 +236,7 @@ export default async function DungeonsPage(props: PageProps) {
                 US+EU
               </Link>
             </div>
+            <MobileNav />
           </div>
         </div>
       </header>
@@ -278,7 +285,7 @@ export default async function DungeonsPage(props: PageProps) {
                         className="flex flex-col items-center gap-2 p-3 rounded-xl border border-zinc-800/60 bg-zinc-900/30 hover:bg-zinc-900/70 hover:border-zinc-700 transition-all group"
                       >
                         {iconUrl
-                          ? <img src={iconUrl} alt={cls.class} className="w-10 h-10 rounded-lg" />
+                          ? <Image src={iconUrl} alt={cls.class} width={40} height={40} className="w-10 h-10 rounded-lg" />
                           : <div className="w-10 h-10 rounded-lg bg-zinc-800" />
                         }
                         <span className={`text-[11px] font-bold text-center leading-tight ${cls.color} group-hover:opacity-100 opacity-80`}>
@@ -291,6 +298,17 @@ export default async function DungeonsPage(props: PageProps) {
               </div>
             ) : (
               <>
+                {currentClassObj && (() => {
+                  // Named from the class list and the roster, not the URL's own text.
+                  const headingSpec = currentClassObj.specs.find(s => s === activeSpec) ?? null;
+                  const headingDungeon = headingSpec && activeDungeonId ? dungeons.find(d => d.id === activeDungeonId)?.name ?? null : null;
+                  return (
+                    <h1 className="text-lg md:text-xl font-black text-zinc-100 tracking-tight">
+                      <span className={currentClassObj.color}>{headingSpec ? `${headingSpec} ` : ''}{currentClassObj.class}</span>
+                      {headingDungeon ? ` talents for ${headingDungeon} (Mythic+)` : ' Mythic+ talent builds'}
+                    </h1>
+                  );
+                })()}
                 {/* Spec pills */}
                 <div className="flex flex-wrap gap-2">
                   {currentClassObj?.specs.map(spec => {
@@ -305,7 +323,7 @@ export default async function DungeonsPage(props: PageProps) {
                             : 'border-zinc-800 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200'
                         }`}
                       >
-                        {iconUrl && <img src={iconUrl} alt="" className="w-4 h-4 rounded-sm flex-shrink-0" />}
+                        {iconUrl && <Image src={iconUrl} alt="" width={16} height={16} className="w-4 h-4 rounded-sm flex-shrink-0" />}
                         {spec}
                       </Link>
                     );

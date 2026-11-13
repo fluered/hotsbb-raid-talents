@@ -1,5 +1,6 @@
 import React, { Suspense } from 'react';
 import Link from 'next/link';
+import Image from 'next/image';
 import type { Metadata } from 'next';
 import { getWclToken, getRaidStructure, MIDNIGHT_RAIDS, TANK_SPECS, getSeasonState, parseRaidDifficulty } from '../../../lib/wow';
 import TierListContent from '../TierListContent';
@@ -9,6 +10,7 @@ import SiteShell from '../../../components/SiteShell';
 import SiteNavLinks from '../../../components/SiteNavLinks';
 import TierListLoading from '../../../components/TierListLoading';
 import { ogImageMeta } from '../../../lib/ogImage';
+import { tierListCanonical, raidBossName } from '../../../lib/seo';
 
 // See app/page.tsx for why: heavy concurrent WCL fetching across many specs can
 // exceed the platform's default function timeout on a cold cache.
@@ -21,7 +23,9 @@ interface PageProps {
 export async function generateMetadata({ searchParams }: PageProps): Promise<Metadata> {
   const sp = await searchParams;
   const season = await getSeasonState();
-  const bossName = sp.bossName;
+  // The boss name comes from the roster, never from the URL (see lib/seo.ts).
+  const bossId = sp.boss ? parseInt(sp.boss) : null;
+  const bossName = await raidBossName(bossId);
   const diff = parseRaidDifficulty(sp.difficulty, season.defaultRaidDifficulty);
   const diffLabel = diff === 4 ? 'Heroic' : 'Mythic';
   const title = bossName
@@ -33,6 +37,7 @@ export async function generateMetadata({ searchParams }: PageProps): Promise<Met
   return {
     title,
     description,
+    alternates: { canonical: tierListCanonical({ role: 'tanks', difficulty: diff, defaultDifficulty: season.defaultRaidDifficulty, boss: bossName ? bossId : null, bossName }) },
     ...ogImageMeta({
       title, description,
       imageTitle: 'Tank Tier List',
@@ -53,8 +58,8 @@ export default async function TankTierListPage({ searchParams }: PageProps) {
   const zones = await getRaidStructure(wclToken);
 
   const encounters: Array<{ id: number; name: string; zoneName: string }> = zones
-    .filter((z: any) => z.name in MIDNIGHT_RAIDS)
-    .flatMap((z: any) => (z.encounters ?? []).map((enc: any) => ({ id: enc.id, name: enc.name, zoneName: z.name })));
+    .filter(z => z.name in MIDNIGHT_RAIDS)
+    .flatMap(z => (z.encounters ?? []).map(enc => ({ id: enc.id, name: enc.name, zoneName: z.name })));
 
   const selectedBoss = activeBossId ? (encounters.find(e => e.id === activeBossId) ?? null) : null;
 
@@ -88,7 +93,7 @@ export default async function TankTierListPage({ searchParams }: PageProps) {
         <div className="px-4 md:px-5 h-12 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2 min-w-0">
             <Link href="/" className="font-black text-amber-400 tracking-widest uppercase text-xs hover:text-amber-300 transition-colors whitespace-nowrap">
-              HotsBB Talents
+              HotsBB<span className="hidden min-[360px]:inline"> Talents</span>
             </Link>
             <span className="hidden sm:inline text-zinc-700">/</span>
             <Link href={`/tier-list/tanks?difficulty=${activeDifficulty}${activeRegion !== 'global' ? `&region=${activeRegion}` : ''}`} className="hidden sm:inline text-xs font-black text-zinc-300 hover:text-zinc-100 uppercase tracking-widest transition-colors">Tank Tier List</Link>
@@ -139,7 +144,7 @@ export default async function TankTierListPage({ searchParams }: PageProps) {
                     : 'border-zinc-800/60 text-zinc-500 hover:text-zinc-300 hover:border-zinc-700'
                 }`}
               >
-                <img src={`https://assets.rpglogs.com/img/warcraft/bosses/${enc.id}-icon.jpg`} alt="" className="w-4 h-4 rounded object-cover flex-shrink-0" />
+                <Image src={`https://assets.rpglogs.com/img/warcraft/bosses/${enc.id}-icon.jpg`} alt="" width={16} height={16} unoptimized className="w-4 h-4 rounded object-cover flex-shrink-0" />
                 {enc.name}
               </Link>
             ))}

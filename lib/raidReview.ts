@@ -2,7 +2,7 @@
 import { ordinalWord } from './wipefestStats';
 import { unstable_cache } from 'next/cache';
 import { wclQuery } from './wow';
-import { buildProfile, DIFFICULTY_LABELS, PLAYER_CLASS_TYPES, type FightPlayer, type RaidDeath, type RaidMechanicStats, type ReportFight } from './analyze';
+import { buildProfile, DIFFICULTY_LABELS, PLAYER_CLASS_TYPES, type FightPlayer, type RaidDeath, type RaidMechanicStats, type ReportFight, type WclEventsPage, type WclReportData, type WclTable } from './analyze';
 import { defensiveKey } from './defensives';
 import { buffFamily, classifyAbility, fmtClock, fmtNum, median, plural, ucFirst, type Severity } from './analyzeRules';
 import { lookupJournal, MECHANIC_WORDS, type BossKnowledge, type MechanicType } from './bossMechanics';
@@ -69,11 +69,75 @@ export interface RaidFightData {
   avgIlvl: number;
 }
 
+// One ability on a by-ability Casts table.
+interface WclAbilityRow {
+  guid?: number;
+  name?: string;
+  abilityIcon?: string;
+  total?: number;
+}
+
+interface WclAuraRow {
+  guid?: number;
+  name?: string;
+  abilityIcon?: string;
+  totalUses?: number;
+}
+
+interface WclTakenRow {
+  guid?: number;
+  name?: string;
+  abilityIcon?: string;
+  actorName?: string;
+  actorType: string;
+  total: number;
+  hitCount?: number;
+  tickCount?: number;
+}
+
+// Interrupts and Dispels nest the spells under one top-level entry.
+interface WclCastCheckGroup {
+  entries?: Array<{
+    name?: string;
+    guid?: number;
+    abilityIcon?: string;
+    spellsBegun?: number;
+    spellsInterrupted?: number;
+    details?: Array<{ name: string; total?: number }> | null;
+  } | null> | null;
+}
+
+interface WclRaidFightReport {
+  deaths?: unknown;
+  ints?: WclTable<WclCastCheckGroup | null> | null;
+  disp?: WclTable<WclCastCheckGroup | null> | null;
+  enemyCasts?: WclTable<WclAbilityRow | null> | null;
+  raidDebuffs?: WclTable<WclAuraRow | null> | null;
+  taken?: WclTable<WclTakenRow | null> | null;
+  friendlyCasts?: WclTable<WclAbilityRow | null> | null;
+  dmg?: WclTable<{ id: number; name: string; total?: number; activeTime?: number }> | null;
+  masterData?: { abilities?: Array<{ gameID: number; icon?: string | null }> | null } | null;
+}
+
+// b0/c0, b1/c1, …: one player's self-buffs table and cast events.
+interface WclRaidBuffsReport {
+  [buffs: `b${number}`]: unknown;
+  [casts: `c${number}`]: WclEventsPage<{ type?: string; abilityGameID?: number; timestamp: number } | null> | null;
+}
+
+// One player's row on a single ability's Debuffs (auras) or DamageTaken (entries) table.
+interface WclAbilityTargetRow {
+  id: number;
+  name: string;
+  totalUses?: number;
+  total?: number;
+}
+
 const BREAKDOWN_ABILITIES = 22;
 const BUFF_BATCH = 10;
 const ABILITY_BATCH = 11;
 
-function castCheck(entries: any[]): RaidCastCheck[] {
+function castCheck(entries: Array<WclCastCheckGroup | null> | null | undefined): RaidCastCheck[] {
   const out: RaidCastCheck[] = [];
   for (const top of entries ?? []) {
     for (const e of top?.entries ?? []) {
@@ -97,7 +161,7 @@ export function getRaidFightData(token: string, code: string, fight: ReportFight
   return unstable_cache(
     async () => {
       const fid = fight.id;
-      const d1 = await wclQuery(token, `{ reportData { report(code: "${code}") {
+      const d1 = await wclQuery<WclReportData<WclRaidFightReport>>(token, `{ reportData { report(code: "${code}") {
         deaths: table(dataType: Deaths, fightIDs: [${fid}])
         ints: table(dataType: Interrupts, fightIDs: [${fid}])
         disp: table(dataType: Dispels, fightIDs: [${fid}])
@@ -152,7 +216,7 @@ export function getRaidFightData(token: string, code: string, fight: ReportFight
       for (let i = 0; i < players.length; i += BUFF_BATCH) {
         const batch = players.slice(i, i + BUFF_BATCH);
         const q = batch.map((p, j) => `b${j}: table(dataType: Buffs, fightIDs: [${fid}], sourceID: ${p.id}, targetID: ${p.id})\n          c${j}: events(fightIDs: [${fid}], sourceID: ${p.id}, dataType: Casts, limit: 5000) { data }`).join('\n');
-        const d = await wclQuery(token, `{ reportData { report(code: "${code}") { ${q} } } }`, 'raid-buffs', null);
+        const d = await wclQuery<WclReportData<WclRaidBuffsReport>>(token, `{ reportData { report(code: "${code}") { ${q} } } }`, 'raid-buffs', null);
         batch.forEach((p, j) => {
           const buffs = buildProfile({ buffs: d?.reportData?.report?.[`b${j}`] }, fight, p.id).buffs;
           playerBuffs[p.id] = buffs.map(b => ({ name: b.name, uses: b.uses, atPull: b.atPull }));
@@ -181,7 +245,7 @@ export function getRaidFightData(token: string, code: string, fight: ReportFight
             ? `m${j}: table(dataType: Debuffs, fightIDs: [${fid}], abilityID: ${deb.spellId})`
             : `m${j}: table(dataType: DamageTaken, fightIDs: [${fid}], abilityID: ${a.spellId})`;
         }).join('\n');
-        const d = await wclQuery(token, `{ reportData { report(code: "${code}") { ${q} } } }`, 'raid-ability', null);
+        const d = await wclQuery<WclReportData<Record<string, WclTable<WclAbilityTargetRow> | null>>>(token, `{ reportData { report(code: "${code}") { ${q} } } }`, 'raid-ability', null);
         batch.forEach((a, j) => {
           const t = d?.reportData?.report?.[`m${j}`]?.data;
           const rows: any[] = t?.auras ?? t?.entries ?? [];

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerErrorLog } from '../../../lib/persistentCache';
 import { isAuthorizedInternalCaller } from '../../../lib/internalAuth';
+import { errorMessage } from '../../../lib/wclTypes';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,7 +16,7 @@ export async function GET(request: NextRequest) {
   try {
     const errors = await getServerErrorLog(limit);
     return NextResponse.json({ status: 'ok', count: errors.length, errors });
-  } catch (e: any) {
-    return NextResponse.json({ status: 'error', message: e?.message ?? String(e) }, { status: 500 });
+  } catch (e: unknown) {
+    return NextResponse.json({ status: 'error', message: errorMessage(e) }, { status: 500 });
   }
 }

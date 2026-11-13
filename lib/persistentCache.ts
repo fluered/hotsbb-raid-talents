@@ -213,9 +213,9 @@ export async function ensureRedisHeadroom(): Promise<void> {
 
     // Collect telemetry batch keys with their remaining TTLs, evict oldest first.
     const candidates: Array<{ key: string; ttl: number }> = [];
-    let cursor: string | number = '0';
+    let cursor = '0';
     do {
-      const res: any = await redis.scan(cursor as any, { MATCH: 'wcl-telemetry-batch-*', COUNT: 500 });
+      const res: { cursor: string; keys: string[] } = await redis.scan(cursor, { MATCH: 'wcl-telemetry-batch-*', COUNT: 500 });
       cursor = res.cursor;
       for (const key of res.keys) {
         const ttl = await redis.ttl(key);
@@ -260,7 +260,14 @@ export async function logServerError(context: string, err: unknown): Promise<voi
   } catch {}
 }
 
-export async function getServerErrorLog(limit = 100): Promise<any[]> {
+export interface ServerErrorEntry {
+  ts: number;
+  context: string;
+  message: string;
+  stack?: string; // first few frames only; absent when the thrown value wasn't an Error
+}
+
+export async function getServerErrorLog(limit = 100): Promise<ServerErrorEntry[]> {
   const redis = await getClient();
   const raw = await withTimeout(redis.lRange(ERROR_LOG_KEY, -limit, -1), CACHE_TIMEOUT_MS, 'Redis lRange');
   return raw.map(r => JSON.parse(r)).reverse();

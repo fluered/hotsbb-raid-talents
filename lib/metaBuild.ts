@@ -132,7 +132,7 @@ async function getMetaBuildInner(
   const consensusSelection = await selectPlayersWithValidTelemetry(
     rawRankings,
     CONSENSUS_N,
-    (players: any[]) => fetchTelemetryBatchCached(wclToken, players),
+    (players) => fetchTelemetryBatchCached(wclToken, players),
     { batchSize: 10, concurrency: WCL_FANOUT_CONCURRENCY }
   );
   const consensusRankings = consensusSelection.map(s => s.player);
@@ -144,16 +144,16 @@ async function getMetaBuildInner(
   // for whichever real player actually wins the "closest to consensus" match — even
   // when that's someone outside the eager batch.
   const blizzardTokensByRegion = await getBlizzardTokensForRegions(
-    consensusRankings.map((p: any) => playerRegion(p, 'us'))
+    consensusRankings.map(p => playerRegion(p, 'us'))
   );
 
   const blizzardProfiles = await mapConcurrent(
     consensusRankings.slice(0, DISPLAY_N),
     WCL_FANOUT_CONCURRENCY,
-    (player: any) => blizzardCharacterProfileFetch(player, blizzardTokensByRegion, 'specializations', 'spec')
+    (player) => blizzardCharacterProfileFetch(player, blizzardTokensByRegion, 'specializations', 'spec')
   );
 
-  const pickPool = consensusRankings.map((player: any, idx: number) => ({
+  const pickPool = consensusRankings.map((player, idx) => ({
     player,
     telemetry: allTelemetryData[idx],
     profileData: blizzardProfiles[idx],

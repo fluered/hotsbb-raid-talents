@@ -1,4 +1,5 @@
-import LoadingProgress, { TIER_LIST_STAGES } from '../../components/LoadingProgress';
+import LoadingProgress from '../../components/LoadingProgress';
+import { TIER_LIST_STAGES } from '../../lib/loadingStages';
 
 // Streams in place of a tier-list page on its first load (the per-list fallback in
 // the page handles later boss and role switches). Same shell as the page: header,

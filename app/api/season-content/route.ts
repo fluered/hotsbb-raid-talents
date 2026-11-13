@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getWclToken, getDungeonRoster, getRaidStructure, getSeasonState, MIDNIGHT_RAIDS, RAID_JOURNAL_ID_FALLBACK } from '../../../lib/wow';
+import { getWclToken, getDungeonRoster, getRaidStructure, getSeasonState, MIDNIGHT_RAIDS, RAID_JOURNAL_ID_FALLBACK, isRateLimitError, errorMessage } from '../../../lib/wow';
 import { isAuthorizedInternalCaller } from '../../../lib/internalAuth';
 
 export const dynamic = 'force-dynamic';
@@ -30,16 +30,16 @@ export async function GET(request: NextRequest) {
     // the pulled boss (EJ_GetEncounterInfo maps it to the ENCOUNTER_START dungeonEncounterID),
     // none of which an English name string can do on a non-English client.
     const raidBosses = zones
-      .filter((z: any) => z.name in MIDNIGHT_RAIDS)
-      .flatMap((z: any) =>
-        (z.encounters ?? []).map((enc: any) => ({
+      .filter(z => z.name in MIDNIGHT_RAIDS)
+      .flatMap(z =>
+        (z.encounters ?? []).map(enc => ({
           id: enc.id,
           name: enc.name,
           zone: z.name,
           journalId: (enc.journalID || RAID_JOURNAL_ID_FALLBACK[enc.id]) ?? null,
         }))
       );
-    const raidZones = zones.filter((z: any) => z.name in MIDNIGHT_RAIDS).map((z: any) => z.name);
+    const raidZones = zones.filter(z => z.name in MIDNIGHT_RAIDS).map(z => z.name);
 
     // The one seasonal change that still needs a human (see SeasonState.drift) —
     // surfaced here so every crawl/warm-sweep log prints it where it gets read.
@@ -65,13 +65,13 @@ export async function GET(request: NextRequest) {
       },
       { headers: { 'Cache-Control': 'public, s-maxage=21600, stale-while-revalidate=86400' } }
     );
-  } catch (e: any) {
-    if (e?.isRateLimit) {
+  } catch (e: unknown) {
+    if (isRateLimitError(e)) {
       return NextResponse.json(
         { status: 'rate_limited', message: e.message, retryAfter: e.retryAfter ?? null },
         { status: 429 }
       );
     }
-    return NextResponse.json({ status: 'error', message: e?.message ?? String(e) }, { status: 500 });
+    return NextResponse.json({ status: 'error', message: errorMessage(e) }, { status: 500 });
   }
 }

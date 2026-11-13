@@ -1,46 +1,39 @@
 'use client';
 import { useState, useRef, useEffect } from 'react';
+import Image from 'next/image';
 
+// A dungeon card's cover art: Blizzard's journal tile, then the WCL icon if that
+// fails, then nothing (the card keeps its plain background).
+//
+// What has failed is kept as a list of URLs and the shown image is derived from it,
+// rather than holding "current src" in state seeded from props: props can change on a
+// client-side re-render of the same mounted card (the image URL missing on first
+// render and present later), and derived this way a new URL is simply tried.
 export default function DungeonCardImage({ primary, fallback }: { primary?: string; fallback?: string }) {
-  const initialSrc = primary || fallback;
-  const [src, setSrc] = useState(initialSrc);
-  const [dead, setDead] = useState(!initialSrc);
+  const [failed, setFailed] = useState<string[]>([]);
   const imgRef = useRef<HTMLImageElement>(null);
+  const src = [primary, fallback].find(u => u && !failed.includes(u));
 
-  // Props can change on a client-side re-render of the same mounted card (e.g. the
-  // image URL was missing on first render and present later) — without this, state
-  // seeded from the original props stays locked on the fallback forever.
-  useEffect(() => {
-    const next = primary || fallback;
-    setSrc(next);
-    setDead(!next);
-  }, [primary, fallback]);
+  const markFailed = (url: string) => setFailed(f => (f.includes(url) ? f : [...f, url]));
 
-  const tryFallback = () => {
-    if (src !== fallback && fallback) {
-      setSrc(fallback);
-    } else {
-      setDead(true);
-    }
-  };
-
-  // Catch images that failed before React hydration
+  // Catch images that failed before React hydration (their error event already fired).
   useEffect(() => {
     const img = imgRef.current;
-    if (img && img.complete && img.naturalWidth === 0) {
-      tryFallback();
-    }
-  }, []);
+    if (src && img && img.complete && img.naturalWidth === 0) markFailed(src);
+  }, [src]);
 
-  if (dead || !src) return null;
+  if (!src) return null;
 
   return (
-    <img
+    <Image
       ref={imgRef}
       src={src}
       alt=""
-      className="absolute inset-0 w-full h-full object-cover opacity-40"
-      onError={tryFallback}
+      fill
+      // Card art from two hosts with a client-side fallback between them: served as-is.
+      unoptimized
+      className="object-cover opacity-40"
+      onError={() => markFailed(src)}
     />
   );
 }

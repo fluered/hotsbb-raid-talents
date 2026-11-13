@@ -36,8 +36,8 @@ export async function GET(req: NextRequest) {
   const mainColMax = classCols.filter(c => c <= 10).at(-1) ?? 0;
   const outlierClassNodes = classNodes.filter(n => n.column > mainColMax);
 
-  const specMaxRow = specNodes.length > 0 ? Math.max(...specNodes.map((n: any) => n.row)) : 0;
-  const bottomSpecNodes = specNodes.filter((n: any) => n.row >= specMaxRow - 2);
+  const specMaxRow = specNodes.length > 0 ? Math.max(...specNodes.map(n => n.row)) : 0;
+  const bottomSpecNodes = specNodes.filter(n => n.row >= specMaxRow - 2);
 
   const missingIcons = layout
     .filter(n => !n.iconUrl || (n.choiceB && !n.choiceB.iconUrl))
@@ -55,8 +55,8 @@ export async function GET(req: NextRequest) {
     specRows:  [...new Set(specNodes.map(n => n.row))].sort((a, b) => a - b),
     specCols:  [...new Set(specNodes.map(n => n.column))].sort((a, b) => a - b),
     specMaxRow,
-    bottomSpecNodes: bottomSpecNodes.map((n: any) => ({ nodeID: n.nodeID, name: n.name, row: n.row, column: n.column, maxRanks: n.maxRanks }))
-      .sort((a: any, b: any) => a.row - b.row || a.column - b.column),
+    bottomSpecNodes: bottomSpecNodes.map(n => ({ nodeID: n.nodeID, name: n.name, row: n.row, column: n.column, maxRanks: n.maxRanks }))
+      .sort((a, b) => a.row - b.row || a.column - b.column),
     outlierClassNodes: outlierClassNodes.map(n => ({ nodeID: n.nodeID, name: n.name, row: n.row, column: n.column }))
       .sort((a, b) => a.column - b.column || a.row - b.row),
     heroNodesAll: heroNodes.map(n => ({ nodeID: n.nodeID, name: n.name, heroTreeId: n.heroTreeId, row: n.row, column: n.column }))

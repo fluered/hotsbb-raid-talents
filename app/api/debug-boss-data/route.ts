@@ -18,9 +18,9 @@ export async function GET(request: NextRequest) {
   const zones = await getRaidStructure(token);
 
   const encounters: Array<{ id: number; name: string; zone: string }> = zones
-    .filter((z: any) => z.name in MIDNIGHT_RAIDS)
-    .flatMap((z: any) =>
-      (z.encounters ?? []).map((enc: any) => ({ id: enc.id, name: enc.name, zone: z.name }))
+    .filter(z => z.name in MIDNIGHT_RAIDS)
+    .flatMap(z =>
+      (z.encounters ?? []).map(enc => ({ id: enc.id, name: enc.name, zone: z.name }))
     );
 
   // Through getWclRankings rather than a raw fetch so these queries respect the shared
@@ -28,9 +28,9 @@ export async function GET(request: NextRequest) {
   const results = await Promise.all(
     encounters.map(async enc => {
       try {
-        const rankings: any[] = await getWclRankings(token, enc.id, cls, spec, difficulty, 'us', undefined, true);
+        const rankings = await getWclRankings(token, enc.id, cls, spec, difficulty, 'us', undefined, true);
         return { bossId: enc.id, boss: enc.name, zone: enc.zone, us: rankings.length, topDps: rankings[0]?.amount ?? null };
-      } catch (e) {
+      } catch {
         return { bossId: enc.id, boss: enc.name, zone: enc.zone, us: 'error', topDps: null };
       }
     })

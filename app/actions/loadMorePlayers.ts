@@ -6,9 +6,20 @@ import {
   mapConcurrent, deriveTalentStringAndProfileNodes, blizzardCharacterProfileFetch,
   normalizeTalentTree, harvestEntryTalentPairs, generatePlayerTalentString,
   getCachedTalentLayout,
+  type WclRankingRow, type WclTelemetry, type BlizzardLoadoutNode,
 } from '../../lib/wow';
 
 const WCL_FANOUT_CONCURRENCY = 5;
+
+// One player card as the client receives it: the ranking row plus everything resolved
+// for it here. entryIds is attached after the bridge harvest at the end.
+type LoadedPlayer = WclRankingRow & {
+  telemetry: WclTelemetry | null;
+  talentString: string | null;
+  renderUrl: string | null;
+  profileNodes: BlizzardLoadoutNode[];
+  entryIds?: Record<number, number>;
+};
 
 // Powers the "Load more players" button on a boss/dungeon page. The initial server
 // render only fetches full profile data (talentString + character portrait) for the
@@ -50,8 +61,8 @@ export async function loadMorePlayers(params: {
   // Small overscan so a candidate with invalid telemetry (private/deleted log) doesn't
   // shrink the returned page — mirrors the initial render's backfill behavior without
   // an unbounded scan.
-  const candidates = (rawRankings as any[])
-    .filter((p: any) => !excludeKeys.has(`${p.report?.code}:${p.report?.fightID}:${(p.name ?? '').toLowerCase()}`))
+  const candidates = rawRankings
+    .filter(p => !excludeKeys.has(`${p.report?.code}:${p.report?.fightID}:${(p.name ?? '').toLowerCase()}`))
     .slice(0, count + 3);
   if (candidates.length === 0) return { players: [] };
 
@@ -60,7 +71,7 @@ export async function loadMorePlayers(params: {
   // the same batched, cached path the page render uses.
   const telemetries = await fetchTelemetryBatchCachedUnstable(wclToken, candidates).catch(() => candidates.map(() => null));
 
-  const keep: Array<{ player: any; telemetry: any }> = [];
+  const keep: Array<{ player: WclRankingRow; telemetry: WclTelemetry | null }> = [];
   for (let i = 0; i < candidates.length && keep.length < count; i++) {
     const telemetry = telemetries[i];
     if (normalizeTalentTree(telemetry?.event?.talentTree || []).length > 0) {
@@ -73,21 +84,25 @@ export async function loadMorePlayers(params: {
     keep.map(({ player }) => playerRegion(player, 'us'))
   );
 
-  const players = await mapConcurrent(keep, WCL_FANOUT_CONCURRENCY, async ({ player, telemetry }) => {
+  const players = await mapConcurrent(keep, WCL_FANOUT_CONCURRENCY, async ({ player, telemetry }): Promise<LoadedPlayer> => {
     const [profileData, mediaData] = await Promise.all([
       blizzardCharacterProfileFetch(player, blizzardTokensByRegion, 'specializations', 'spec'),
       blizzardCharacterProfileFetch(player, blizzardTokensByRegion, 'character-media', 'media'),
     ]);
 
-    let { talentString, profileNodes } = deriveTalentStringAndProfileNodes(telemetry, profileData, treeInfo.specId);
+    const derived = deriveTalentStringAndProfileNodes(telemetry, profileData, treeInfo.specId);
+    const profileNodes = derived.profileNodes;
+    let talentString = derived.talentString;
     if (!talentString) {
       // No matching saved loadout — encode the fight build itself (see wow.ts).
       talentString = await generatePlayerTalentString(className, treeInfo.specId, telemetry, skeletonMap);
     }
-    const renderUrl = mediaData?.assets?.find((a: any) => a.key === 'avatar')?.value ?? null;
+    const renderUrl = mediaData?.assets?.find(a => a.key === 'avatar')?.value ?? null;
 
     // _tp/_tg are server-side cache compaction — never ship them to the client.
-    const { _tp, _tg, ...playerClean } = player;
+    const playerClean = { ...player };
+    delete playerClean._tp;
+    delete playerClean._tg;
     return { ...playerClean, telemetry, talentString, renderUrl, profileNodes };
   });
 
@@ -95,7 +110,7 @@ export async function loadMorePlayers(params: {
   // pairs from these players' profiles, then attach each player's per-node chosen
   // entry (Blizzard-talent space) so their card renders the option they actually took.
   const bridge = await harvestEntryTalentPairs(players);
-  for (const p of players as any[]) {
+  for (const p of players) {
     const ids: Record<number, number> = {};
     for (const row of p.telemetry?.event?.talentTree ?? []) {
       if (row?.nodeID != null && row?.id != null) ids[row.nodeID] = bridge[row.id] ?? row.id;

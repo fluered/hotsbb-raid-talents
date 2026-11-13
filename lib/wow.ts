@@ -3,6 +3,17 @@ import { after } from 'next/server';
 import { normalizeTalentTree } from './talentNormalize';
 import { getOrSetPersistent, getPersistentReadOnly, getSwrEntry, setSwrEntry, setPersistentValue, tryAcquireLock, logServerError } from './persistentCache';
 export { normalizeTalentTree } from './talentNormalize';
+import type { ClassTree } from './loadoutCodec';
+import type {
+  RateLimitError, WclGraphQLResponse, WclZone, WclEncounter, WclZonesData, WclZoneEncountersData,
+  WclRankingRow, WclCharacterRankingsData, WclItemEntry, WclItemData, WclRankingsWithItemData,
+  WclTalentRow, WclTelemetry, WclReportActor, WclReportTelemetryData, WclReportTelemetryBatchData,
+  WclProfileTarget, WclTelemetryTarget,
+  BlizzardLoadoutNode, BlizzardSpecializationsProfile, BlizzardProfileEndpoints,
+  BlizzardTalentNode, BlizzardTalentTree, BlizzardTalentTreeIndex, BlizzardTalentTreeIndexEntry,
+} from './wclTypes';
+export type * from './wclTypes';
+export { isRateLimitError, errorMessage } from './wclTypes';
 
 // ─── WCL request pacing ─────────────────────────────────────────────────────────
 
@@ -35,9 +46,46 @@ function wclFetch(url: string, options: RequestInit): Promise<Response> {
   return paceWclRequest(() => fetch(url, options));
 }
 
+// The pacer cannot tell a real WCL request from one Next's fetch cache answers without
+// touching the network, so it delays both. The token, the zone list and the M+ roster
+// are asked for on every page (the token four times over: metadata, page, season
+// state, dungeon roster) and are almost always cache hits, which made every page view
+// queue ~6 calls at 500ms apart: about 3 seconds before any content, and longer when
+// another visitor's real rankings requests were in the same queue. Holding those
+// answers in process memory for a few minutes keeps them out of the queue entirely.
+// Past its TTL an answer is still served while one refresh runs behind it, so no
+// visitor waits in the queue for a refresh either (all three are safe a little stale:
+// WCL tokens last months, zones change on patch days). A failed first lookup is
+// dropped, never held, so an error or a 429 is retried by the next call.
+const processMemo = new Map<string, { at: number; value: Promise<unknown>; refreshing?: boolean }>();
+function memoFor<T>(key: string, ttlMs: number, compute: () => Promise<T>): Promise<T> {
+  const hit = processMemo.get(key);
+  if (hit) {
+    if (Date.now() - hit.at >= ttlMs && !hit.refreshing) {
+      hit.refreshing = true;
+      compute().then(
+        v => { processMemo.set(key, { at: Date.now(), value: Promise.resolve(v) }); },
+        () => { hit.refreshing = false; hit.at = Date.now() - ttlMs + 30_000; } // keep the old answer, retry in 30s
+      );
+    }
+    return hit.value as Promise<T>;
+  }
+  const value = compute();
+  processMemo.set(key, { at: Date.now(), value });
+  value.catch(() => { if (processMemo.get(key)?.value === value) processMemo.delete(key); });
+  return value;
+}
+const MEMO_TOKEN_MS = 30 * 60_000;
+const MEMO_STRUCTURE_MS = 10 * 60_000;
+const MEMO_SEASON_MS = 5 * 60_000;
+
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 
-export async function getWclToken() {
+export function getWclToken(): Promise<string> {
+  return memoFor('wcl-token', MEMO_TOKEN_MS, fetchWclToken);
+}
+
+async function fetchWclToken(): Promise<string> {
   const response = await wclFetch('https://www.warcraftlogs.com/oauth/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -55,7 +103,7 @@ export async function getWclToken() {
     // (not the unlimited pause-and-retry that rate_limited gets) — so a run that hit
     // this mid-exhaustion lost real combos to a hard failure instead of just waiting
     // it out like every other rate-limited call already does.
-    const err: any = new Error('WCL OAuth rate limit exceeded — the API key has hit its request budget for the current window.');
+    const err: RateLimitError = new Error('WCL OAuth rate limit exceeded — the API key has hit its request budget for the current window.');
     err.isRateLimit = true;
     err.retryAfter = response.headers.get('retry-after');
     throw err;
@@ -88,7 +136,7 @@ export async function getBlizzardToken(region = 'us') {
 // same pattern as getWclRankings.
 function throwIfRateLimited(response: Response) {
   if (response.status === 429) {
-    const err: any = new Error('WCL rate limit exceeded — the API key has hit its request budget for the current window.');
+    const err: RateLimitError = new Error('WCL rate limit exceeded — the API key has hit its request budget for the current window.');
     err.isRateLimit = true;
     err.retryAfter = response.headers.get('retry-after');
     throw err;
@@ -104,10 +152,10 @@ function throwIfRateLimited(response: Response) {
 // gets cached, and upstream retry/pause logic gets a real signal.
 // Partial GraphQL errors (errors present but data non-null, e.g. one private report in
 // an aliased batch) are NOT thrown — callers use whatever data did come back.
-async function parseWclResponse(response: Response, context: string): Promise<any> {
+async function parseWclResponse<T>(response: Response, context: string): Promise<WclGraphQLResponse<T>> {
   throwIfRateLimited(response);
   if (!response.ok) throw new Error(`WCL ${context} request failed: HTTP ${response.status}`);
-  let json: any;
+  let json: WclGraphQLResponse<T>;
   try {
     json = await response.json();
   } catch {
@@ -123,14 +171,14 @@ async function parseWclResponse(response: Response, context: string): Promise<an
 // (the log-review feature in lib/analyze.ts). Same 429/error discipline as every
 // other WCL call via parseWclResponse; `revalidate` rides on Next's fetch cache,
 // `null` means no-store.
-export async function wclQuery(token: string, query: string, context: string, revalidate: number | null = 86400): Promise<any> {
+export async function wclQuery<T = unknown>(token: string, query: string, context: string, revalidate: number | null = 86400): Promise<T | null | undefined> {
   const response = await wclFetch('https://www.warcraftlogs.com/api/v2/client', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ query }),
     ...(revalidate == null ? { cache: 'no-store' } : { next: { revalidate } }),
   });
-  return (await parseWclResponse(response, context)).data;
+  return (await parseWclResponse<T>(response, context)).data;
 }
 
 // Cheap diagnostic query (just one number back, no ranking/telemetry payload) used to
@@ -153,7 +201,13 @@ export async function getWclPointsSpent(token: string): Promise<number | null> {
   }
 }
 
-export async function getRaidStructure(token: string) {
+// Callers only read the returned zones (filter/flatMap); the array is shared between
+// them while it is held in memory, so it must not be mutated.
+export function getRaidStructure(token: string): Promise<WclZone[]> {
+  return memoFor('raid-structure', MEMO_STRUCTURE_MS, () => fetchRaidStructure(token));
+}
+
+async function fetchRaidStructure(token: string): Promise<WclZone[]> {
   const query = `query { worldData { zones { id name frozen expansion { id name } encounters { id name journalID } } } }`;
   const response = await wclFetch('https://www.warcraftlogs.com/api/v2/client', {
     method: 'POST',
@@ -163,10 +217,14 @@ export async function getRaidStructure(token: string) {
     // Zone/encounter structure only changes on patch days, so 24h is safe.
     next: { revalidate: 86400 },
   });
-  return (await parseWclResponse(response, 'zones')).data?.worldData?.zones || [];
+  return (await parseWclResponse<WclZonesData>(response, 'zones')).data?.worldData?.zones || [];
 }
 
-export async function getMplusEncounters(token: string, zoneId: number) {
+export function getMplusEncounters(token: string, zoneId: number): Promise<WclEncounter[]> {
+  return memoFor(`mplus-encounters-${zoneId}`, MEMO_STRUCTURE_MS, () => fetchMplusEncounters(token, zoneId));
+}
+
+async function fetchMplusEncounters(token: string, zoneId: number): Promise<WclEncounter[]> {
   const query = `query { worldData { zone(id: ${zoneId}) { encounters { id name journalID } } } }`;
   const response = await wclFetch('https://www.warcraftlogs.com/api/v2/client', {
     method: 'POST',
@@ -174,7 +232,7 @@ export async function getMplusEncounters(token: string, zoneId: number) {
     body: JSON.stringify({ query }),
     next: { revalidate: 86400 },
   });
-  return (await parseWclResponse(response, 'mplus-encounters')).data?.worldData?.zone?.encounters || [];
+  return (await parseWclResponse<WclZoneEncountersData>(response, 'mplus-encounters')).data?.worldData?.zone?.encounters || [];
 }
 
 // ─── Season state (self-resolving) ─────────────────────────────────────────────
@@ -190,7 +248,7 @@ async function getUnfilteredRankingsCount(token: string, bossId: number, difficu
     body: JSON.stringify({ query }),
     cache: 'no-store',
   });
-  return ((await parseWclResponse(response, 'season-probe')).data?.worldData?.encounter?.characterRankings?.rankings ?? []).length;
+  return ((await parseWclResponse<WclCharacterRankingsData>(response, 'season-probe')).data?.worldData?.encounter?.characterRankings?.rankings ?? []).length;
 }
 
 export interface SeasonState {
@@ -220,15 +278,15 @@ export interface SeasonState {
 // through it the crawl); any resolver failure falls back to the last-known constants
 // below rather than taking the site down with it.
 async function computeSeasonState(token: string): Promise<SeasonState> {
-  const zones: any[] = await getRaidStructure(token);
-  const maxExp = Math.max(...zones.map((z: any) => z.expansion?.id ?? 0));
-  const current = zones.filter((z: any) => (z.expansion?.id ?? 0) === maxExp && !z.frozen);
+  const zones = await getRaidStructure(token);
+  const maxExp = Math.max(...zones.map(z => z.expansion?.id ?? 0));
+  const current = zones.filter(z => (z.expansion?.id ?? 0) === maxExp && !z.frozen);
 
   // M+ zone: newest by season number, activity-verified.
   const mplusCandidates = current
-    .map((z: any) => ({ zone: z, season: parseInt((z.name.match(/^Mythic\+ Season (\d+)/) ?? [])[1] ?? '') }))
-    .filter((c: any) => Number.isFinite(c.season))
-    .sort((a: any, b: any) => b.season - a.season);
+    .map(z => ({ zone: z, season: parseInt((z.name.match(/^Mythic\+ Season (\d+)/) ?? [])[1] ?? '') }))
+    .filter(c => Number.isFinite(c.season))
+    .sort((a, b) => b.season - a.season);
   let mplusZone = mplusCandidates[0]?.zone ?? null;
   for (const cand of mplusCandidates) {
     const firstEnc = cand.zone.encounters?.[0]?.id;
@@ -240,7 +298,7 @@ async function computeSeasonState(token: string): Promise<SeasonState> {
   if (!mplusZone) throw new Error('Season resolver: no Mythic+ zone found');
 
   // Raid difficulty: probe the configured current raid's first boss on Mythic.
-  const raidZones = current.filter((z: any) => z.name in MIDNIGHT_RAIDS);
+  const raidZones = current.filter(z => z.name in MIDNIGHT_RAIDS);
   let defaultRaidDifficulty: 4 | 5 = 4;
   const probeBoss = raidZones[0]?.encounters?.[0]?.id;
   if (probeBoss && (await getUnfilteredRankingsCount(token, probeBoss, 5)) >= 10) {
@@ -249,18 +307,18 @@ async function computeSeasonState(token: string): Promise<SeasonState> {
 
   // Drift alarm: a raid zone newer than everything configured means a new season's
   // raid exists and MIDNIGHT_RAIDS needs its one-line update.
-  const maxConfiguredId = Math.max(0, ...zones.filter((z: any) => z.name in MIDNIGHT_RAIDS).map((z: any) => z.id));
-  const newer = current.filter((z: any) =>
+  const maxConfiguredId = Math.max(0, ...zones.filter(z => z.name in MIDNIGHT_RAIDS).map(z => z.id));
+  const newer = current.filter(z =>
     z.id > maxConfiguredId && !(z.name in MIDNIGHT_RAIDS) && !/^Mythic\+/.test(z.name) && z.name !== 'Delves'
   );
   const drift = newer.length > 0
-    ? `MIDNIGHT_RAIDS looks stale: newer raid zone(s) exist on WCL: ${newer.map((z: any) => `${z.name} (${z.id})`).join(', ')}`
+    ? `MIDNIGHT_RAIDS looks stale: newer raid zone(s) exist on WCL: ${newer.map(z => `${z.name} (${z.id})`).join(', ')}`
     : null;
 
   return {
     mplusZoneId: mplusZone.id,
     seasonLabel: mplusZone.name.replace(/^Mythic\+\s*/, ''),
-    expansionName: zones.find((z: any) => (z.expansion?.id ?? 0) === maxExp)?.expansion?.name ?? '',
+    expansionName: zones.find(z => (z.expansion?.id ?? 0) === maxExp)?.expansion?.name ?? '',
     defaultRaidDifficulty,
     drift,
   };
@@ -282,8 +340,12 @@ function seasonFallback(): SeasonState {
 
 export async function getSeasonState(): Promise<SeasonState> {
   try {
-    const token = await getWclToken();
-    return await getOrSetPersistent('season-state-v1', 21600, () => computeSeasonState(token));
+    // Memoized inside the try: a failure rejects (and is dropped from the memo), so the
+    // fallback below is never what gets held.
+    return await memoFor('season-state', MEMO_SEASON_MS, async () => {
+      const token = await getWclToken();
+      return getOrSetPersistent('season-state-v1', 21600, () => computeSeasonState(token));
+    });
   } catch (err) {
     console.error('Season resolver failed, using fallback:', err);
     await logServerError('season-resolver', err);
@@ -326,7 +388,7 @@ export async function getWclRankings(token: string, bossId: number, className: s
   // that genuinely has no parses yet. That's exactly why a WCL rate-limit exhaustion
   // (confirmed 2026-07-26) went undetected mid-batch-export: every caller just saw
   // normal-looking no_data results and had no signal to stop.
-  const rankings = (await parseWclResponse(response, 'rankings')).data?.worldData?.encounter?.characterRankings?.rankings || [];
+  const rankings = (await parseWclResponse<WclCharacterRankingsData>(response, 'rankings')).data?.worldData?.encounter?.characterRankings?.rankings || [];
   // Compact before it hits any cache layer — uncompacted, a 100-row entry is ~0.5MB
   // and even a first-pass compaction measured ~190KB, which at ~680 combos outgrows
   // the memory-capped Redis on its own. Kept per row: _tp = [entryId, points] pairs
@@ -341,13 +403,13 @@ export async function getWclRankings(token: string, bossId: number, className: s
   const ROWS_KEPT = 80;
   const TALENT_ROWS_KEPT = 55;
   const GEAR_ROWS_KEPT = 50;
-  const itemData: Record<number, { ilvl: number; icon: string; bonusIds: number[] }> = {};
-  const rows = rankings.slice(0, ROWS_KEPT).map((row: any, i: number) => {
+  const itemData: WclItemData = {};
+  const rows: WclRankingsWithItemData = rankings.slice(0, ROWS_KEPT).map((row, i): WclRankingRow => {
     const { gear, talents, ...rest } = row;
     if (i < TALENT_ROWS_KEPT && Array.isArray(talents) && talents.length > 0) {
-      rest._tp = talents.map((t: any) => [t.talentID, t.points]);
+      rest._tp = talents.map(t => [t.talentID, t.points]);
       if (i < GEAR_ROWS_KEPT && Array.isArray(gear)) {
-        rest._tg = gear.map((g: any) => [Number(g.id) || 0, Number(g.itemLevel) || 0]);
+        rest._tg = gear.map(g => [Number(g.id) || 0, Number(g.itemLevel) || 0]);
         for (const g of gear) {
           const id = Number(g.id) || 0;
           const ilvl = Number(g.itemLevel) || 0;
@@ -361,7 +423,7 @@ export async function getWclRankings(token: string, bossId: number, className: s
     }
     return rest;
   });
-  (rows as any)._itemData = itemData;
+  rows._itemData = itemData;
   return rows;
 }
 
@@ -379,15 +441,15 @@ export async function getWclRankingsForRegionMode(
       getWclRankings(token, bossId, className, specName, difficulty, 'us', metric, noCache),
       getWclRankings(token, bossId, className, specName, difficulty, 'eu', metric, noCache),
     ]);
-    const merged = [...(us as any[]), ...(eu as any[])].sort((a, b) => (b.amount ?? 0) - (a.amount ?? 0));
+    const merged: WclRankingsWithItemData = [...us, ...eu].sort((a, b) => (b.amount ?? 0) - (a.amount ?? 0));
     // Merge both regions' aggregated item dicts (max ilvl wins) — see getWclRankings.
-    const itemData: Record<number, { ilvl: number; icon: string; bonusIds: number[] }> = {};
-    for (const src of [(us as any)._itemData, (eu as any)._itemData]) {
-      for (const [id, d] of Object.entries(src ?? {}) as any) {
-        if (!itemData[id as any] || itemData[id as any].ilvl < d.ilvl) itemData[id as any] = d;
+    const itemData: Record<string, WclItemEntry> = {};
+    for (const src of [us._itemData, eu._itemData]) {
+      for (const [id, d] of Object.entries<WclItemEntry>(src ?? {})) {
+        if (!itemData[id] || itemData[id].ilvl < d.ilvl) itemData[id] = d;
       }
     }
-    (merged as any)._itemData = itemData;
+    merged._itemData = itemData;
     return merged;
   }
   return getWclRankings(token, bossId, className, specName, difficulty, undefined, metric, noCache);
@@ -421,12 +483,24 @@ export async function getBlizzardTokensForRegions(regions: string[]): Promise<Ma
 // region's API. A player whose region has no token (CN — no Blizzard API at all, or a
 // token fetch failure) simply yields no profile data. Shared by the initial player-card
 // fetch and the on-demand "load more players" action.
-export function blizzardCharacterProfileFetch(
-  player: any,
+export function blizzardCharacterProfileFetch<E extends keyof BlizzardProfileEndpoints>(
+  player: WclProfileTarget,
+  tokensByRegion: Map<string, string>,
+  endpoint: E,
+  cacheTag: string
+): Promise<BlizzardProfileEndpoints[E] | null>;
+export function blizzardCharacterProfileFetch<T = unknown>(
+  player: WclProfileTarget,
   tokensByRegion: Map<string, string>,
   endpoint: string,
   cacheTag: string
-): Promise<any> {
+): Promise<T | null>;
+export function blizzardCharacterProfileFetch(
+  player: WclProfileTarget,
+  tokensByRegion: Map<string, string>,
+  endpoint: string,
+  cacheTag: string
+): Promise<unknown> {
   const pRegion = playerRegion(player, 'us');
   const token = tokensByRegion.get(pRegion);
   const realm = (player.server?.slug ?? player.server?.name ?? '').toLowerCase().replace(/\s+/g, '-').replace(/'/g, '');
@@ -462,12 +536,12 @@ export function blizzardCharacterProfileFetch(
 // two same-named players, and name-only matching would hand the ranked player the other
 // one's CombatantInfo. When the caller knows the ranked player's server, prefer the
 // actor whose server matches; fall back to name-only when server info is missing.
-function matchActor(actors: any[], playerName: string, serverName?: string): any | null {
+function matchActor(actors: WclReportActor[], playerName: string, serverName?: string): WclReportActor | null {
   const nameLower = playerName.toLowerCase();
-  const nameMatches = actors.filter((a: any) => a.name?.toLowerCase() === nameLower);
+  const nameMatches = actors.filter(a => a.name?.toLowerCase() === nameLower);
   if (nameMatches.length > 1 && serverName) {
     const serverLower = serverName.toLowerCase();
-    const exact = nameMatches.find((a: any) => (a.server || '').toLowerCase() === serverLower);
+    const exact = nameMatches.find(a => (a.server || '').toLowerCase() === serverLower);
     if (exact) return exact;
   }
   return nameMatches[0] ?? null;
@@ -494,12 +568,12 @@ export async function getHistoricalFightTelemetry(wclToken: string, reportCode: 
   // normal-looking "no event" — a swallowed failure here used to get CACHED as
   // "player has no telemetry" for 24h. A null report (private/deleted) still
   // resolves to no-data below, which IS a stable fact worth caching.
-  const reportData = (await parseWclResponse(response, 'telemetry')).data?.reportData?.report;
+  const reportData = (await parseWclResponse<WclReportTelemetryData>(response, 'telemetry')).data?.reportData?.report;
   const actors = reportData?.masterData?.actors || [];
   const events = reportData?.events?.data || [];
   const targetActor = matchActor(actors, playerName, serverName);
   const matchedSourceId = targetActor ? targetActor.id : null;
-  return { sourceId: matchedSourceId, event: events.find((e: any) => e.sourceID === matchedSourceId) || null };
+  return { sourceId: matchedSourceId, event: events.find(e => e.sourceID === matchedSourceId) || null };
 }
 
 // Same data as getHistoricalFightTelemetry, but for many players in ONE HTTP request
@@ -515,7 +589,7 @@ export async function getHistoricalFightTelemetry(wclToken: string, reportCode: 
 async function getHistoricalFightTelemetryBatch(
   wclToken: string,
   requests: Array<{ reportCode: string; fightId: number; playerName: string; serverName?: string }>
-): Promise<Array<{ sourceId: number | null; event: any }>> {
+): Promise<WclTelemetry[]> {
   if (requests.length === 0) return [];
   const aliasedFields = requests.map((r, i) => `
     p${i}: report(code: "${r.reportCode}") {
@@ -537,14 +611,14 @@ async function getHistoricalFightTelemetryBatch(
   // ranks from every consensus computed that day. A single null aliased report among
   // many (private/deleted — a partial GraphQL error with data non-null) still resolves
   // to no-data for just that entry, which is correct and cacheable.
-  const reportData = (await parseWclResponse(response, 'telemetry-batch')).data?.reportData ?? {};
+  const reportData = (await parseWclResponse<WclReportTelemetryBatchData>(response, 'telemetry-batch')).data?.reportData ?? {};
   return requests.map((r, i) => {
     const report = reportData[`p${i}`];
     const actors = report?.masterData?.actors || [];
     const events = report?.events?.data || [];
     const targetActor = matchActor(actors, r.playerName, r.serverName);
     const matchedSourceId = targetActor ? targetActor.id : null;
-    return { sourceId: matchedSourceId, event: events.find((e: any) => e.sourceID === matchedSourceId) || null };
+    return { sourceId: matchedSourceId, event: events.find(e => e.sourceID === matchedSourceId) || null };
   });
 }
 
@@ -565,7 +639,7 @@ async function getHistoricalFightTelemetryBatch(
 // alone, two batches covering the same fight list for DIFFERENT players (e.g. one
 // premade group topping multiple specs' leaderboards) would share an entry, attributing
 // one player's build to another. v2 prefix invalidates the old name-less entries.
-function telemetryBatchRequests(players: any[]) {
+function telemetryBatchRequests(players: WclTelemetryTarget[]) {
   return players.map(p => ({
     reportCode: p.report?.code as string,
     fightId: p.report?.fightID as number,
@@ -603,7 +677,7 @@ async function loadEntryNodeMap(): Promise<Record<number, number>> {
 // Read-modify-write without a lock: concurrent writers can drop each other's newest
 // pairs, but the data is static and monotonic — whatever is missed is re-harvested by
 // the next fetch that needs it. Await-ed by callers (Vercel post-response freeze).
-async function harvestEntryNodePairs(telemetries: any[], map: Record<number, number>): Promise<void> {
+async function harvestEntryNodePairs(telemetries: Array<WclTelemetry | null>, map: Record<number, number>): Promise<void> {
   let grew = false;
   for (const t of telemetries) {
     for (const row of t?.event?.talentTree ?? []) {
@@ -646,7 +720,7 @@ export async function loadEntryTalentMap(): Promise<Record<number, number>> {
 // apex node's several sub-entries can't be attributed through the single profile id).
 // Returns the merged map so the caller can translate with same-render freshness.
 export async function harvestEntryTalentPairs(
-  players: Array<{ telemetry?: any; profileNodes?: any[] }>
+  players: Array<{ telemetry?: WclTelemetry | null; profileNodes?: BlizzardLoadoutNode[] }>
 ): Promise<Record<number, number>> {
   const map = await loadEntryTalentMap();
   let grew = false;
@@ -657,7 +731,7 @@ export async function harvestEntryTalentPairs(
       if (pn?.id != null && talentId != null) profileByNode.set(pn.id, talentId);
     }
     if (profileByNode.size === 0) continue;
-    const rowsByNode = new Map<number, any[]>();
+    const rowsByNode = new Map<number, WclTalentRow[]>();
     for (const row of p.telemetry?.event?.talentTree ?? []) {
       if (row?.id == null || row?.nodeID == null) continue;
       if (!rowsByNode.has(row.nodeID)) rowsByNode.set(row.nodeID, []);
@@ -666,8 +740,8 @@ export async function harvestEntryTalentPairs(
     for (const [nodeID, rows] of rowsByNode) {
       if (rows.length !== 1) continue;
       const talentId = profileByNode.get(nodeID);
-      if (talentId != null && map[rows[0].id] === undefined) {
-        map[rows[0].id] = talentId;
+      if (talentId != null && map[rows[0].id!] === undefined) {
+        map[rows[0].id!] = talentId;
         grew = true;
       }
     }
@@ -698,7 +772,7 @@ export function translateEntryIds(
 // wclItemData) is oblivious to the source. Returns null unless EVERY entry maps — a
 // partially-mapped tree would silently misrepresent the build, so partial means
 // "fetch for real" (which also teaches the map the missing entries).
-function synthesizeTelemetryFromInline(player: any, map: Record<number, number>): any | null {
+function synthesizeTelemetryFromInline(player: WclTelemetryTarget, map: Record<number, number>): WclTelemetry | null {
   const pairs: Array<[number, number]> | undefined = player?._tp;
   if (!Array.isArray(pairs) || pairs.length === 0) return null;
   const talentTree: Array<{ nodeID: number; rank: number; id: number }> = [];
@@ -719,11 +793,11 @@ function synthesizeTelemetryFromInline(player: any, map: Record<number, number>)
 // cover, fetch only the remainder (per-player, preserving input order), and teach the
 // map from whatever was fetched.
 async function fetchTelemetryBatchSmart(
-  players: any[],
-  innerFetch: (subset: any[]) => Promise<any[]>
-): Promise<any[]> {
+  players: WclTelemetryTarget[],
+  innerFetch: (subset: WclTelemetryTarget[]) => Promise<Array<WclTelemetry | null>>
+): Promise<Array<WclTelemetry | null>> {
   const map = await loadEntryNodeMap();
-  const out: any[] = new Array(players.length).fill(null);
+  const out: Array<WclTelemetry | null> = new Array(players.length).fill(null);
   const fetchIdx: number[] = [];
   players.forEach((p, i) => {
     const synthesized = synthesizeTelemetryFromInline(p, map);
@@ -738,7 +812,7 @@ async function fetchTelemetryBatchSmart(
   return out;
 }
 
-export function fetchTelemetryBatchCached(wclToken: string, players: any[]): Promise<any[]> {
+export function fetchTelemetryBatchCached(wclToken: string, players: WclTelemetryTarget[]): Promise<Array<WclTelemetry | null>> {
   return fetchTelemetryBatchSmart(players, (subset) => {
     const requests = telemetryBatchRequests(subset);
     return getOrSetPersistent(
@@ -761,11 +835,11 @@ export function fetchTelemetryBatchCached(wclToken: string, players: any[]): Pro
 // It does READ Redis first, though: the keys are content-addressed identically to the
 // crawl's, so whenever the weekly crawl (or an SWR background refresh) already paid for
 // this exact batch, the website reuses it for free — reads can't grow the instance.
-export async function fetchTelemetryBatchCachedUnstable(wclToken: string, players: any[]): Promise<any[]> {
+export async function fetchTelemetryBatchCachedUnstable(wclToken: string, players: WclTelemetryTarget[]): Promise<Array<WclTelemetry | null>> {
   return fetchTelemetryBatchSmart(players, async (subset) => {
     const requests = telemetryBatchRequests(subset);
     const key = `wcl-telemetry-batch-v2-${telemetryBatchKey(requests)}`;
-    const fromCrawl = await getPersistentReadOnly<any[]>(key);
+    const fromCrawl = await getPersistentReadOnly<Array<WclTelemetry | null>>(key);
     if (fromCrawl != null) return fromCrawl;
     return unstable_cache(
       () => getHistoricalFightTelemetryBatch(wclToken, requests),
@@ -793,10 +867,10 @@ const RANKINGS_STALE_TTL_SECONDS = 3 * 86400;
 const RANKINGS_REFRESH_LOCK_SECONDS = 600;
 
 export interface CachedRankings {
-  rankings: any[];
+  rankings: WclRankingRow[];
   // Aggregated {itemId: {ilvl, icon, bonusIds}} across the top rows' inline gear —
   // seeds BossContent's wclItemData without per-row icon/bonus duplication.
-  itemData?: Record<number, { ilvl: number; icon: string; bonusIds: number[] }>;
+  itemData?: WclItemData;
   fetchedAt: number;
 }
 
@@ -815,7 +889,7 @@ export async function getRankingsCachedSWR(
   const key = `wcl-rankings-v7-${bossId}-${className}-${spec}-${difficulty}-${region}-${metric ?? 'dps'}`;
   const compute = async (): Promise<CachedRankings> => {
     const rows = await getWclRankingsForRegionMode(wclToken, bossId, className, spec, difficulty, region, metric, true);
-    return { rankings: rows, itemData: (rows as any)._itemData, fetchedAt: Date.now() };
+    return { rankings: rows, itemData: rows._itemData, fetchedAt: Date.now() };
   };
 
   if (!opts?.forceFresh) {
@@ -850,7 +924,7 @@ async function refreshRankingsInBackground(
       await selectPlayersWithValidTelemetry(
         fresh.rankings,
         Math.min(fresh.rankings.length, 50),
-        (players: any[]) => fetchTelemetryBatchCachedUnstable(wclToken, players),
+        (players) => fetchTelemetryBatchCachedUnstable(wclToken, players),
         { batchSize: 10, concurrency: 5 }
       );
     }
@@ -893,12 +967,12 @@ export async function mapConcurrent<T, U>(items: T[], limit: number, fn: (item: 
 export async function selectPlayersWithValidTelemetry<P>(
   rankings: P[],
   targetCount: number,
-  fetchBatch: (players: P[]) => Promise<any[]>,
+  fetchBatch: (players: P[]) => Promise<Array<WclTelemetry | null>>,
   opts: { batchSize?: number; concurrency?: number } = {}
-): Promise<Array<{ player: P; telemetry: any }>> {
+): Promise<Array<{ player: P; telemetry: WclTelemetry | null }>> {
   const batchSize = opts.batchSize ?? 10;
   const concurrency = opts.concurrency ?? 5;
-  const selected: Array<{ player: P; telemetry: any }> = [];
+  const selected: Array<{ player: P; telemetry: WclTelemetry | null }> = [];
   let nextIdx = 0;
   while (selected.length < targetCount && nextIdx < rankings.length) {
     const need = targetCount - selected.length;
@@ -917,7 +991,7 @@ export async function selectPlayersWithValidTelemetry<P>(
     for (const { chunk, telemetries } of chunkResults) {
       for (let i = 0; i < chunk.length; i++) {
         const telemetry = telemetries[i];
-        const tree = normalizeTalentTree((telemetry as any)?.event?.talentTree || []);
+        const tree = normalizeTalentTree(telemetry?.event?.talentTree || []);
         if (tree.length > 0) selected.push({ player: chunk[i], telemetry });
       }
     }
@@ -1015,7 +1089,7 @@ async function blizzardStaticFetch(url: string, accessToken: string, what: strin
       await new Promise(r => setTimeout(r, waitMs));
     }
   }
-  const err: any = new Error(`${what} rate-limited by the Blizzard API (429).`);
+  const err: RateLimitError = new Error(`${what} rate-limited by the Blizzard API (429).`);
   err.isRateLimit = true;
   err.retryAfter = response.headers.get('retry-after');
   throw err;
@@ -1029,11 +1103,15 @@ export function parseRaidDifficulty(raw: string | undefined, fallback: 4 | 5): 4
   return n === 4 || n === 5 ? n : fallback;
 }
 
+// A raw Blizzard node tagged with the tree section it was listed under (and, for hero
+// nodes, the one hero tree that owns it — null for gateway nodes shared by several).
+type SectionedTalentNode = BlizzardTalentNode & { _section: 'class' | 'hero' | 'spec'; _heroTreeId: number | null };
+
 export async function getTalentTreeLayout(treeId: number, specId: number, accessToken: string) {
   const url = `https://us.api.blizzard.com/data/wow/talent-tree/${treeId}/playable-specialization/${specId}?namespace=static-us&locale=en_US`;
   const response = await blizzardStaticFetch(url, accessToken, 'Talent tree fetch', 86400);
   if (!response.ok) throw new Error(`Talent tree fetch failed: ${response.status}`);
-  const data = await response.json();
+  const data: BlizzardTalentTree = await response.json();
 
   // Nodes that appear in multiple hero trees are shared (gateway nodes) — assign null so they
   // don't contaminate hero-tree detection when building the consensus build.
@@ -1045,7 +1123,7 @@ export async function getTalentTreeLayout(treeId: number, specId: number, access
   }
   const heroNodeIds = new Set(heroNodeTreeMap.keys());
   const heroTreeNames: Array<{ id: number; name: string; imageUrl: string }> = await Promise.all(
-    (data.hero_talent_trees || []).map(async (ht: any) => {
+    (data.hero_talent_trees || []).map(async (ht) => {
       // Blizzard's own media endpoint first (best when available), then the community
       // wiki (confirmed reliable for both new and established hero trees), then a hero
       // node's own spell icon as a last resort if neither source has this specific tree.
@@ -1054,7 +1132,7 @@ export async function getTalentTreeLayout(treeId: number, specId: number, access
       if (!imageUrl) {
         const firstNode = (ht.hero_talent_nodes || [])[0];
         const firstRank = firstNode?.ranks?.[0];
-        const choices: any[] = firstRank?.choice_of_tooltips ?? [];
+        const choices = firstRank?.choice_of_tooltips ?? [];
         const tooltip = firstRank?.tooltip ?? choices[0];
         const spellId = tooltip?.spell_tooltip?.spell?.id;
         if (spellId) imageUrl = await getSpellIconUrl(spellId, accessToken);
@@ -1066,16 +1144,16 @@ export async function getTalentTreeLayout(treeId: number, specId: number, access
   // Primary source for hero nodes: spec_talent_nodes (Blizzard naturally filters these to the
   // spec's available hero trees). Fall back to hero_talent_trees nodes directly for specs where
   // spec_talent_nodes doesn't include hero nodes at all (e.g. Augmentation Evoker).
-  const heroNodesFromSpec = (data.spec_talent_nodes || []).filter((n: any) => heroNodeIds.has(n.id));
-  const heroNodeSource: any[] = heroNodesFromSpec.length > 0
-    ? heroNodesFromSpec.map((n: any) => ({
+  const heroNodesFromSpec = (data.spec_talent_nodes || []).filter(n => heroNodeIds.has(n.id));
+  const heroNodeSource: SectionedTalentNode[] = heroNodesFromSpec.length > 0
+    ? heroNodesFromSpec.map((n): SectionedTalentNode => ({
         ...n,
         _section: 'hero',
         _heroTreeId: heroNodeTreeMap.get(n.id) ?? null,
       }))
     : (() => {
         const seenIds = new Set<number>();
-        const allNodes: any[] = [];
+        const allNodes: SectionedTalentNode[] = [];
         for (const ht of (data.hero_talent_trees || [])) {
           for (const n of (ht.hero_talent_nodes || [])) {
             if (seenIds.has(n.id)) continue;
@@ -1087,7 +1165,7 @@ export async function getTalentTreeLayout(treeId: number, specId: number, access
         // keep tree-specific (non-null treeId) over shared gateway (null treeId).
         // Among same-priority nodes at the same position, keep the first encountered.
         const takenPos = new Set<string>();
-        const nodes: any[] = [];
+        const nodes: SectionedTalentNode[] = [];
         for (const pass of [false, true]) { // false = tree-specific first, true = shared gateway
           for (const node of allNodes) {
             if ((node._heroTreeId === null) !== pass) continue;
@@ -1098,10 +1176,10 @@ export async function getTalentTreeLayout(treeId: number, specId: number, access
         return nodes;
       })();
 
-  const allRawUnsorted = [
-    ...(data.class_talent_nodes || []).map((n: any) => ({ ...n, _section: 'class', _heroTreeId: null })),
+  const allRawUnsorted: SectionedTalentNode[] = [
+    ...(data.class_talent_nodes || []).map((n): SectionedTalentNode => ({ ...n, _section: 'class', _heroTreeId: null })),
     ...heroNodeSource,
-    ...(data.spec_talent_nodes || []).filter((n: any) => !heroNodeIds.has(n.id)).map((n: any) => ({
+    ...(data.spec_talent_nodes || []).filter(n => !heroNodeIds.has(n.id)).map((n): SectionedTalentNode => ({
       ...n,
       _section: 'spec',
       _heroTreeId: null,
@@ -1110,7 +1188,7 @@ export async function getTalentTreeLayout(treeId: number, specId: number, access
   // Blizzard occasionally lists the same node in both class_talent_nodes and hero_talent_trees.
   // Deduplicate by ID, preferring the most specific section: hero > spec > class.
   const sectionPriority = (s: string) => s === 'hero' ? 2 : s === 'spec' ? 1 : 0;
-  const bestById = new Map<number, any>();
+  const bestById = new Map<number, SectionedTalentNode>();
   for (const n of allRawUnsorted) {
     const existing = bestById.get(n.id);
     if (!existing || sectionPriority(n._section) > sectionPriority(existing._section)) {
@@ -1122,9 +1200,9 @@ export async function getTalentTreeLayout(treeId: number, specId: number, access
   // Higher concurrency than most mapConcurrent uses in this file — this fans out to
   // Blizzard (generous per-app rate limits), not WCL (the service that actually needed
   // throttling). Fewer sequential waves means a lower worst-case total time for the tree.
-  const mapped = await mapConcurrent(allRaw, 25, async (node: any) => {
+  const mapped = await mapConcurrent(allRaw, 25, async (node) => {
     const firstRank = node.ranks?.[0];
-    const choices: any[] = firstRank?.choice_of_tooltips ?? [];
+    const choices = firstRank?.choice_of_tooltips ?? [];
     const isChoice = choices.length >= 2;
     const tooltip = firstRank?.tooltip ?? choices[0];
     const spellTooltip = tooltip?.spell_tooltip;
@@ -1154,7 +1232,7 @@ export async function getTalentTreeLayout(treeId: number, specId: number, access
     // (e.g. starting stances, hero-tree root passives) rather than purchased with a
     // point. Needed to correctly split ranksGranted vs ranksPurchased when building
     // C_ClassTalents.ImportLoadout entries straight from WCL telemetry.
-    const grantedRanks = (node.ranks ?? []).reduce((s: number, r: any) => s + (r.default_points || 0), 0);
+    const grantedRanks = (node.ranks ?? []).reduce((s: number, r) => s + (r.default_points || 0), 0);
 
     return {
       nodeID: node.id,
@@ -1229,8 +1307,8 @@ export async function getTalentTreeId(specName: string, className: string, acces
     accessToken, 'Talent tree index', 604800,
   );
   if (!response.ok) throw new Error(`Talent tree index failed: ${response.status}`);
-  const trees: any[] = (await response.json()).spec_talent_trees || [];
-  const match = trees.find((t: any) => {
+  const trees: BlizzardTalentTreeIndexEntry[] = (await response.json()).spec_talent_trees || [];
+  const match = trees.find(t => {
     const m = t.key?.href?.match(/playable-specialization\/(\d+)/);
     return m && parseInt(m[1]) === specId;
   });
@@ -1355,7 +1433,7 @@ export function computeConsensus(
   return result;
 }
 
-export function getActiveHeroTreeId(talentNodes: Array<{ nodeID: number; rank: number }>, layout: any[]): number | null {
+export function getActiveHeroTreeId(talentNodes: Array<{ nodeID: number; rank: number }>, layout: Array<{ nodeID: number; section?: string; heroTreeId?: number | null }>): number | null {
   const active = new Set(talentNodes.map(t => t.nodeID));
   for (const node of layout) {
     if (node.section === 'hero' && node.heroTreeId != null && active.has(node.nodeID)) return node.heroTreeId;
@@ -1414,18 +1492,18 @@ export function computeRankDistribution(
 // telemetry-specific fix. Shared by the initial player-card fetch and the on-demand
 // "load more players" action so they can never drift apart.
 export function deriveTalentStringAndProfileNodes(
-  telemetryData: any,
-  profileData: any,
+  telemetryData: WclTelemetry | null | undefined,
+  profileData: BlizzardSpecializationsProfile | null | undefined,
   specId: number
-): { talentString: string | null; profileNodes: any[] } {
+): { talentString: string | null; profileNodes: BlizzardLoadoutNode[] } {
   const fightTalents: Array<{ nodeID: number; rank: number }> = telemetryData?.event?.talentTree || [];
   const fightMap = new Map<number, number>();
-  for (const t of fightTalents as any[]) {
+  for (const t of fightTalents) {
     fightMap.set(t.nodeID, Math.max(fightMap.get(t.nodeID) ?? 0, t.rank));
   }
 
   const fightSpec = profileData?.specializations?.find(
-    (sp: any) => sp.specialization?.id === specId
+    sp => sp.specialization?.id === specId
   );
 
   let talentString: string | null = null;
@@ -1464,8 +1542,8 @@ export function deriveTalentStringAndProfileNodes(
       talentString = null;
     }
   }
-  const selectedLoadout = fightSpec?.loadouts?.find((l: any) => l.talent_loadout_code === talentString) ?? null;
-  const profileNodes: any[] = selectedLoadout ? [
+  const selectedLoadout = fightSpec?.loadouts?.find(l => l.talent_loadout_code === talentString) ?? null;
+  const profileNodes: BlizzardLoadoutNode[] = selectedLoadout ? [
     ...(selectedLoadout.selected_class_talents ?? []),
     ...(selectedLoadout.selected_spec_talents ?? []),
     ...(selectedLoadout.selected_hero_talents ?? []),
@@ -1477,7 +1555,7 @@ export function deriveTalentStringAndProfileNodes(
 // How closely one player's fight matches the node-level majority consensus — counts
 // nodes where the player's actual pick+rank agrees with cMap. Used to find the single
 // real player whose build is the best stand-in for "the meta build."
-export function scorePlayerTree(tree: any[], cMap: Map<number, number>): number {
+export function scorePlayerTree(tree: WclTalentRow[], cMap: Map<number, number>): number {
   const rankMap = new Map<number, number>();
   for (const t of normalizeTalentTree(tree)) rankMap.set(t.nodeID, t.rank);
   let score = 0;
@@ -1492,7 +1570,7 @@ export function scorePlayerTree(tree: any[], cMap: Map<number, number>): number 
 // Full class tree in the codec's shape: the union of every spec's class+spec+hero
 // nodes for the class — the export format serializes ALL of them, not just the
 // active spec's. Redis-cached daily; ~4 Blizzard fetches per class per day.
-export async function getClassTreeForEncoding(className: string): Promise<import('./loadoutCodec').ClassTree | null> {
+export async function getClassTreeForEncoding(className: string): Promise<ClassTree | null> {
   const specIds = Object.values(SPEC_IDS[className] ?? {});
   if (specIds.length === 0) return null;
   try {
@@ -1505,17 +1583,17 @@ export async function getClassTreeForEncoding(className: string): Promise<import
         'https://us.api.blizzard.com/data/wow/talent-tree/index?namespace=static-us',
         { Authorization: `Bearer ${token}` }, 10000, 86400
       );
-      const idx = await idxRes.json();
-      const nodes: Record<number, any> = {};
+      const idx: BlizzardTalentTreeIndex = await idxRes.json();
+      const nodes: ClassTree = {};
       for (const sid of specIds) {
-        const entry = (idx.spec_talent_trees ?? []).find((t: any) => (t.key?.href ?? '').includes(`playable-specialization/${sid}?`));
+        const entry = (idx.spec_talent_trees ?? []).find(t => (t.key?.href ?? '').includes(`playable-specialization/${sid}?`));
         if (!entry) continue;
         const treeRes = await fetchWithTimeout(
           entry.key.href.replace(/namespace=[^&]*/, 'namespace=static-us'),
           { Authorization: `Bearer ${token}` }, 15000, 86400
         );
-        const tree = await treeRes.json();
-        const upsert = (n: any, isHero: boolean, heroTreeId: number | null) => {
+        const tree: BlizzardTalentTree = await treeRes.json();
+        const upsert = (n: BlizzardTalentNode, isHero: boolean, heroTreeId: number | null) => {
           if (nodes[n.id]) {
             if (isHero) { nodes[n.id].isHero = true; nodes[n.id].heroTreeId = heroTreeId; }
             return;
@@ -1523,8 +1601,8 @@ export async function getClassTreeForEncoding(className: string): Promise<import
           const choices = n.ranks?.[0]?.choice_of_tooltips ?? [];
           nodes[n.id] = {
             maxRanks: n.ranks?.length ?? 1,
-            granted: (n.ranks ?? []).reduce((s: number, r: any) => s + (r.default_points || 0), 0),
-            choiceTalentIds: choices.length >= 2 ? choices.map((c: any) => c?.talent?.id ?? null) : null,
+            granted: (n.ranks ?? []).reduce((s: number, r) => s + (r.default_points || 0), 0),
+            choiceTalentIds: choices.length >= 2 ? choices.map(c => c?.talent?.id ?? null) as number[] : null,
             isHero,
             heroTreeId,
           };
@@ -1590,7 +1668,7 @@ export async function generateTalentString(
 export async function generatePlayerTalentString(
   className: string,
   specId: number,
-  telemetry: any,
+  telemetry: WclTelemetry | null | undefined,
   skeletonMap: Array<{ nodeID: number; grantedRanks?: number; isChoice?: boolean; choiceAEntryId?: number | null; choiceBEntryId?: number | null }>
 ): Promise<string | null> {
   const raw = telemetry?.event?.talentTree;
@@ -1600,9 +1678,9 @@ export async function generatePlayerTalentString(
   return generateTalentString(className, specId, entries);
 }
 
-export interface MetaBuildPick {
-  player: any;
-  telemetry: any;
+export interface MetaBuildPick<P = WclRankingRow> {
+  player: P;
+  telemetry: WclTelemetry;
   wclEntries: WclImportEntry[] | null;
   entryIds: Record<number, number>;
   talentString: string | null;
@@ -1619,8 +1697,8 @@ export interface MetaBuildPick {
 // the true best match), which is exactly the kind of mismatch this function exists to
 // eliminate. When this exact player's profile isn't fetchable, talentString is simply
 // null and the Copy button doesn't render — never a possibly-inconsistent string.
-export async function resolveMetaBuildPick(
-  pool: Array<{ player: any; telemetry: any; profileData?: any }>,
+export async function resolveMetaBuildPick<P extends WclProfileTarget>(
+  pool: Array<{ player: P; telemetry?: WclTelemetry | null; profileData?: BlizzardSpecializationsProfile | null }>,
   cMap: Map<number, number>,
   skeletonMap: Array<{ nodeID: number; grantedRanks?: number }>,
   specId: number,
@@ -1629,7 +1707,7 @@ export async function resolveMetaBuildPick(
   // directly from the pick's own WCL entries (see generateTalentString) — the
   // fight build itself, so it can never disagree with what's on screen.
   className?: string
-): Promise<MetaBuildPick | null> {
+): Promise<MetaBuildPick<P> | null> {
   let bestScore = -1;
   let best: (typeof pool)[number] | null = null;
   for (const entry of pool) {
@@ -1640,7 +1718,7 @@ export async function resolveMetaBuildPick(
   }
   if (!best) return null;
 
-  const rawTree = best.telemetry.event.talentTree;
+  const rawTree = best.telemetry!.event!.talentTree!;
   const wclEntries = buildImportEntries(rawTree, skeletonMap, await loadEntryNodeMap());
   const entryIds: Record<number, number> = {};
   for (const e of wclEntries) entryIds[e.nodeID] = e.selectionEntryID;
@@ -1657,7 +1735,7 @@ export async function resolveMetaBuildPick(
 
   return {
     player: best.player,
-    telemetry: best.telemetry,
+    telemetry: best.telemetry!,
     wclEntries: wclEntries.length > 0 ? wclEntries : null,
     entryIds,
     talentString,
@@ -1719,7 +1797,7 @@ const DUNGEON_MEDIA_OVERRIDES: Record<string, { wclCdnId?: number; blizzardInsta
 // listed, not a crash) if the WCL query fails.
 export async function getDungeonRoster(token: string): Promise<Array<{ id: number; name: string; wclCdnId?: number; blizzardInstanceId?: number }>> {
   const encounters = await getMplusEncounters(token, (await getSeasonState()).mplusZoneId);
-  return encounters.map((enc: any) => ({
+  return encounters.map(enc => ({
     id: enc.id,
     name: enc.name,
     ...DUNGEON_MEDIA_OVERRIDES[enc.name],

@@ -1,4 +1,5 @@
-import LoadingProgress, { tierListStages, type LoadingAccent } from './LoadingProgress';
+import LoadingProgress, { type LoadingAccent } from './LoadingProgress';
+import { tierListStages } from '../lib/loadingStages';
 
 // Streams in place of a tier list while its rankings are fetched: the staged bar
 // says what is being pulled, and the grey rows underneath hold the tier shape.

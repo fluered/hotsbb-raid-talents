@@ -1,4 +1,5 @@
-import LoadingProgress, { REVIEW_STAGES } from '../../components/LoadingProgress';
+import LoadingProgress from '../../components/LoadingProgress';
+import { REVIEW_STAGES } from '../../lib/loadingStages';
 
 // Streams in place of the page while Warcraft Logs tables (and, on a cold boss/spec,
 // the top-player pool) are fetched — seconds when cached, a minute or two cold. An

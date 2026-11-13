@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isAuthorizedInternalCaller } from '../../../lib/internalAuth';
 import { getClassTreeForEncoding, harvestLoadoutStrings, generateTalentString, loadEntryTalentMap } from '../../../lib/wow';
 import { decodeLoadoutString } from '../../../lib/loadoutCodec';
+import { errorMessage } from '../../../lib/wclTypes';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -16,11 +17,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ status: 'error', message: 'Not found' }, { status: 404 });
   }
   try {
-    const body = await request.json();
-    const { className, specId, code, nodes } = body as {
+    const body = (await request.json()) as {
       className: string; specId: number; code: string;
       nodes: Array<{ id: number; rank: number; talentId: number | null }>;
+      direct?: unknown;
     };
+    const { className, specId, code, nodes } = body;
     const tree = await getClassTreeForEncoding(className);
     if (!tree) return NextResponse.json({ status: 'error', message: 'no class tree' }, { status: 500 });
 
@@ -30,7 +32,7 @@ export async function POST(request: NextRequest) {
     // node minus granted, plus the chosen option's talent id for choice nodes.
     const byNode = new Map<number, { ranksPurchased: number; talentId: number | null }>();
     for (const n of nodes) {
-      const meta = (tree as any)[n.id];
+      const meta = tree[n.id];
       if (!meta) continue; // profile pseudo-nodes aren't serialized
       const cur = byNode.get(n.id) ?? { ranksPurchased: 0, talentId: null };
       cur.ranksPurchased += n.rank;
@@ -38,11 +40,11 @@ export async function POST(request: NextRequest) {
       byNode.set(n.id, cur);
     }
     for (const [id, sel] of byNode) {
-      const g = (tree as any)[id].granted;
+      const g = tree[id].granted;
       if (g > 0) sel.ranksPurchased = Math.max(0, sel.ranksPurchased - g);
     }
     let built: string | null;
-    if ((body as any).direct) {
+    if (body.direct) {
       // Codec-only mode: feed Blizzard-space talent ids straight to the encoder,
       // isolating codec correctness from trait→talent bridge coverage.
       const { encodeLoadoutString } = await import('../../../lib/loadoutCodec');
@@ -75,7 +77,7 @@ export async function POST(request: NextRequest) {
       builtLength: built?.length ?? null,
       codeLength: code.length,
     });
-  } catch (e: any) {
-    return NextResponse.json({ status: 'error', message: e?.message ?? String(e) }, { status: 500 });
+  } catch (e: unknown) {
+    return NextResponse.json({ status: 'error', message: errorMessage(e) }, { status: 500 });
   }
 }
