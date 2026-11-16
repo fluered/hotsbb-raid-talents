@@ -289,6 +289,44 @@ export default function NightView({ night, reportTitle, discordText }: { night: 
         )}
       </section>
 
+      {night.countedDeaths > 0 && (
+        <section className="space-y-2.5">
+          <h2 className={LABEL}>Died with a defensive ready</h2>
+          {!night.readyDeaths ? (
+            <p className="text-xs text-zinc-500">The cast data for this night could not be loaded from Warcraft Logs, so this section is empty. Reload to try again.</p>
+          ) : night.readyDeaths.players.length === 0 ? (
+            <p className="text-sm text-zinc-400">
+              {night.readyDeaths.judged
+                ? `None of the ${night.readyDeaths.judged} deaths before the wipes came with a personal defensive ready: every one was already pressed or on cooldown.`
+                : 'Nobody who died before a wipe pressed a personal defensive at any point tonight, so there is nothing to compare.'}
+            </p>
+          ) : (
+            <>
+              <p className="text-sm text-zinc-300">
+                <span className="font-bold text-zinc-100">{night.readyDeaths.withReady} of {night.readyDeaths.judged}</span> deaths before the wipes came with a personal defensive off cooldown and not pressed.{' '}
+                {night.readyDeaths.nothingPressed === night.readyDeaths.withReady ? 'At every one of them, no defensive at all was pressed in the ten seconds before.' : `At ${night.readyDeaths.nothingPressed} of those, no defensive at all was pressed in the ten seconds before; at the rest a different one was.`}
+              </p>
+              <div className="rounded-xl border border-zinc-800/70 bg-zinc-900/40 divide-y divide-zinc-800/50">
+                {night.readyDeaths.players.map(p => (
+                  <div key={p.id} className="flex items-start gap-3 px-4 py-2 text-sm min-w-0">
+                    <Link href={playerHref(p.fightId, p.id)} className={`font-semibold ${classColor(p.className)} hover:underline underline-offset-2 truncate w-28 sm:w-36 shrink-0`}>{p.name}</Link>
+                    <span className={`text-xs font-mono shrink-0 w-14 tabular-nums ${p.withReady === p.deaths ? 'text-red-300' : 'text-amber-300'}`}>{p.withReady} of {p.deaths}</span>
+                    <span className="text-xs text-zinc-400 min-w-0">
+                      {p.ready.map(r => `${r.name}${p.withReady > 1 ? ` ×${r.count}` : ''}`).join(', ')}
+                      <span className="text-zinc-600"> · pull{p.pullNumbers.length === 1 ? '' : 's'} {p.pullNumbers.join(', ')}</span>
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs text-zinc-500">
+                Each player&apos;s deaths before the wipes, and at how many of them a defensive of theirs was ready, with which ones. Ready is not the same as &quot;would have lived&quot;, but it is the first thing to ask about.
+                A player&apos;s defensives are the ones they pressed at some point tonight; cooldowns are from Wowhead. Healthstones and healing potions are not counted.
+              </p>
+            </>
+          )}
+        </section>
+      )}
+
       {night.firstDeaths.length > 0 && (
         <section className="space-y-2.5">
           <h2 className={LABEL}>First deaths</h2>
@@ -336,6 +374,7 @@ export default function NightView({ night, reportTitle, discordText }: { night: 
                 <tr className="text-[10px] uppercase tracking-wider text-zinc-500 text-right">
                   <th className="text-left font-bold px-3 sm:px-4 py-2">Player</th>
                   <th className="font-bold px-1.5 py-2 w-14 sm:w-16">Deaths</th>
+                  <th className="font-bold px-1.5 py-2 w-16 hidden sm:table-cell" title="Deaths with a personal defensive ready">Def. ready</th>
                   <th className="font-bold px-1.5 py-2 w-12 sm:w-16">First</th>
                   <th className="font-bold px-1.5 py-2 w-12 sm:w-16">Hits</th>
                   <th className="font-bold px-1.5 py-2 w-20 hidden sm:table-cell">Avoidable</th>
@@ -349,6 +388,7 @@ export default function NightView({ night, reportTitle, discordText }: { night: 
                       <Link href={playerHref(p.fightId, p.id)} className={`font-semibold ${classColor(p.className)} hover:underline underline-offset-2`}>{p.name}</Link>
                     </td>
                     <td className={`px-1.5 py-1.5 ${p.deaths ? 'text-red-300' : 'text-zinc-600'}`}>{p.deaths}</td>
+                    <td className={`px-1.5 py-1.5 hidden sm:table-cell ${p.readyDeaths ? 'text-amber-300' : 'text-zinc-600'}`}>{p.deaths && p.readyDeaths != null ? p.readyDeaths : '—'}</td>
                     <td className={`px-1.5 py-1.5 ${p.firstDeaths ? 'text-amber-300' : 'text-zinc-600'}`}>{p.firstDeaths}</td>
                     <td className={`px-1.5 py-1.5 ${p.hits ? 'text-zinc-200' : 'text-zinc-600'}`}>{night.mechanics.length ? p.hits : '—'}</td>
                     <td className="px-1.5 py-1.5 text-zinc-400 hidden sm:table-cell">{night.mechanics.length ? (p.avoidDamage ? fmtNum(p.avoidDamage) : '0') : '—'}</td>

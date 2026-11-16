@@ -1,5 +1,7 @@
 import { unstable_cache } from 'next/cache';
-import { wclQuery, isRateLimitError } from './wow';
+import { wclQuery, isRateLimitError, mapConcurrent } from './wow';
+import { defensiveKey, defensivesAt, isDefensive, noChargeModel } from './defensives';
+import { getSpellInfo } from './bossMechanics';
 import {
   buildProfile, DIFFICULTY_LABELS, isPlayerSourcedDamage, mapPlayerDetails,
   type FightPlayer, type RaidDeath, type RaidMechanicStats, type ReportFight, type ReportOverview, type Role, type WclEventsPage, type WclReportData, type WclTable,
@@ -323,6 +325,69 @@ export function getNightHits(token: string, code: string, fights: ReportFight[],
   )();
 }
 
+// ─── Defensives pressed across the night ───────────────────────────────────────
+//
+// For "died with a defensive ready": every personal-defensive cast by anyone on any
+// pull, in two requests however long the night is (the friendly casts table names the
+// spells, one filtered events query gives who pressed what and when), plus each
+// spell's cooldown and charges from Wowhead (cached a week per spell).
+export interface NightDefensives {
+  spells: Record<string, { spellId: number; icon: string; cooldownSec: number | null; charges: number }>;
+  // [fight id, player id, defensive name, seconds from that pull's start]
+  casts: Array<[number, number, string, number]>;
+  truncated: boolean;
+  requests: number;
+}
+
+interface WclCastEvent { timestamp: number; sourceID?: number; abilityGameID?: number; fight?: number; type?: string }
+
+export function getNightDefensives(token: string, code: string, fights: ReportFight[]): Promise<NightDefensives> {
+  return unstable_cache(
+    async () => {
+      const out: NightDefensives = { spells: {}, casts: [], truncated: false, requests: 1 };
+      const fids = fights.map(f => f.id).join(',');
+      const t = await wclQuery<WclReportData<{ casts?: WclTable<{ guid?: number; name?: string; abilityIcon?: string } | null> | null }>>(token, `{ reportData { report(code: "${code}") {
+        casts: table(dataType: Casts, fightIDs: [${fids}], viewBy: Ability)
+      } } }`, 'night-defensive-spells', null);
+      const nameOf = new Map<number, string>();
+      for (const e of t?.reportData?.report?.casts?.data?.entries ?? []) {
+        if (!e?.guid || !e.name || !isDefensive(e.name)) continue;
+        const name = defensiveKey(e.name);
+        nameOf.set(e.guid, name);
+        out.spells[name] ??= { spellId: e.guid, icon: e.abilityIcon ?? '', cooldownSec: null, charges: 1 };
+      }
+      if (!nameOf.size) return out;
+      const fightById = new Map(fights.map(f => [f.id, f]));
+      const end = Math.max(...fights.map(f => f.endTime));
+      let from: number | null = null;
+      for (let page = 0; page < EVENT_PAGES; page++) {
+        out.requests++;
+        const range: string = from == null ? '' : `startTime: ${from}, endTime: ${end}, `;
+        const d: WclReportData<{ ev?: WclEventsPage<WclCastEvent | null> | null }> | null | undefined = await wclQuery(token, `{ reportData { report(code: "${code}") {
+          ev: events(fightIDs: [${fids}], ${range}dataType: Casts, filterExpression: "type = 'cast' and ability.id in (${[...nameOf.keys()].join(',')})", limit: 10000) { data nextPageTimestamp }
+        } } }`, 'night-defensive-casts', null);
+        const ev = d?.reportData?.report?.ev;
+        for (const e of ev?.data ?? []) {
+          const f = e && e.fight != null ? fightById.get(e.fight) : undefined;
+          const name = e ? nameOf.get(Number(e.abilityGameID)) : undefined;
+          if (!e || !f || !name || e.sourceID == null || e.type !== 'cast') continue;
+          out.casts.push([f.id, e.sourceID, name, Math.round((e.timestamp - f.startTime) / 100) / 10]);
+        }
+        from = ev?.nextPageTimestamp ?? null;
+        if (from == null) break;
+        if (page === EVENT_PAGES - 1) out.truncated = true;
+      }
+      await mapConcurrent(Object.values(out.spells), 8, async s => {
+        const info = await getSpellInfo(s.spellId).catch(() => null);
+        if (info) { s.cooldownSec = info.cooldownSec ?? 0; s.charges = info.charges && info.charges > 1 ? info.charges : 1; }
+      });
+      return out;
+    },
+    [`analyze-night-def-v1-${cacheKey(code, fights)}`],
+    { revalidate: 86400 }
+  )();
+}
+
 // ─── Review ───────────────────────────────────────────────────────────────────
 
 export interface NightPull {
@@ -371,9 +436,31 @@ export interface NightMechanic {
   players: Array<NightPlayerRef & { times: number; events: number; damage: number; pulls: number; fightId: number }>;
 }
 
+// Deaths that came with a personal defensive off cooldown and not running.
+export interface NightReadyDeaths {
+  // Deaths by players who pressed at least one defensive during the night (nothing is
+  // known about the others), and how many of those had one ready.
+  judged: number;
+  withReady: number;
+  // Of the deaths with something ready, how many came with no defensive at all pressed
+  // in the ten seconds before (the rest had pressed a different one).
+  nothingPressed: number;
+  players: Array<NightPlayerRef & {
+    deaths: number;
+    withReady: number;
+    nothingPressed: number;
+    // What sat unused, and at how many of this player's deaths.
+    ready: Array<{ name: string; icon: string; spellId: number; count: number }>;
+    pullNumbers: number[];
+    fightId: number;
+  }>;
+}
+
 export interface NightPlayerRow extends NightPlayerRef {
   role: Role | null;
   deaths: number;
+  // Of those deaths, how many had a defensive ready; null when nothing is known.
+  readyDeaths: number | null;
   firstDeaths: number;
   hits: number;
   avoidDamage: number;
@@ -395,6 +482,8 @@ export interface NightReview {
   capped: boolean;
   wipeCauses: NightWipeCause[];
   killers: NightKiller[];
+  // null when the cast data could not be loaded.
+  readyDeaths: NightReadyDeaths | null;
   countedDeaths: number;
   firstDeaths: NightFirstDeath[];
   pullsWithFirstDeath: number;
@@ -427,6 +516,7 @@ export function buildNightReview(opts: {
   boss: BossKnowledge | null;
   raidStats: RaidMechanicStats | null;
   hitsFailed?: boolean;
+  defensives?: NightDefensives | null;
 }): NightReview {
   const { code, group, base, hits, picked, boss, raidStats } = opts;
   const fights = group.fights;
@@ -513,6 +603,61 @@ export function buildNightReview(opts: {
   else if (!picked.picked.length) mechanicsNote = 'None of the abilities that hit the raid tonight is one the addons or the top raids\' logs mark as avoidable.';
   else if (!mechanics.length) mechanicsNote = 'Nobody was hit by an avoidable ability before a wipe.';
 
+  // ── Deaths with a defensive ready ──
+  // A player's defensives are the ones they pressed at some point tonight: that proves
+  // they have the talent, which the log does not otherwise say. For each counted death,
+  // one of them is "ready" when it was neither pressed in the cooldown before the death
+  // nor (where Wowhead gives charges) out of charges. Healthstones and healing potions
+  // are left out: how many a player was carrying into a pull is not in the log.
+  const defs = opts.defensives ?? null;
+  const readyAt = new Map<RaidDeath, string[]>();
+  const pressedBefore = new Set<RaidDeath>();
+  const ownedBy = new Map<number, Set<string>>();
+  if (defs) {
+    for (const [, pid, name] of defs.casts) {
+      if (name === 'Healthstone' || name === 'Healing potion') continue;
+      (ownedBy.get(pid) ?? ownedBy.set(pid, new Set()).get(pid)!).add(name);
+    }
+    for (const { d, fightId } of counted) {
+      const owned = [...(ownedBy.get(d.id) ?? [])];
+      if (!owned.length) continue;
+      const uses: Record<string, number[]> = {};
+      for (const [fid, pid, name, at] of defs.casts) if (fid === fightId && pid === d.id) (uses[name] ??= []).push(at);
+      const cds: Record<string, number | undefined> = {};
+      const charges: Record<string, number> = {};
+      for (const n of owned) {
+        cds[n] = defs.spells[n]?.cooldownSec ?? undefined;
+        charges[n] = noChargeModel(n) ? 1 : defs.spells[n]?.charges ?? 1;
+      }
+      // A press in the last few seconds is a defensive that was running, not one left unused.
+      const st = defensivesAt(d.atSec + 0.5, owned, uses, cds, charges);
+      readyAt.set(d, st.available);
+      if (Object.values(uses).some(ts => ts.some(t => t <= d.atSec + 0.5 && t >= d.atSec - 10))) pressedBefore.add(d);
+    }
+  }
+  let readyDeaths: NightReadyDeaths | null = null;
+  if (defs) {
+    const judged = counted.filter(x => readyAt.has(x.d));
+    const byPlayer = new Map<number, typeof judged>();
+    for (const x of judged) (byPlayer.get(x.d.id) ?? byPlayer.set(x.d.id, []).get(x.d.id)!).push(x);
+    readyDeaths = {
+      judged: judged.length,
+      withReady: judged.filter(x => readyAt.get(x.d)!.length).length,
+      nothingPressed: judged.filter(x => readyAt.get(x.d)!.length && !pressedBefore.has(x.d)).length,
+      players: [...byPlayer.entries()].map(([id, list]) => {
+        const withReady = list.filter(x => readyAt.get(x.d)!.length);
+        const names = new Map<string, number>();
+        for (const x of withReady) for (const n of readyAt.get(x.d)!) names.set(n, (names.get(n) ?? 0) + 1);
+        return {
+          ...ref(id), deaths: list.length, withReady: withReady.length, nothingPressed: withReady.filter(x => !pressedBefore.has(x.d)).length,
+          ready: [...names.entries()].sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ name, icon: defs.spells[name]?.icon ?? '', spellId: defs.spells[name]?.spellId ?? 0, count })),
+          pullNumbers: [...new Set(withReady.map(x => numberOf.get(x.fightId)!))].sort((a, b) => a - b),
+          fightId: (withReady[withReady.length - 1] ?? list[list.length - 1]).fightId,
+        };
+      }).filter(p => p.withReady > 0).sort((a, b) => b.withReady - a.withReady || b.deaths - a.deaths || a.name.localeCompare(b.name)),
+    };
+  }
+
   // ── Per player ──
   const lastFightOf = (id: number) => fights.slice().reverse().find(f => (base.present[f.id] ?? []).includes(id))?.id ?? fights[fights.length - 1].id;
   const players: NightPlayerRow[] = [...people.values()].map(p => {
@@ -524,7 +669,7 @@ export function buildNightReview(opts: {
     const present = base.failed.roster ? null : fights.filter(f => (base.present[f.id] ?? []).includes(p.id)).length;
     return {
       id: p.id, name: p.name, className: p.className, role: p.role,
-      deaths, firstDeaths: firstCount, hits: times, avoidDamage: myHits.reduce((s, r) => s + r.damage, 0), pulls: present,
+      deaths, readyDeaths: defs && ownedBy.has(p.id) ? myDeaths.filter(x => (readyAt.get(x.d) ?? []).length).length : null, firstDeaths: firstCount, hits: times, avoidDamage: myHits.reduce((s, r) => s + r.damage, 0), pulls: present,
       fightId: myDeaths.length ? myDeaths[myDeaths.length - 1].fightId : myHits.length ? Math.max(...myHits.map(r => r.fightId)) : lastFightOf(p.id),
       // A death costs the pull more than a hit does; dying first costs more again.
       score: deaths * 4 + firstCount * 2 + times,
@@ -595,11 +740,16 @@ export function buildNightReview(opts: {
   } else if (firsts.length >= 3) {
     parts.push('A different player died first on every pull.');
   }
+  // Said only when there is something to act on: a few deaths judged, and at least a third of them with something ready.
+  if (readyDeaths && readyDeaths.judged >= 3 && readyDeaths.withReady >= Math.max(2, readyDeaths.judged / 3)) {
+    parts.push(`${readyDeaths.withReady} of the ${readyDeaths.judged} deaths before the wipes came with a personal defensive ready and unpressed.`);
+  }
   if (trend[0]) parts.push(trend[0]);
 
   const notes: string[] = [];
   if (base.failed.deaths) notes.push('Some of the death tables could not be loaded from Warcraft Logs, so death counts are missing for those pulls. Reload to try again.');
   if (hits?.truncated) notes.push('This night has more avoidable-damage events than one page load reads; hit counts cover the earlier pulls only.');
+  if (defs?.truncated) notes.push('This night has more defensive casts than one page load reads; "defensive ready" covers the earlier pulls only.');
   if (picked?.more) notes.push(`Only the ${NIGHT_MAX_ABILITIES} avoidable abilities that did the most damage are listed; ${picked.more} more ${picked.more === 1 ? 'is' : 'are'} left out.`);
 
   const stats = [
@@ -613,9 +763,9 @@ export function buildNightReview(opts: {
   return {
     code, encounterID: group.encounterID, difficulty: group.difficulty, bossName: group.name,
     summary: parts.join(' '), stats, pulls, totalPulls: group.all.length, capped: group.all.length > fights.length,
-    wipeCauses, killers, countedDeaths: countedTotal, firstDeaths, pullsWithFirstDeath: firsts.length,
+    wipeCauses, killers, readyDeaths, countedDeaths: countedTotal, firstDeaths, pullsWithFirstDeath: firsts.length,
     mechanics, mechanicsNote, players, trend, notes,
-    requests: base.requests + (hits?.requests ?? 0),
+    requests: base.requests + (hits?.requests ?? 0) + (defs?.requests ?? 0),
   };
 }
 
@@ -629,7 +779,7 @@ export async function loadNightReview(token: string, code: string, group: NightG
 }): Promise<NightReview> {
   // The finished review is kept six hours when every part of it loaded, so a second
   // visit skips the classification inputs as well (they are the slow part when warm).
-  return cacheUnlessPartial<NightReview>(`analyze-night-review-v3-${cacheKey(code, group.fights)}`, 6 * 3600, async () => {
+  return cacheUnlessPartial<NightReview>(`analyze-night-review-v5-${cacheKey(code, group.fights)}`, 6 * 3600, async () => {
     const r = await computeNightReview(token, code, group, deps);
     return { value: r.review, partial: r.partial };
   });
@@ -667,6 +817,15 @@ async function computeNightReview(token: string, code: string, group: NightGroup
       hitsFailed = true;
     }
   }
-  const review = buildNightReview({ code, group, base, hits, picked, boss, raidStats, hitsFailed });
-  return { review, partial: base.failed.deaths || base.failed.roster || hitsFailed || !boss || !raidStats };
+  let defensives: NightDefensives | null = null;
+  if (!base.failed.deaths && Object.values(base.deaths).some(ds => ds?.length)) {
+    try {
+      defensives = await getNightDefensives(token, code, fights);
+    } catch (err) {
+      if (isRateLimitError(err)) throw err;
+      console.error('night: defensive casts unavailable', err);
+    }
+  }
+  const review = buildNightReview({ code, group, base, hits, picked, boss, raidStats, hitsFailed, defensives });
+  return { review, partial: base.failed.deaths || base.failed.roster || hitsFailed || !boss || !raidStats || (!defensives && !base.failed.deaths && review.countedDeaths > 0) };
 }

@@ -138,6 +138,10 @@ export function nightDiscordText(night: NightReview, url: string): string {
       body.push(bullet(`${plain(k.name)}: ${k.pulls} of ${night.pulls.length} pulls, ${k.deaths} death${k.deaths === 1 ? '' : 's'} (${who}${k.players.length > 3 ? ` +${k.players.length - 3}` : ''})`));
     }
   }
+  if (night.readyDeaths?.players.length) {
+    body.push('', `**Died with a defensive ready (${night.readyDeaths.withReady} of ${night.readyDeaths.judged} deaths)**`);
+    for (const p of night.readyDeaths.players.slice(0, 5)) body.push(bullet(`${plain(p.name)}: ${p.withReady} of ${p.deaths} (${p.ready.slice(0, 2).map(r => plain(r.name)).join(', ')})`));
+  }
   const firsts = night.firstDeaths.filter(f => f.count >= 2).slice(0, 4);
   if (firsts.length) body.push('', '**First to die**', bullet(firsts.map(f => `${plain(f.name)} ×${f.count}`).join(', ')));
   const mechs = night.mechanics.filter(m => m.players.length && !m.assigned).slice(0, 4);
