@@ -94,37 +94,23 @@ interface WclMetaReport {
   } | null;
 }
 
-export async function fetchFightEvents(token: string, code: string, fight: ReportFight, players: FightPlayer[], config: WipefestFightConfig): Promise<FightEvents> {
-  const fid = fight.id;
-  const meta = await wclQuery<WclReportData<WclMetaReport>>(token, `{ reportData { report(code: "${code}") {
-    fights(fightIDs: [${fid}]) { id startTime endTime enemyNPCs { id gameID instanceCount } phaseTransitions { id startTime } }
-    phases { encounterID phases { id name isIntermission } }
-    masterData { actors(type: "NPC") { id gameID name } abilities { gameID name icon } }
-  } } }`, 'wipefest-meta', null);
-  const rep = meta?.reportData?.report ?? {};
-  const f = rep.fights?.[0] ?? {};
-  const actorName = new Map<number, string>((rep.masterData?.actors ?? []).map((a: any) => [a.id, a.name]));
-  const npcs = (f.enemyNPCs ?? []).map((n: any) => ({ id: n.id, gameID: n.gameID, name: actorName.get(n.id) ?? `NPC ${n.gameID}`, instanceCount: n.instanceCount ?? 1 }));
-  const abilities: FightEvents['abilities'] = {};
-  for (const a of rep.masterData?.abilities ?? []) if (a?.gameID) abilities[a.gameID] = { name: a.name ?? '', icon: a.icon ?? '' };
-  const startTime = f.startTime ?? fight.startTime;
-  const endTime = f.endTime ?? fight.endTime;
-  const phases = (f.phaseTransitions ?? []).map((p: any) => ({ id: p.id, startTime: p.startTime }));
-  const phaseNames: Record<number, string> = {};
-  for (const z of rep.phases ?? []) if (z?.encounterID === fight.encounterID) for (const p of z.phases ?? []) if (p?.id != null && p.name) phaseNames[p.id] = String(p.name);
-
+// Which Warcraft Logs event queries a boss's definitions need: one per distinct need,
+// shared between definitions. `only` limits the plan to the named definitions (and the
+// phase definitions, which are cheap and place every card).
+interface QueryPlan { pending: Map<string, Pending>; wants: Array<{ cfg: WipefestEventConfig; keys: string[] }> }
+function planQueries(config: WipefestFightConfig, difficulty: number, npcs: FightEvents['npcs'], only?: Set<string>): QueryPlan {
   // One query per distinct need; several definitions can share one.
   const pending = new Map<string, Pending>();
   const need = (key: string, args: string) => { if (!pending.has(key)) pending.set(key, { alias: `e${pending.size}`, args }); return key; };
-  const npcByGame = new Map<number, number>(npcs.map((n: any) => [n.gameID, n.id]));
+  const npcByGame = new Map<number, number>(npcs.map(n => [n.gameID, n.id]));
   const wants: Array<{ cfg: WipefestEventConfig; keys: string[] }> = [];
-  const byConfigSeed: Record<string, WfEvent[]> = {};
   // Player deaths, once, for the `death` insight type (the killing blow names the spell).
   if (config.insightConfigs.some(c => c.type === 'death' && String(c.group) !== 'raid')) need('pdeaths', 'dataType: Deaths');
   for (const cfg of config.eventConfigs) {
     if (cfg.group === 'raid') continue;
+    if (only && !only.has(cfg.id) && cfg.eventType !== 'phase' && cfg.filter?.type !== 'phase') continue;
     // A definition for another difficulty has nothing to find in this log.
-    if (cfg.difficulties?.length && !cfg.difficulties.includes(fight.difficulty)) continue;
+    if (cfg.difficulties?.length && !cfg.difficulties.includes(difficulty)) continue;
     const fl = cfg.filter ?? {};
     const types = filterTypes(fl);
     const ids = filterAbilityIds(fl);
@@ -148,7 +134,7 @@ export async function fetchFightEvents(token: string, code: string, fight: Repor
       keys.push(need('deaths', 'dataType: Deaths, hostilityType: Enemies'));
     } else if (types.includes('firstseen')) {
       const npcId = fl.actor?.id != null ? npcByGame.get(fl.actor.id) : null;
-      const npcName = npcs.find((n: any) => n.id === npcId)?.name;
+      const npcName = npcs.find(n => n.id === npcId)?.name;
       if (npcId != null && npcName) {
         const expr = `source.name = "${npcName.replace(/"/g, '\\"')}" or target.name = "${npcName.replace(/"/g, '\\"')}"`;
         keys.push(need(`fs:${npcId}`, `filterExpression: ${JSON.stringify(expr)}`));
@@ -166,33 +152,13 @@ export async function fetchFightEvents(token: string, code: string, fight: Repor
     wants.push({ cfg, keys });
   }
 
-  // Run the queries, batched, following pagination a few pages deep.
-  const results = new Map<string, WfEvent[]>();
-  const list = [...pending.entries()];
-  for (let i = 0; i < list.length; i += BATCH) {
-    const batch = list.slice(i, i + BATCH);
-    let cursors = new Map<string, number | null>(batch.map(([k]) => [k, null]));
-    for (let page = 0; page < MAX_PAGES && cursors.size; page++) {
-      const q = [...cursors.entries()].map(([k, start]) => {
-        const p = pending.get(k)!;
-        return `${p.alias}: events(fightIDs: [${fid}], ${p.args}, limit: ${EVENT_LIMIT}${start != null ? `, startTime: ${start}` : ''}) { data nextPageTimestamp }`;
-      }).join('\n');
-      const d = await wclQuery<WclReportData<Record<string, WclEventsPage<WfEvent> | null>>>(token, `{ reportData { report(code: "${code}") { ${q} } } }`, 'wipefest-events', null);
-      const r = d?.reportData?.report ?? {};
-      const next = new Map<string, number | null>();
-      for (const [k] of cursors) {
-        const p = pending.get(k)!;
-        const res = r[p.alias];
-        const arr = results.get(k) ?? [];
-        arr.push(...((res?.data ?? []) as WfEvent[]));
-        results.set(k, arr);
-        if (res?.nextPageTimestamp) next.set(k, res.nextPageTimestamp);
-      }
-      cursors = next;
-    }
-  }
+  return { pending, wants };
+}
 
-  // File events under each definition, applying its own filters.
+// Files the fetched events under each definition, applying the definition's own filters.
+function fileEvents(results: Map<string, WfEvent[]>, wants: QueryPlan['wants'], players: FightPlayer[], npcs: FightEvents['npcs']): Record<string, WfEvent[]> {
+  const npcByGame = new Map<number, number>(npcs.map(n => [n.gameID, n.id]));
+  const byConfigSeed: Record<string, WfEvent[]> = {};
   const playerIds = new Set(players.map(p => p.id));
   if (results.has('pdeaths')) byConfigSeed['raid:deaths'] = (results.get('pdeaths') ?? []).map(e => ({ ...e, abilityGameID: Number((e as any).killingAbilityGameID ?? e.abilityGameID ?? 0) }));
   const roleById = new Map(players.map(p => [p.id, (p.role ?? '').toLowerCase()]));
@@ -297,7 +263,167 @@ export async function fetchFightEvents(token: string, code: string, fight: Repor
     }
     byConfig[cfg.id] = evs;
   }
+  return byConfig;
+}
+
+export async function fetchFightEvents(token: string, code: string, fight: ReportFight, players: FightPlayer[], config: WipefestFightConfig): Promise<FightEvents> {
+  const fid = fight.id;
+  const meta = await wclQuery<WclReportData<WclMetaReport>>(token, `{ reportData { report(code: "${code}") {
+    fights(fightIDs: [${fid}]) { id startTime endTime enemyNPCs { id gameID instanceCount } phaseTransitions { id startTime } }
+    phases { encounterID phases { id name isIntermission } }
+    masterData { actors(type: "NPC") { id gameID name } abilities { gameID name icon } }
+  } } }`, 'wipefest-meta', null);
+  const rep = meta?.reportData?.report ?? {};
+  const f = rep.fights?.[0] ?? {};
+  const actorName = new Map<number, string>((rep.masterData?.actors ?? []).map((a: any) => [a.id, a.name]));
+  const npcs = (f.enemyNPCs ?? []).map((n: any) => ({ id: n.id, gameID: n.gameID, name: actorName.get(n.id) ?? `NPC ${n.gameID}`, instanceCount: n.instanceCount ?? 1 }));
+  const abilities: FightEvents['abilities'] = {};
+  for (const a of rep.masterData?.abilities ?? []) if (a?.gameID) abilities[a.gameID] = { name: a.name ?? '', icon: a.icon ?? '' };
+  const startTime = f.startTime ?? fight.startTime;
+  const endTime = f.endTime ?? fight.endTime;
+  const phases = (f.phaseTransitions ?? []).map((p: any) => ({ id: p.id, startTime: p.startTime }));
+  const phaseNames: Record<number, string> = {};
+  for (const z of rep.phases ?? []) if (z?.encounterID === fight.encounterID) for (const p of z.phases ?? []) if (p?.id != null && p.name) phaseNames[p.id] = String(p.name);
+
+  const { pending, wants } = planQueries(config, fight.difficulty, npcs);
+
+  // Run the queries, batched, following pagination a few pages deep.
+  const results = new Map<string, WfEvent[]>();
+  const list = [...pending.entries()];
+  for (let i = 0; i < list.length; i += BATCH) {
+    const batch = list.slice(i, i + BATCH);
+    let cursors = new Map<string, number | null>(batch.map(([k]) => [k, null]));
+    for (let page = 0; page < MAX_PAGES && cursors.size; page++) {
+      const q = [...cursors.entries()].map(([k, start]) => {
+        const p = pending.get(k)!;
+        return `${p.alias}: events(fightIDs: [${fid}], ${p.args}, limit: ${EVENT_LIMIT}${start != null ? `, startTime: ${start}` : ''}) { data nextPageTimestamp }`;
+      }).join('\n');
+      const d = await wclQuery<WclReportData<Record<string, WclEventsPage<WfEvent> | null>>>(token, `{ reportData { report(code: "${code}") { ${q} } } }`, 'wipefest-events', null);
+      const r = d?.reportData?.report ?? {};
+      const next = new Map<string, number | null>();
+      for (const [k] of cursors) {
+        const p = pending.get(k)!;
+        const res = r[p.alias];
+        const arr = results.get(k) ?? [];
+        arr.push(...((res?.data ?? []) as WfEvent[]));
+        results.set(k, arr);
+        if (res?.nextPageTimestamp) next.set(k, res.nextPageTimestamp);
+      }
+      cursors = next;
+    }
+  }
+
+  const byConfig = fileEvents(results, wants, players, npcs);
   return { startTime, endTime, phases, phaseNames, npcs, abilities, byConfig };
+}
+
+// ─── The same, for every pull of a night at once ──────────────────────────────
+//
+// One pull costs a metadata request and one request per eight needs. A night asks for
+// all its pulls together instead: every event carries its fight id, so the damage needs
+// become ONE query filtered on all their spell ids, the aura needs another and the cast
+// needs a third, each paged through ten thousand events at a time. That is a handful of
+// requests for a night however many pulls it has, where pull-by-pull it would be four
+// or five each. `untilSec` drops everything after a moment in each pull (the wipe).
+const NIGHT_EVENT_LIMIT = 10000;
+const NIGHT_PAGES = 6;
+
+// `lateByFight`: the same pulls read a few seconds past `untilSec`, for the definitions
+// named in `opts.late` only (what was happening as the wipe began, which the cut-off
+// view leaves out by design). Same queries, so it costs no request.
+export interface NightEvents { byFight: Record<number, FightEvents>; lateByFight?: Record<number, FightEvents>; truncated: boolean; requests: number }
+
+export async function fetchNightEvents(token: string, code: string, fights: ReportFight[], playersOf: (fightId: number) => FightPlayer[], config: WipefestFightConfig, opts: { only?: Set<string>; untilSec?: Record<number, number>; late?: { ids: Set<string>; sec: number } } = {}): Promise<NightEvents> {
+  const fids = fights.map(f => f.id).join(',');
+  const out: NightEvents = { byFight: {}, truncated: false, requests: 1 };
+  if (!fights.length) return { ...out, requests: 0 };
+  const meta = await wclQuery<WclReportData<WclMetaReport>>(token, `{ reportData { report(code: "${code}") {
+    fights(fightIDs: [${fids}]) { id startTime endTime enemyNPCs { id gameID instanceCount } phaseTransitions { id startTime } }
+    phases { encounterID phases { id name isIntermission } }
+    masterData { actors(type: "NPC") { id gameID name } abilities { gameID name icon } }
+  } } }`, 'wipefest-night-meta', null);
+  const rep = meta?.reportData?.report ?? {};
+  const actorName = new Map<number, string>((rep.masterData?.actors ?? []).map(a => [a.id, a.name ?? '']));
+  const abilities: FightEvents['abilities'] = {};
+  for (const a of rep.masterData?.abilities ?? []) if (a?.gameID) abilities[a.gameID] = { name: a.name ?? '', icon: a.icon ?? '' };
+  const phaseNames: Record<number, string> = {};
+  for (const z of rep.phases ?? []) if (z?.encounterID === fights[0].encounterID) for (const ph of z.phases ?? []) if (ph?.id != null && ph.name) phaseNames[ph.id] = String(ph.name);
+  const metaById = new Map((rep.fights ?? []).map(f => [f.id, f]));
+  const frames = fights.map(fight => {
+    const f = metaById.get(fight.id) ?? {};
+    const startTime = f.startTime ?? fight.startTime;
+    const endTime = f.endTime ?? fight.endTime;
+    const until = Math.min(endTime, startTime + (opts.untilSec?.[fight.id] ?? Infinity) * 1000);
+    const npcs = (f.enemyNPCs ?? []).map(n => ({ id: n.id, gameID: n.gameID, name: actorName.get(n.id) || `NPC ${n.gameID}`, instanceCount: n.instanceCount ?? 1 }));
+    return { fight, startTime, endTime, until, npcs, phases: (f.phaseTransitions ?? []).map(ph => ({ id: ph.id, startTime: ph.startTime })).filter(ph => ph.startTime <= until) };
+  });
+  const allNpcs = [...new Map(frames.flatMap(fr => fr.npcs).map(n => [n.id, n])).values()];
+  const { pending, wants } = planQueries(config, fights[0].difficulty, allNpcs, opts.only);
+
+  // The three kinds that can share a query do; anything else keeps its own.
+  const AURA_TYPES = "('applybuff','removebuff','applybuffstack','refreshbuff','applydebuff','removedebuff','applydebuffstack','refreshdebuff')";
+  const shared: Array<{ prefix: string; args: (ids: number[]) => string }> = [
+    { prefix: 'dt:', args: ids => `dataType: DamageTaken, filterExpression: ${JSON.stringify(`ability.id in (${ids.join(',')})`)}` },
+    { prefix: 'aura:', args: ids => `filterExpression: ${JSON.stringify(`ability.id in (${ids.join(',')}) and type in ${AURA_TYPES}`)}` },
+    { prefix: 'cast:', args: ids => `filterExpression: ${JSON.stringify(`ability.id in (${ids.join(',')}) and type in ('cast','begincast')`)}` },
+  ];
+  const queries: Array<{ alias: string; args: string; keyOf: (e: WfEvent) => string }> = [];
+  for (const sh of shared) {
+    const ids = [...pending.keys()].filter(key => key.startsWith(sh.prefix)).map(key => Number(key.slice(sh.prefix.length))).sort((a, b) => a - b);
+    if (ids.length) queries.push({ alias: `n${queries.length}`, args: sh.args(ids), keyOf: e => `${sh.prefix}${e.abilityGameID}` });
+  }
+  for (const [key, pd] of pending) if (!shared.some(sh => key.startsWith(sh.prefix))) queries.push({ alias: `n${queries.length}`, args: pd.args, keyOf: () => key });
+
+  const results = new Map<number, Map<string, WfEvent[]>>(fights.map(f => [f.id, new Map()]));
+  const lateWants = opts.late ? wants.filter(w => opts.late!.ids.has(w.cfg.id)) : [];
+  const lateKeys = new Set(lateWants.flatMap(w => w.keys));
+  const lateMs = (opts.late?.sec ?? 0) * 1000;
+  const lateResults = new Map<number, Map<string, WfEvent[]>>(fights.map(f => [f.id, new Map()]));
+  const untilOf = new Map(frames.map(fr => [fr.fight.id, fr.until]));
+  const end = Math.max(...frames.map(fr => fr.endTime));
+  let cursors = new Map<string, number | null>(queries.map(qu => [qu.alias, null]));
+  for (let page = 0; cursors.size; page++) {
+    if (page === NIGHT_PAGES) { out.truncated = true; break; }
+    out.requests++;
+    const text = queries.filter(qu => cursors.has(qu.alias)).map(qu => {
+      const start = cursors.get(qu.alias);
+      return `${qu.alias}: events(fightIDs: [${fids}], ${qu.args}, limit: ${NIGHT_EVENT_LIMIT}${start != null ? `, startTime: ${start}, endTime: ${end}` : ''}) { data nextPageTimestamp }`;
+    }).join('\n');
+    const d = await wclQuery<WclReportData<Record<string, WclEventsPage<WfEvent & { fight?: number }> | null>>>(token, `{ reportData { report(code: "${code}") { ${text} } } }`, 'wipefest-night-events', null);
+    const r = d?.reportData?.report ?? {};
+    const next = new Map<string, number | null>();
+    for (const qu of queries) {
+      if (!cursors.has(qu.alias)) continue;
+      const res = r[qu.alias];
+      for (const e of res?.data ?? []) {
+        const mine = e?.fight != null ? results.get(e.fight) : undefined;
+        if (!mine) continue;
+        const key = qu.keyOf(e);
+        if (!pending.has(key)) continue;
+        const until = untilOf.get(e.fight!) ?? Infinity;
+        if (e.timestamp > until) {
+          if (!lateKeys.has(key) || e.timestamp > until + lateMs) continue;
+          const late = lateResults.get(e.fight!)!;
+          (late.get(key) ?? late.set(key, []).get(key)!).push(e);
+          continue;
+        }
+        (mine.get(key) ?? mine.set(key, []).get(key)!).push(e);
+      }
+      if (res?.nextPageTimestamp) next.set(qu.alias, res.nextPageTimestamp);
+    }
+    cursors = next;
+  }
+  for (const fr of frames) {
+    const players = playersOf(fr.fight.id);
+    out.byFight[fr.fight.id] = { startTime: fr.startTime, endTime: fr.until, phases: fr.phases, phaseNames, npcs: fr.npcs, abilities, byConfig: fileEvents(results.get(fr.fight.id) ?? new Map(), wants, players, fr.npcs) };
+    if (!lateWants.length) continue;
+    // Everything up to the cut-off plus the late tail, for the late definitions only.
+    const upTo = results.get(fr.fight.id) ?? new Map<string, WfEvent[]>();
+    const tail = lateResults.get(fr.fight.id) ?? new Map<string, WfEvent[]>();
+    const both = new Map<string, WfEvent[]>([...lateKeys].map(key => [key, [...(upTo.get(key) ?? []), ...(tail.get(key) ?? [])]]));
+    (out.lateByFight ??= {})[fr.fight.id] = { startTime: fr.startTime, endTime: Math.min(fr.endTime, fr.until + lateMs), phases: fr.phases, phaseNames, npcs: fr.npcs, abilities, byConfig: fileEvents(both, lateWants, players, fr.npcs) };
+  }
+  return out;
 }
 
 // ─── Evaluating ───────────────────────────────────────────────────────────────
@@ -368,7 +494,7 @@ const isStackCfg = (c: WipefestEventConfig) => filterTypes(c.filter).some(t => t
 const isDebuffRemoveCfg = (c: WipefestEventConfig) => c.eventType === 'removedebuff' || filterTypes(c.filter).some(t => t === 'removedebuff' || t === 'removebuff' || t === 'death');
 const isCastCfg = (c: WipefestEventConfig) => filterTypes(c.filter).some(t => t === 'cast' || t === 'begincast') && c.eventType !== 'debuff';
 
-function cfgNames(ctx: Ctx, ids: string[], pred: (c: WipefestEventConfig) => boolean): string[] {
+function cfgNames(ctx: Pick<Ctx, 'cfgById'>, ids: string[], pred: (c: WipefestEventConfig) => boolean): string[] {
   const names: string[] = [];
   for (const id of ids) { const c = ctx.cfgById.get(id); if (c && pred(c) && !names.includes(c.name)) names.push(c.name); }
   return names;
@@ -465,6 +591,21 @@ const DEFAULT_TITLES: Record<string, string> = {
   soak: 'Soaked {abilities} with an average of {average}/{raidSize} players.',
 };
 
+// A definition's sentence with the ability names filled in and the counts left in place
+// as {totalHits}, {plural} and {totalDamage}, for a caller that totals several pulls.
+// Null when the sentence needs a figure that cannot be totalled (an average, a raid size).
+export function insightSentence(config: WipefestFightConfig, cfg: WipefestInsightConfig, bossName: string): string | null {
+  const template = cfg.title || DEFAULT_TITLES[cfg.type] || '';
+  if (!template || /\{(average\w*|raidSize|threshold|stacks|totalDuration|totalCasts|totalInterrupts|totalCastAttempts)\}/.test(template)) return null;
+  const ctx = { cfgById: new Map(config.eventConfigs.map(c => [c.id, c])) };
+  const req = requireIds(cfg.require);
+  const names = /^hit/.test(cfg.type) ? cfgNames(ctx, req, isDamageCfg) : cfgNames(ctx, req, () => true);
+  const debNames = cfgNames(ctx, req, c => isDebuffApplyCfg(c) && !isDamageCfg(c));
+  const count = '{totalHits}';
+  const text = renderTitle(template, { ability: names[0] ?? '', abilities: list(names), damageAbilities: list(names), damageAbilties: list(names), debuffAbilities: list(debNames), totalHits: count, totalFrequency: count, totalEvents: count, total: count, plural: '{plural}', totalDamage: '{totalDamage}', boss: bossName });
+  return text.replace(/\.$/, '') || null;
+}
+
 function evaluateOne(ctx: Ctx, cfg: WipefestInsightConfig, req: string[], iv: Array<[number, number]> | null): MechanicInsight | null {
   const template = (n: number) => (n === 0 && cfg.titleWhenNoEvents) ? cfg.titleWhenNoEvents : (cfg.title || DEFAULT_TITLES[cfg.type] || '');
   const base = (over: Partial<MechanicInsight>): MechanicInsight => ({
@@ -539,7 +680,7 @@ function evaluateOne(ctx: Ctx, cfg: WipefestInsightConfig, req: string[], iv: Ar
         perPlayer.set(e.targetID, cur);
       }
       // A title that counts "ticks" wants the ticks; any other counts applications of a DoT.
-      const hitCount = isDot && !/tick/i.test(cfg.title ?? '') ? hits.filter(e => !e.tick).length : hits.length;
+      const hitCount = isDot && !/\btick/i.test(cfg.title ?? '') ? hits.filter(e => !e.tick).length : hits.length;
       const ins = base({
         totalEvents: hitCount,
         tickShare: detail.length ? detail.filter(e => e.tick).length / detail.length : 0,

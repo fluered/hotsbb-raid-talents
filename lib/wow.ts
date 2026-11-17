@@ -357,6 +357,11 @@ export async function getSeasonState(): Promise<SeasonState> {
 // same cost as a single-region query, since WCL's serverRegion argument is a plain
 // filter — dropping it doesn't multiply the request, it just widens what one request
 // returns). That's what makes "Global" free relative to the old single-region default.
+// How much of a rankings response is kept (see the compaction note in getWclRankings).
+const ROWS_KEPT = 80;
+const TALENT_ROWS_KEPT = 55;
+const GEAR_ROWS_KEPT = 50;
+
 export async function getWclRankings(token: string, bossId: number, className: string, specName: string, difficulty: number, region?: string, metric?: string, noCache = false) {
   const wclClassName = className.replace(/\s+/g, '');
   const wclSpecName = specName.replace(/\s+/g, '');
@@ -400,9 +405,6 @@ export async function getWclRankings(token: string, bossId: number, className: s
   // non-JSON property (plain-array callers like the tier lists neither see nor pay
   // for it) and is lifted into the SWR entry explicitly by getRankingsCachedSWR.
   // Rows past the margins lose inline data and fall back to a real telemetry fetch.
-  const ROWS_KEPT = 80;
-  const TALENT_ROWS_KEPT = 55;
-  const GEAR_ROWS_KEPT = 50;
   const itemData: WclItemData = {};
   const rows: WclRankingsWithItemData = rankings.slice(0, ROWS_KEPT).map((row, i): WclRankingRow => {
     const { gear, talents, ...rest } = row;
@@ -441,7 +443,17 @@ export async function getWclRankingsForRegionMode(
       getWclRankings(token, bossId, className, specName, difficulty, 'us', metric, noCache),
       getWclRankings(token, bossId, className, specName, difficulty, 'eu', metric, noCache),
     ]);
-    const merged: WclRankingsWithItemData = [...us, ...eu].sort((a, b) => (b.amount ?? 0) - (a.amount ?? 0));
+    // Trimmed to the same shape as a single query: each region arrives with 80 rows and
+    // inline talents and gear on its own top 55 and 50, so the merge carried twice the
+    // rows and twice the inline data of a Global entry (190 KB against 100 KB stored)
+    // while every reader takes the same top 50 plus the same backfill margin.
+    const merged: WclRankingsWithItemData = [...us, ...eu].sort((a, b) => (b.amount ?? 0) - (a.amount ?? 0)).slice(0, ROWS_KEPT).map((row, i) => {
+      if (i < GEAR_ROWS_KEPT) return row;
+      const slim = { ...row };
+      delete slim._tg;
+      if (i >= TALENT_ROWS_KEPT) delete slim._tp;
+      return slim;
+    });
     // Merge both regions' aggregated item dicts (max ilvl wins) — see getWclRankings.
     const itemData: Record<string, WclItemEntry> = {};
     for (const src of [us._itemData, eu._itemData]) {

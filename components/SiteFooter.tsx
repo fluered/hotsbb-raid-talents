@@ -17,6 +17,7 @@ export default function SiteFooter({ difficulty }: { difficulty?: number }) {
         <Link href={`/tier-list${diff}`} className={linkCls}>DPS Tier List</Link>
         <Link href={`/tier-list/tanks${diff}`} className={linkCls}>Tank Tier List</Link>
         <Link href={`/tier-list/healers${diff}`} className={linkCls}>Healer Tier List</Link>
+        <Link href="/boss" className={linkCls}>Raid Bosses</Link>
         <Link href="/addon" className={`${linkCls} text-amber-500/80 hover:text-amber-400`}>
           In-game addon
         </Link>

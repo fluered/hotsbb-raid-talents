@@ -155,28 +155,6 @@ async function wowheadSpell(spellId: number): Promise<{ name: string; descriptio
   }
 }
 
-// "2 min cooldown" / "45 sec cooldown" from the tooltip header; null when the id is a
-// buff with no cooldown text of its own. Cached a week per spell id.
-export async function getSpellCooldownSec(spellId: number): Promise<number | null> {
-  if (!spellId) return null;
-  const key = `spell-cd-v1-${spellId}`;
-  const v = await getOrSetPersistent<number>(key, 7 * 86400, async () => {
-    try {
-      const r = await fetch(`https://nether.wowhead.com/tooltip/spell/${spellId}?dataEnv=1&locale=0`, { headers: UA, next: { revalidate: 7 * 86400 } });
-      if (!r.ok) return -1;
-      const j = await r.json();
-      const head = stripHtml(String(j?.tooltip ?? '').split('</table>')[0] ?? '');
-      const m = head.match(/(\d+(?:\.\d+)?)\s*(sec|min|hr)\s*cooldown/i);
-      if (!m) return -1;
-      const n = parseFloat(m[1]);
-      return m[2].toLowerCase() === 'hr' ? n * 3600 : m[2].toLowerCase() === 'min' ? n * 60 : n;
-    } catch {
-      return -1;
-    }
-  });
-  return v > 0 ? v : null;
-}
-
 // Whether an equipped item has a "Use:" effect and its cooldown, from Wowhead's item
 // tooltip. Cached a week per item id.
 // The on-use effect is its own spell, often with a different name from the item
@@ -237,7 +215,7 @@ export async function getSpellInfo(spellId: number): Promise<SpellInfo | null> {
 }
 export function isHealingPotionSpell(info: SpellInfo | null): boolean {
   if (!info || !info.itemEffect) return false;
-  return /restores? .{0,40}health|heals? you for/i.test(`${info.name} ${info.text}`) && !/mana/i.test(info.name);
+  return /restores? .{0,40}\bhealth\b|heals? you for/i.test(`${info.name} ${info.text}`) && !/mana/i.test(info.name);
 }
 export function isCombatPotion(info: SpellInfo | null): boolean {
   if (!info || !info.itemEffect) return false;

@@ -86,6 +86,10 @@ interface WclRecapEvent {
   absorbed?: number;
   overkill?: number;
   buffs?: string; // aura ids active at the hit, dot-separated
+  tick?: boolean;
+  // With includeResources: the target's health after the hit.
+  hitPoints?: number;
+  maxHitPoints?: number;
 }
 
 interface WclResourceEvent {
@@ -101,6 +105,7 @@ interface WclRecapReport {
   [damage: `d${number}`]: WclEventsPage<WclRecapEvent> | null;
   [healing: `h${number}`]: WclEventsPage<WclRecapEvent> | null;
   res?: WclEventsPage<WclResourceEvent> | null;
+  taken?: WclEventsPage<WclRecapEvent> | null;
   masterData?: {
     actors?: Array<{ id: number; name?: string | null }> | null;
     abilities?: Array<{ gameID: number; name?: string | null; icon?: string | null }> | null;
@@ -360,7 +365,8 @@ export interface BuffStat {
   ids?: number[];
 }
 // byId keeps each spell that shares the name (a boss ability and its pulsing aura often do).
-export interface DamageTakenStat { name: string; icon: string; spellId: number; total: number; hits: number; ticks: number; source: string; byId: Array<{ spellId: number; total: number; hits: number }> }
+// school: Warcraft Logs' spell-school bitmask for the ability (1 is physical), when the table gives one.
+export interface DamageTakenStat { name: string; icon: string; spellId: number; total: number; hits: number; ticks: number; source: string; byId: Array<{ spellId: number; total: number; hits: number }>; school?: number }
 export interface DeathInfo {
   atSec: number;
   killer: string;
@@ -400,12 +406,25 @@ export const SATED_IDS = new Set([57723, 390435, 57724, 80354, 264689]);
 export interface RaidDeath { id: number; name: string; className: string; atSec: number; killer: string; killerIcon: string; killerSpellId: number }
 export interface RaidMember { id: number; name: string; className: string; total: number; activeTime: number }
 
+// One damage event on the reviewed player, for "when did the big damage land and was
+// anything running" (lib/nextPull.ts). `amount` is what got through, `absorbed` what
+// shields ate on top; `auras` are the player's own defensive buffs and the tracked
+// externals that were on them at that moment (the event lists every aura by id; the rest
+// are dropped to keep the cached profile small); `hp` is health left after the hit, as a
+// percentage of the maximum, when the event carries it.
+export interface PlayerHit { atSec: number; spellId: number; amount: number; absorbed: number; tick: boolean; auras: number[]; hp?: number }
+
 export interface PlayerProfile {
   durationMs: number;
-  // Time until the player's first death (or the whole fight). Rotation and uptime
-  // are judged over this, not the fight length — a 12s death shouldn't read as
-  // "you never pressed anything".
+  // Total time the player was alive: the whole fight, less every stretch spent dead.
+  // Rotation and uptime are judged over this, not the fight length — a 12s death
+  // shouldn't read as "you never pressed anything", and a player who was resurrected
+  // is judged over both lives. Always the sum of aliveWindows.
   aliveMs: number;
+  // When the player was alive, as [from, to] seconds from the pull, in order. One window
+  // covering the fight for someone who never died; cut at each death, and opened again
+  // when the log shows them back in play (see aliveWindowsFrom).
+  aliveWindows: Array<[number, number]>;
   casts: CastStat[];
   // Every cast with its time in seconds from the pull, by ability name — one events
   // page per player (~250 casts in a 10-minute fight, about a point).
@@ -430,6 +449,12 @@ export interface PlayerProfile {
   lustSec: number | null;
   // Externals received, only for the player being reviewed (needs their spell ids).
   externals: ExternalBuff[];
+  // Every hit the player took from the abilities in damageTaken, in order (only for the
+  // player being reviewed; undefined when the events could not be read), whether the list
+  // runs to the end of the pull, and the player's maximum health (median over the events).
+  hits?: PlayerHit[];
+  hitsComplete?: boolean;
+  maxHp?: number | null;
   // Healing that landed on a full health bar (the Healing table's own figure for this
   // player); only meaningful for healers, whose output table is the Healing one.
   overheal?: number;
@@ -465,6 +490,7 @@ function playerTablesSelection(fightId: number, sourceId: number, role: Role, fu
     debuffs: table(dataType: Debuffs, fightIDs: [${fightId}], sourceID: ${sourceId})
     output: table(dataType: ${output}, fightIDs: [${fightId}])
     ${full ? `deaths: table(dataType: Deaths, fightIDs: [${fightId}])
+    resurrects: events(fightIDs: [${fightId}], filterExpression: "type = 'resurrect'", limit: 500) { data }
     interrupts: table(dataType: Interrupts, fightIDs: [${fightId}], sourceID: ${sourceId})
     dispels: table(dataType: Dispels, fightIDs: [${fightId}], sourceID: ${sourceId})` : ''}
   `;
@@ -502,6 +528,68 @@ export function isPlayerSourcedDamage(e: any): boolean {
   };
   walk(e, 0);
   return types.length > 0 && types.every(t => PLAYER_CLASS_TYPES.has(t));
+}
+
+// ─── Alive windows ────────────────────────────────────────────────────────────
+//
+// A death ends a window. The player is back when the log shows both halves of a
+// resurrection: a `resurrect` event on them (a battle res, a Soulstone) and then a cast
+// of their own, which is when they are actually playing again — a res can sit unaccepted
+// for many seconds, and one that is never accepted is not a life. Checked by hand on
+// TXmFjPKwJzABL6nd fight 11 (2026-11-16): three players died and were resurrected 4.2s,
+// 2.6s and 56.9s after dying, and each one's first cast came 1.9–3.3s after the event.
+// Without a resurrect event (Reincarnation is the player's own cast), casts that carry on
+// for REZ_WITHOUT_EVENT_SEC after the death say the same thing. The guard is there because
+// casts can trail a death without a life behind them: a cast logged a few tenths of a
+// second after the killing blow, or a priest's Spirit of Redemption (heals for some
+// fifteen seconds while dead).
+const REZ_WITHOUT_EVENT_SEC = 30;
+
+export function aliveWindowsFrom(durationSec: number, deathsSec: number[], resurrectsSec: number[], castsSec: number[]): Array<[number, number]> {
+  const r1 = (x: number) => Math.round(x * 10) / 10;
+  // Two death entries within a couple of seconds are one death logged twice.
+  const deaths = deathsSec.filter(t => Number.isFinite(t)).map(t => Math.min(durationSec, Math.max(0, t))).sort((a, b) => a - b)
+    .filter((t, i, all) => i === 0 || t - all[i - 1] > 2);
+  const rez = resurrectsSec.slice().sort((a, b) => a - b);
+  const casts = castsSec.slice().sort((a, b) => a - b);
+  const out: Array<[number, number]> = [];
+  let from: number | null = 0;
+  deaths.forEach((d, i) => {
+    if (from == null || d < from) return; // a second death entry with no life in between
+    if (d > from) out.push([r1(from), r1(d)]);
+    const until = deaths.find((x, j) => j > i && x > d) ?? durationSec;
+    const r = rez.find(t => t >= d - 0.5 && t < until);
+    const back = r != null
+      ? casts.find(t => t >= r && t < until)
+      : casts.some(t => t >= d + REZ_WITHOUT_EVENT_SEC && t < until) ? casts.find(t => t >= d + 2 && t < until) : undefined;
+    from = back ?? null;
+  });
+  if (from != null && durationSec > from) out.push([r1(from), r1(durationSec)]);
+  return out;
+}
+
+// The windows of a profile; one built before the field existed reads as a single life.
+export function aliveWindowsOf(p: { aliveWindows?: Array<[number, number]>; aliveMs: number }): Array<[number, number]> {
+  return p.aliveWindows?.length ? p.aliveWindows : [[0, p.aliveMs / 1000]];
+}
+
+export function isAliveAt(windows: Array<[number, number]>, atSec: number, slackSec = 0.5): boolean {
+  return windows.some(([a, b]) => atSec >= a - slackSec && atSec <= b + slackSec);
+}
+
+// How many presses a cooldown allowed over the time alive: pressed as soon as it is
+// ready, it keeps recovering while the player is dead, and a press that would fall in
+// the last `marginSec` of a life (or while dead) waits for the next one. For a single
+// life of A seconds this is 1 + floor((A − margin) / cooldown); extra charges add one each.
+export function possibleUses(windows: Array<[number, number]>, cooldownSec: number, charges = 1, marginSec = 0): number {
+  if (!(cooldownSec > 0)) return 0;
+  let n = 0, ready = 0;
+  for (const [from, to] of windows) {
+    let t = Math.max(ready, from);
+    while (t <= to - marginSec) { n++; t += cooldownSec; }
+    ready = t;
+  }
+  return Math.max(1, n) + Math.max(0, charges - 1);
 }
 
 const MELEE_GUID = 1;
@@ -564,7 +652,7 @@ export function buildProfile(raw: any, fight: { startTime: number; endTime: numb
   const takenMap = new Map<string, DamageTakenStat>();
   for (const e of raw?.taken?.data?.entries ?? []) {
     if (isPlayerSourcedDamage(e) || !(e.total > 0) || !e.name) continue;
-    const t = takenMap.get(e.name) ?? { name: e.name, icon: e.abilityIcon ?? '', spellId: e.guid ?? 0, total: 0, hits: 0, ticks: 0, source: e.actorName ?? '', byId: [] as DamageTakenStat['byId'] };
+    const t = takenMap.get(e.name) ?? { name: e.name, icon: e.abilityIcon ?? '', spellId: e.guid ?? 0, total: 0, hits: 0, ticks: 0, source: e.actorName ?? '', byId: [] as DamageTakenStat['byId'], ...(Number(e.type) > 0 ? { school: Number(e.type) } : {}) };
     t.total += e.total;
     t.hits += e.hitCount ?? 0;
     t.ticks += e.tickCount ?? 0;
@@ -654,7 +742,19 @@ export function buildProfile(raw: any, fight: { startTime: number; endTime: numb
       };
     })
     .sort((a, b) => a.atSec - b.atSec);
-  const aliveMs = deaths.length ? Math.max(1, Math.min(durationMs, deaths[0].atSec * 1000)) : durationMs;
+  // Alive windows, from the raw timestamps: this player's deaths, the resurrect events
+  // on them and every cast of theirs. A pool member's tables carry no deaths, so theirs
+  // is always the one window and nothing a pool summary stores depends on this.
+  const relSec = (ts: unknown) => (Number(ts) - fight.startTime) / 1000;
+  const aliveWindows = aliveWindowsFrom(
+    durationMs / 1000,
+    deathEntries.filter((d: any) => d.id === sourceId && d.timestamp != null).map((d: any) => relSec(d.timestamp)),
+    (raw?.resurrects?.data ?? []).filter((e: any) => e?.type === 'resurrect' && e.targetID === sourceId).map((e: any) => relSec(e.timestamp)),
+    (raw?.castEvents?.data ?? []).filter((e: any) => e?.timestamp != null).map((e: any) => relSec(e.timestamp)),
+  );
+  // Exactly the fight's length for someone with no death of their own (the windows are
+  // rounded to a tenth of a second); otherwise the windows added up.
+  const aliveMs = deaths.length ? Math.max(1, Math.min(durationMs, Math.round(1000 * aliveWindows.reduce((sum, [a, b]) => sum + (b - a), 0)))) : durationMs;
 
   const pdPlayers = raw?.pd ? mapPlayerDetails(raw.pd?.data?.playerDetails) : [];
   const pdMe = pdPlayers.find(p => p.id === sourceId);
@@ -662,6 +762,7 @@ export function buildProfile(raw: any, fight: { startTime: number; endTime: numb
   return {
     durationMs,
     aliveMs,
+    aliveWindows,
     casts: [...castMap.values()],
     castTimes,
     buffs: [...buffMap.values()],
@@ -697,10 +798,13 @@ export function getPlayerProfile(token: string, code: string, fight: ReportFight
         null
       );
       const profile = buildProfile(data?.reportData?.report, fight, player.id);
-      const extra = await fetchDeathRecapsAndResources(token, code, fight, player.id, profile.deaths).catch(err => { console.error('analyze: death recap / resources unavailable', err); return { deathRecaps: [], resourceWaste: [] }; });
+      // Auras worth keeping on each hit: the player's own defensive buffs and the externals asked about.
+      const keepAuras = new Set<number>([...externalIds, ...profile.buffs.filter(b => isDefensive(b.name)).flatMap(b => b.ids ?? [b.spellId])]);
+      const takenIds = new Set<number>(profile.damageTaken.flatMap(t => t.byId.map(x => x.spellId)));
+      const extra = await fetchDeathRecapsAndResources(token, code, fight, player.id, profile.deaths, { keepAuras, takenIds }).catch(err => { console.error('analyze: death recap / resources unavailable', err); return { deathRecaps: [], resourceWaste: [] }; });
       return { ...profile, ...extra, gear: player.gear ?? profile.gear, talentNodes: player.talentNodes ?? profile.talentNodes };
     },
-    [`analyze-profile-v18-${code}-${fight.id}-${player.id}-${player.role}-${externalIds.length}`],
+    [`analyze-profile-v21-${code}-${fight.id}-${player.id}-${player.role}-${externalIds.length}`],
     { revalidate: 86400 }
   )();
 }
@@ -788,7 +892,13 @@ export function fetchTankHits(token: string, code: string, fight: ReportFight, s
 const RECAP_WINDOW_MS = 10000;
 const RECAP_MAX_DEATHS = 3;
 
-async function fetchDeathRecapsAndResources(token: string, code: string, fight: ReportFight, sourceId: number, deaths: DeathInfo[]): Promise<{ deathRecaps: DeathRecap[]; resourceWaste: ResourceWaste[] }> {
+// The player's whole damage-taken timeline rides along in this request (the `taken` alias:
+// no request of its own, about 2 Warcraft Logs points measured on a 6-minute Mythic pull,
+// 700–1000 events for a damage dealer, a healer and a tank alike). One page of 10000 is
+// far more than a pull holds; if it ever is not, hitsComplete says so.
+const TAKEN_EVENTS_LIMIT = 10000;
+
+async function fetchDeathRecapsAndResources(token: string, code: string, fight: ReportFight, sourceId: number, deaths: DeathInfo[], takenOpts?: { keepAuras: Set<number>; takenIds: Set<number> }): Promise<{ deathRecaps: DeathRecap[]; resourceWaste: ResourceWaste[]; hits?: PlayerHit[]; hitsComplete?: boolean; maxHp?: number | null }> {
   const windows = deaths.slice(0, RECAP_MAX_DEATHS).map((d, i) => {
     const end = fight.startTime + Math.round(d.atSec * 1000) + 1000;
     const start = Math.max(fight.startTime, end - RECAP_WINDOW_MS - 1000);
@@ -799,6 +909,7 @@ async function fetchDeathRecapsAndResources(token: string, code: string, fight: 
   const data = await wclQuery<WclReportData<WclRecapReport>>(token, `{ reportData { report(code: "${code}") {
     ${windows}
     res: events(fightIDs: [${fight.id}], dataType: Resources, sourceID: ${sourceId}, limit: 5000) { data nextPageTimestamp }
+    ${takenOpts ? `taken: events(fightIDs: [${fight.id}], dataType: DamageTaken, sourceID: ${sourceId}, includeResources: true, limit: ${TAKEN_EVENTS_LIMIT}) { data nextPageTimestamp }` : ''}
     masterData { actors { id name } abilities { gameID name icon } }
   } } }`, 'player-recap', null);
   const r = data?.reportData?.report ?? {};
@@ -847,7 +958,29 @@ async function fetchDeathRecapsAndResources(token: string, code: string, fight: 
     cur.wasted += Number(e.waste ?? 0);
     waste.set(t, cur);
   }
-  return { deathRecaps, resourceWaste: [...waste.values()].filter(w => w.gained > 0).sort((a, b) => b.gained - a.gained) };
+  // The damage-taken timeline: hits from the abilities the damage table kept (so damage
+  // players did to themselves or each other stays out, as it does there).
+  let hits: PlayerHit[] | undefined;
+  let maxHp: number | null = null;
+  if (takenOpts && r.taken?.data) {
+    const maxes: number[] = [];
+    hits = [];
+    for (const e of r.taken.data) {
+      if (e.type !== 'damage' || !takenOpts.takenIds.has(Number(e.abilityGameID))) continue;
+      const amount = e.amount ?? 0, absorbed = e.absorbed ?? 0;
+      if (!(amount > 0 || absorbed > 0)) continue;
+      const max = e.maxHitPoints ?? 0;
+      if (max > 0) maxes.push(max);
+      hits.push({
+        atSec: sec1(Math.max(0, e.timestamp - fight.startTime)), spellId: Number(e.abilityGameID), amount, absorbed, tick: !!e.tick,
+        auras: String(e.buffs ?? '').split('.').filter(Boolean).map(Number).filter(id => takenOpts.keepAuras.has(id)),
+        ...(max > 0 && e.hitPoints != null ? { hp: Math.round(100 * e.hitPoints / max) } : {}),
+      });
+    }
+    maxes.sort((a, b) => a - b);
+    maxHp = maxes.length ? maxes[Math.floor(maxes.length / 2)] : null;
+  }
+  return { deathRecaps, resourceWaste: [...waste.values()].filter(w => w.gained > 0).sort((a, b) => b.gained - a.gained), ...(hits ? { hits, hitsComplete: !r.taken?.nextPageTimestamp, maxHp } : {}) };
 }
 
 // ─── Pool: what the top players of this spec do on this boss ──────────────────

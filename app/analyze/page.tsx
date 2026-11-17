@@ -5,12 +5,14 @@ import Link from 'next/link';
 import Image from 'next/image';
 import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
+import { headers } from 'next/headers';
+import { userAgent } from 'next/server';
 import Script from 'next/script';
 import SiteFooter from '../../components/SiteFooter';
 import SiteShell from '../../components/SiteShell';
 import SiteNavLinks from '../../components/SiteNavLinks';
 import TimelineChart from '../../components/TimelineChart';
-import { getWclToken, getBlizzardToken, getTalentTreeId, getCachedTalentLayout, loadEntryTalentMap, getRaidStructure, getSeasonState, mapConcurrent, POPULAR_SPECS } from '../../lib/wow';
+import { getWclToken, getBlizzardToken, getTalentTreeId, getCachedTalentLayout, loadEntryTalentMap, getRaidStructure, getSeasonState, mapConcurrent, POPULAR_SPECS, RAID_JOURNAL_ID_FALLBACK } from '../../lib/wow';
 import { getBossKnowledge, getItemOnUse, getSpellInfo, isCombatPotion, isHealingPotionSpell, lookupLabel, lookupNote, type BossKnowledge } from '../../lib/bossMechanics';
 import { isDefensive, defensiveKey, registerHealingPotionNames } from '../../lib/defensives';
 import {
@@ -22,8 +24,11 @@ import { reviewPlayer, registerPotionNames, buffFamily, fmtClock, median, type B
 import { getRaidFightData, buildRaidReview, buildMechanicItems, buildPlayerMechanicItems, composeRaidSummary, type RaidReview, type RaidItem, type WipefestPlacement } from '../../lib/raidReview';
 import { composeSummary, costOf, paceClause } from '../../lib/summary';
 import { loadNightReview, nightGroups, nightHref, pickNightGroup, type NightReview } from '../../lib/nightReview';
-import { analyzeUrl, nightDiscordText, playerDiscordText, raidDiscordText } from '../../lib/discordText';
+import { analyzeUrl, nightDiscordText, playerDiscordText, playerNightDiscordText, raidDiscordText } from '../../lib/discordText';
+import { buildPlayerNight, type PlayerNight } from '../../lib/playerNight';
 import NightView from './NightView';
+import PlayerNightView from './PlayerNightView';
+import { DefensivePlanSection, NextPullSection } from './NextPull';
 import CopyDiscordButton from '../../components/CopyDiscordButton';
 import { getLorrgsSpells, getLorrgsExternals, lorrgsMajorsForSpec, lorrgsNonMajorsForSpec } from '../../lib/lorrgsSpells';
 import { loadRoleData } from '../../lib/roleData';
@@ -34,6 +39,7 @@ import { evaluateInsights, fetchFightEvents, phaseStarts, summariseComparison, t
 import { getOrSetPersistent } from '../../lib/persistentCache';
 import { getWipefestBuckets, wipefestPercentile } from '../../lib/wipefestStats';
 import { unstable_cache } from 'next/cache';
+import { analyzeMetadata } from '../../lib/analyzeMeta';
 
 // Log review (preview). Unlisted while it's being built: no nav link, no indexing.
 // Flow is three steps on one URL — paste a report, pick the pull, pick yourself —
@@ -44,14 +50,14 @@ import { unstable_cache } from 'next/cache';
 // plan allows 300 (see app/page.tsx).
 export const maxDuration = 300;
 
-export const metadata: Metadata = {
-  title: 'Log Review (preview) | HotsBB',
-  description: 'Paste a Warcraft Logs report and get a plain-English read on what went right and wrong in your pull.',
-  robots: { index: false, follow: false },
-};
-
 interface PageProps {
   searchParams: Promise<{ report?: string; fight?: string; player?: string; view?: string; boss?: string; difficulty?: string; debug?: string }>;
+}
+
+// Title and share card per state (report, pull, player, night), still noindex. Cheap by
+// construction: see lib/analyzeMeta.ts for what it may and may not load.
+export async function generateMetadata({ searchParams }: PageProps): Promise<Metadata> {
+  return analyzeMetadata(await searchParams);
 }
 
 const ABILITY_ICON = (icon: string) => `https://assets.rpglogs.com/img/warcraft/abilities/${icon}`;
@@ -64,6 +70,13 @@ const classColor = (className: string) => POPULAR_SPECS.find(c => c.class === cl
 // streams the loading screen first on every such navigation.
 export default async function AnalyzePage({ searchParams }: PageProps) {
   const sp = await searchParams;
+  // A link pasted into Discord or Slack is fetched by their preview crawler, which reads
+  // <head> and throws the rest away, but the server would still run the whole review for
+  // it (measured: 157 s and its Warcraft Logs points for one cold raid summary). Known
+  // bots get the landing body instead; the share card comes from generateMetadata, and
+  // the page is noindex, so no crawler has a use for the review itself.
+  const isBot = userAgent({ headers: await headers() }).isBot;
+  if (isBot) return <Suspense fallback={<Loading />}><AnalyzeContent sp={{}} /></Suspense>;
   const key = [sp.report, sp.fight, sp.player, sp.view, sp.boss, sp.difficulty].map(v => v ?? '').join('|');
   return (
     <Suspense key={key} fallback={<Loading />}>
@@ -93,7 +106,7 @@ async function AnalyzeContent({ sp }: { sp: Awaited<PageProps['searchParams']> }
     | { kind: 'fights'; overview: ReportOverview }
     | { kind: 'players'; overview: ReportOverview; fight: ReportFight; players: FightPlayer[] }
     | { kind: 'review'; overview: ReportOverview; fight: ReportFight; player: FightPlayer; review: Review; mechanics: RaidItem[] }
-    | { kind: 'night'; overview: ReportOverview; night: NightReview }
+    | { kind: 'night'; overview: ReportOverview; night: NightReview; playerNight: PlayerNight | null }
     | { kind: 'raid'; overview: ReportOverview; fight: ReportFight; players: FightPlayer[]; review: RaidReview; debug?: unknown };
   let state: PageState;
   if (!ref) {
@@ -115,7 +128,8 @@ async function AnalyzeContent({ sp }: { sp: Awaited<PageProps['searchParams']> }
             bossKnowledge: f => loadBossKnowledge(token, f),
             raidStats: async (f, ps) => (await loadRaidStatsForFight(token, f, ps)).raidStats,
           });
-          state = { kind: 'night', overview, night };
+          // With a player, the same night seen from that one character (no further requests).
+          state = { kind: 'night', overview, night, playerNight: sp.player && /^\d+$/.test(sp.player) ? buildPlayerNight(night, parseInt(sp.player)) : null };
         } else if (!fight) {
           state = { kind: 'fights', overview };
         } else {
@@ -191,7 +205,7 @@ async function AnalyzeContent({ sp }: { sp: Awaited<PageProps['searchParams']> }
             ]);
             // Cooldown lengths for every cooldown-shaped cast the top players press (and the
             // player's defensives): cast ids first, since their tooltips state the cooldown.
-            const { cooldowns, charges } = await loadSpellFacts([
+            const { cooldowns, charges, texts: spellTexts } = await loadSpellFacts([
               ...profile.casts.filter(c => isDefensive(c.name) || pool?.castStarts?.[c.name] || c.total <= 20).map(c => ({ name: defensiveKey(c.name), spellId: c.spellId })),
               ...Object.entries(pool?.casts ?? {}).filter(([name]) => isDefensive(name) || pool?.castStarts?.[name]).map(([name, e]) => ({ name: defensiveKey(name), spellId: e.spellId })),
               ...profile.buffs.filter(b => isDefensive(b.name)).map(b => ({ name: defensiveKey(b.name), spellId: b.spellId })),
@@ -213,7 +227,7 @@ async function AnalyzeContent({ sp }: { sp: Awaited<PageProps['searchParams']> }
             const heroTree = heroTreeOf(player.talentNodes ?? profile.talentNodes, await loadHeroNodeMap(player.className, player.spec));
             // Tanks and healers: the extra facts their own checks need (one request for a tank, none for a healer).
             const role = await loadRoleData({ token, code: overview.code, fight, player, profile, pool, boss, raidStats, lorrgs }).catch(() => null);
-            const review = reviewPlayer({ player, fight, profile, pool, talents, heroTree, boss, raidStats, cooldowns, charges, trinkets, poolItemUses, majorSpells, notMajorSpells, role, context: {
+            const review = reviewPlayer({ player, fight, profile, pool, talents, heroTree, boss, raidStats, cooldowns, charges, spellTexts, trinkets, poolItemUses, majorSpells, notMajorSpells, role, debug: sp.debug === '1', context: {
               mechanicEvents: mechanics.flatMap(m => m.events ?? []), phases: mech.phases, bossCasts: bossCasts ?? [],
               playerNames: Object.fromEntries(players.map(p => [p.id, p.name])), externalsTracked: externalIds.length > 0,
             } });
@@ -256,7 +270,8 @@ async function AnalyzeContent({ sp }: { sp: Awaited<PageProps['searchParams']> }
 
   const crumbs: Array<{ label: string; href?: string }> = [];
   if (state.kind !== 'landing') crumbs.push({ label: state.overview.title, href: `/analyze?report=${state.overview.code}` });
-  if (state.kind === 'night') crumbs.push({ label: `${state.night.bossName} · night summary` });
+  if (state.kind === 'night') crumbs.push({ label: `${state.night.bossName} · night summary`, href: nightHref(state.overview.code, state.night) });
+  if (state.kind === 'night' && state.playerNight) crumbs.push({ label: state.playerNight.player.name });
   if (state.kind === 'players' || state.kind === 'review' || state.kind === 'raid') {
     crumbs.push({ label: `${state.fight.name} (${state.fight.kill ? 'kill' : `${Math.round(state.fight.fightPercentage)}%`})`, href: `/analyze?report=${state.overview.code}&fight=${state.fight.id}` });
   }
@@ -267,6 +282,7 @@ async function AnalyzeContent({ sp }: { sp: Awaited<PageProps['searchParams']> }
     state.kind === 'landing' ? <Landing error={state.error} initial={state.initial} />
     : state.kind === 'fights' ? <FightList overview={state.overview} />
     : state.kind === 'players' ? <PlayerList overview={state.overview} fight={state.fight} players={state.players} />
+    : state.kind === 'night' && state.playerNight ? <PlayerNightView pn={state.playerNight} reportTitle={state.overview.title} discordText={playerNightDiscordText(state.playerNight, analyzeUrl({ report: state.overview.code, view: 'night', boss: state.night.encounterID, difficulty: state.night.difficulty, player: state.playerNight.player.id }))} />
     : state.kind === 'night' ? <NightView night={state.night} reportTitle={state.overview.title} discordText={nightDiscordText(state.night, analyzeUrl({ report: state.overview.code, view: 'night', boss: state.night.encounterID, difficulty: state.night.difficulty }))} />
     : state.kind === 'raid' ? <RaidView review={state.review} fight={state.fight} overview={state.overview} />
     : <ReviewView review={state.review} mechanics={state.mechanics} player={state.player} fight={state.fight} overview={state.overview} reportCode={state.overview.code} />;
@@ -309,7 +325,7 @@ async function AnalyzeContent({ sp }: { sp: Awaited<PageProps['searchParams']> }
             <pre className="mt-8 text-[11px] text-zinc-500 bg-zinc-950 border border-zinc-800 rounded-lg p-3 overflow-x-auto">{JSON.stringify(state.debug, null, 2)}</pre>
           )}
           {sp.debug === '1' && process.env.NODE_ENV !== 'production' && state.kind === 'night' && (
-            <pre className="mt-8 text-[11px] text-zinc-500 bg-zinc-950 border border-zinc-800 rounded-lg p-3 overflow-x-auto">{JSON.stringify({ wclRequests: state.night.requests, pulls: state.night.pulls }, null, 2)}</pre>
+            <pre className="mt-8 text-[11px] text-zinc-500 bg-zinc-950 border border-zinc-800 rounded-lg p-3 overflow-x-auto">{JSON.stringify({ wclRequests: state.night.requests, load: state.night.load, mechanics: state.night.mechanics.map(m => `${m.key} | ${m.name} | ${m.via} | share ${m.share.toFixed(2)}${m.raidWide ? ' raid-wide' : ''} | times ${m.times} | ${JSON.stringify(m.eventsByFight ?? {})}`), pulls: state.night.pulls }, null, 2)}</pre>
           )}
           {sp.debug === '1' && process.env.NODE_ENV !== 'production' && state.kind === 'review' && (
             <pre className="mt-8 text-[11px] text-zinc-500 bg-zinc-950 border border-zinc-800 rounded-lg p-3 overflow-x-auto">{JSON.stringify(state.review.debug, null, 2)}</pre>
@@ -323,17 +339,19 @@ async function AnalyzeContent({ sp }: { sp: Awaited<PageProps['searchParams']> }
 
 // Cooldown and charges by name, from Wowhead's tooltip for the first spell id seen
 // under each name. Cached a week per spell, so this is usually instant.
-async function loadSpellFacts(entries: Array<{ name: string; spellId: number }>): Promise<{ cooldowns: Record<string, number>; charges: Record<string, number> }> {
+async function loadSpellFacts(entries: Array<{ name: string; spellId: number }>): Promise<{ cooldowns: Record<string, number>; charges: Record<string, number>; texts: Record<string, string> }> {
   const byName = new Map<string, number>();
   for (const e of entries) if (e.spellId && !byName.has(e.name)) byName.set(e.name, e.spellId);
   const cooldowns: Record<string, number> = {};
   const charges: Record<string, number> = {};
+  const texts: Record<string, string> = {}; // defensives only: what the next-pull plan reads
   await mapConcurrent([...byName.entries()], 8, async ([name, id]) => {
     const info = await getSpellInfo(id).catch(() => null);
+    if (info?.text && isDefensive(name)) texts[name] = info.text;
     if (info) cooldowns[name] = info.cooldownSec ?? 0; // 0: known to have no cooldown (Hunter's Mark), so no re-use-gap guessing
     if (info?.charges && info.charges > 1) charges[name] = info.charges;
   });
-  return { cooldowns, charges };
+  return { cooldowns, charges, texts };
 }
 
 // Item-effect casts with alchemy or potion art are checked against Wowhead once (cached
@@ -542,7 +560,9 @@ async function loadBossKnowledge(token: string, fight: ReportFight): Promise<Bos
     const [zones, season, blizzToken] = await Promise.all([getRaidStructure(token), getSeasonState(), getBlizzardToken()]);
     const zone = (zones as Array<{ name: string; encounters?: Array<{ id: number; journalID?: number }> }>).find(z => (z.encounters ?? []).some(e => e.id === fight.encounterID));
     if (!zone) return null;
-    const journalId = (zone.encounters ?? []).find(e => e.id === fight.encounterID)?.journalID ?? null;
+    // WCL returns journalID 0 for this raid, so the hand-kept fallback fills it: without it
+    // two bosses matched no journal entry by name and reviewed with no ability descriptions.
+    const journalId = ((zone.encounters ?? []).find(e => e.id === fight.encounterID)?.journalID || RAID_JOURNAL_ID_FALLBACK[fight.encounterID]) ?? null;
     return await getBossKnowledge({ expansionName: season.expansionName, zoneName: zone.name, bossName: fight.name, blizzToken, encounterId: fight.encounterID, journalId });
   } catch (err) {
     console.error('analyze: boss knowledge unavailable', err);
@@ -775,9 +795,12 @@ function ReviewView({ review, mechanics, player, fight, overview, reportCode }: 
         <CopyDiscordButton text={playerDiscordText(review, mechanics, player, fight, analyzeUrl({ report: reportCode, fight: fight.id, player: player.id }))} />
       </div>
 
+      <NextPullSection plan={review.nextPull} kill={fight.kill} />
+
       <StatsGrid stats={review.stats} cols="grid-cols-3 sm:grid-cols-4 lg:grid-cols-7" />
 
       {review.defensives.length > 0 && <DefensivesPanel rows={review.defensives} />}
+      {review.nextPull.defensivePlan && <DefensivePlanSection plan={review.nextPull.defensivePlan} />}
 
       {/* The cooldown timeline sits under "Fix these first" when there is one, otherwise it leads. */}
       {!sections[0].items.length && review.timeline && review.timeline.rows.length > 0 && <TimelineView timeline={review.timeline} />}
@@ -1010,7 +1033,7 @@ function TimelineView({ timeline }: { timeline: Timeline }) {
         {timeline.rows.some(r => r.prePull) && <> · a bar starting at 0:00 is a press before the pull (its buff was up at the start)</>}
         {timeline.rows.some(r => r.kind === 'buff') && <> · below the dashed line: cooldowns that show up as a buff rather than a cast</>}
         {' '}· major cooldowns only: a minute or longer, plus Bestial Wrath
-        {timeline.aliveSec < dur - 2 && <> · <span className="inline-block w-3 h-2 rounded-sm bg-red-500/30 align-middle mr-1.5" />after your death</>}
+        {timeline.aliveSec < dur - 2 && <> · <span className="inline-block w-3 h-2 rounded-sm bg-red-500/30 align-middle mr-1.5" />while you were dead</>}
       </p>
     </section>
   );

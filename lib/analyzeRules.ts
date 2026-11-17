@@ -1,11 +1,12 @@
 import type { FightPlayer, PlayerProfile, PoolSummary, RaidMechanicStats, ReportFight } from './analyze';
-import { DIFFICULTY_LABELS, GEAR_SLOT_NAMES } from './analyze';
+import { DIFFICULTY_LABELS, GEAR_SLOT_NAMES, aliveWindowsOf, isAliveAt, possibleUses } from './analyze';
 import { lookupJournal, lookupLabel, lookupNote, MECHANIC_WORDS, type BossKnowledge, type MechanicType } from './bossMechanics';
 import { BASELINE_BY_CLASS, DEFENSIVES, REPLACED_BY, TWO_STEP, isMovement, isUtility, noChargeModel, chargesFromTalents, defensiveKey, defensivesAt, minReuseGap, wastedDoublePresses } from './defensives';
 import { LORRGS_CREDIT, MAJOR_CD_SEC, MAJOR_UNDER_60, type MajorSpell } from './lorrgsSpells';
 import { timesWord } from './summary';
 import { alignPoolToPhases, sameHeroMembers, subsetPool } from './poolFrame';
 import { reviewRole, type RoleData } from './roleRules';
+import { buildNextPull, defensiveRowText, planText, type NextPull } from './nextPull';
 
 // ─── Log review: the rules ─────────────────────────────────────────────────────
 //
@@ -14,6 +15,13 @@ import { reviewRole, type RoleData } from './roleRules';
 // is "how far is this player from what the top players measurably do". Thresholds
 // are deliberately loose (60% of the pool's median, 2× the pool's damage taken…) so
 // the page says a few true things rather than many arguable ones.
+//
+// The test every comparison has to pass: it must not flag the top players themselves.
+// A top player's own ranked kill is reviewed against the OTHER top players (see
+// selfInPool), and a "less than / more than / later than the top players" card is only
+// written when it holds against every one of them (BELOW_ALL, ABOVE_ALL), not just
+// against their median — their spread is the measure of what is a choice and what is a
+// mistake. scripts/review-selfcheck.mjs runs that test against live rankings.
 
 export type Severity = 'bad' | 'warn' | 'good' | 'info';
 export type Category = 'survival' | 'mechanics' | 'cooldowns' | 'rotation' | 'buffs' | 'prep' | 'gear' | 'build' | 'uptime' | 'utility' | 'output';
@@ -72,7 +80,10 @@ export interface BossCastMark { atSec: number; name: string; spellId: number; ic
 
 export interface Timeline {
   durationSec: number;
+  // When the player first died (the pull's length for someone who never did).
   aliveSec: number;
+  // Every stretch spent dead, as [from, to] seconds: to the resurrection, or to the end.
+  deadSpans?: Array<[number, number]>;
   rows: TimelineRow[];
   // Fight phases and intermissions, for the bands behind the rows.
   phases: Array<{ name: string; fromSec: number; toSec: number }>;
@@ -110,6 +121,8 @@ export interface Review {
   defensives: DefensiveRow[];
   poolNote: string | null;
   sourcesNote: string | null;
+  // What to do on the next attempt, and which defensive goes where (lib/nextPull.ts).
+  nextPull: NextPull;
   debug: Record<string, unknown>;
 }
 
@@ -140,6 +153,9 @@ export interface ReviewInput {
   cooldowns?: Record<string, number> | null;
   // Charges by name from Wowhead's tooltip ("2 Charges"); talent text can add one.
   charges?: Record<string, number> | null;
+  // Wowhead's tooltip text by defensive name (the same lookups the cooldowns come from):
+  // the next-pull plan reads it to tell a button that prevents damage from a heal.
+  spellTexts?: Record<string, string> | null;
   // The player's equipped trinkets with their on-use data (Wowhead item tooltips).
   trinkets?: Array<{ name: string; itemId: number; slot: number; onUse: boolean; cooldownSec: number | null; useSpellId: number | null; useSpellName: string | null; effectNames: string[] }> | null;
   // Effect data for the items the top players wear, keyed by item name.
@@ -151,6 +167,9 @@ export interface ReviewInput {
   // What the tank and healer checks need beyond the profile and the pool (see
   // lib/roleData.ts); null for a damage dealer or when it could not be gathered.
   role?: RoleData | null;
+  // Build the debug dump (the page's ?debug=1). Off by default: it is a few hundred
+  // strings nobody reads on an ordinary review.
+  debug?: boolean;
   // What the boss did to this player, by the second (from the Wipefest-defined
   // mechanics): the context that explains a gap in casting or a late cooldown.
   context?: {
@@ -203,6 +222,37 @@ const WIPE_DEATHS_MIN = 5;
 const WIPE_WINDOW_SEC = 3;
 const MIN_JUDGE_SECONDS = 45;  // below this much time alive, rotation/uptime can't be judged
 const CONSENSUS = 0.8;         // share of the pool that must do something before it's "what top players do"
+// "You do less of this than the top players" (cast rate, buff uptime, uses of a cooldown)
+// is only said when it is less than EVERY top player who does it at all, by this margin,
+// on top of the 60%-of-median line each check already had. Was: 60% of the median alone.
+// Leave-one-out over sixteen cached pools (480 top parses, 2026-11-16) showed what that
+// did: 152 cast-rate and 24 uptime warnings on the top players themselves, 31% of them
+// flagged for something, because the top players do not agree on these numbers — Ignore
+// Pain runs from 5.0 to 14 casts a minute among the top 30 Protection Warriors, Avatar
+// from 26% to 55% uptime, Arcane Blast from 1.2 to 3.7 a minute — so a player at the low
+// end of the top 30 sat under 60% of the median (the #1 Protection Warrior among them).
+// Where they do agree the lowest of them is above 60% of the median and nothing changes.
+// The same count for the lines that were tried: under the lowest × 0.85, 5.6% of the top
+// players flagged; under the second lowest × 0.85, 13%; under their 10th percentile, 22%.
+// The price of "the lowest" is that one odd top parse quietens the check for everyone:
+// accepted, since it only ever errs towards saying less.
+export const BELOW_ALL = 0.85;
+export const lowestOf = (xs: number[]) => { const a = xs.filter(x => x > 0); return a.length ? Math.min(...a) : 0; };
+// The same idea for "you took more of this than the top players": more than every one of
+// them, by the mirrored margin.
+const ABOVE_ALL = 1 / BELOW_ALL;
+const highestOf = (xs: number[]) => (xs.length ? Math.max(...xs) : 0);
+// A button counts as "pressed on cooldown" by the top players when the middle one of
+// them (among those who press it) gets this share of the presses its cooldown allowed in
+// their own kill, and at least USES_MIN_MEMBERS of them press it. Only such buttons are
+// held to "N uses of M possible". Was: every cast with a cooldown of a minute or more,
+// which told the #1 Protection Warrior "Berserker Rage: 2 uses of 10 possible" — a
+// one-minute fear break nobody presses on cooldown — and "Voracious Heart of Ula'tek:
+// 5 uses of 7 possible" for a trinket the top players hold for damage windows.
+const USES_ON_CD_RATIO = 0.7;
+const USES_MIN_MEMBERS = 5;
+// A press that would come due in the last seconds of a life is not counted as possible.
+const USES_LAST_SEC = 15;
 
 // Consumables come in many flavours with different names (every food gives a
 // different "Well Fed", every flask its own buff). Comparing a player's food to the
@@ -255,9 +305,41 @@ export function classifyAbility(boss: BossKnowledge | null | undefined, raidStat
   return null;
 }
 
+// Where this pull sits in the pool, when the player being reviewed is one of the top
+// players themselves: same fight id, same length to the millisecond and the same active
+// time (two top players of a spec can share a kill). -1 when they are not in it, or when
+// the pool's fight list cannot be matched to its members.
+function selfInPool(pool: PoolSummary, fight: ReportFight, profile: PlayerProfile): number {
+  if (pool.fights.length !== pool.n) return -1;
+  const active = 100 * profile.activeTimeMs / profile.durationMs;
+  return pool.fights.findIndex((f, i) => f.fightId === fight.id && pool.durations[i] === profile.durationMs && Math.abs((pool.activePct[i] ?? -1) - active) < 1e-6);
+}
+
+// How the pull went for the player's life, for the verdict sentence; null when they lost
+// no more than a few seconds of it (alive throughout, or dead only as the pull ended).
+export function lifeWords(profile: PlayerProfile): string | null {
+  const windows = aliveWindowsOf(profile);
+  const durationSec = profile.durationMs / 1000;
+  const lastEnd = windows[windows.length - 1][1];
+  if (windows.length === 1) return lastEnd < durationSec - 5 ? `dead at ${fmtClock(lastEnd)}` : null;
+  const again = lastEnd < durationSec - 5 ? `, dead again at ${fmtClock(lastEnd)}` : '';
+  if (windows.length === 2) return `died at ${fmtClock(windows[0][1])}, resurrected at ${fmtClock(windows[1][0])}${again}`;
+  return `died ${windows.length - 1 + (again ? 1 : 0)} times, first at ${fmtClock(windows[0][1])}, ${fmtClock(durationSec - profile.aliveMs / 1000)} dead in all`;
+}
+
 // ─── The review ───────────────────────────────────────────────────────────────
 
-export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, heroTree, boss, raidStats, cooldowns, charges, trinkets, poolItemUses, majorSpells, notMajorSpells, role, context }: ReviewInput): Review {
+export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, heroTree, boss, raidStats, cooldowns, charges, spellTexts, trinkets, poolItemUses, majorSpells, notMajorSpells, role, context, debug: wantDebug }: ReviewInput): Review {
+  const durationSec = profile.durationMs / 1000;
+  // When the player was alive. Everything measured "while alive" (rates, uptime, possible
+  // presses, casting gaps) runs over these windows, so a player who died and was
+  // resurrected is judged over both lives and not charged for the time in between.
+  const windows = aliveWindowsOf(profile);
+  const firstLifeEndSec = windows[0][1];
+  const lastAliveSec = windows[windows.length - 1][1];
+  const deadSpans: Array<[number, number]> = [];
+  if (windows[0][0] > 0.5) deadSpans.push([0, windows[0][0]]);
+  windows.forEach(([, to], i) => { const until = windows[i + 1]?.[0] ?? durationSec; if (until - to > 0.5) deadSpans.push([to, until]); });
   const mechanicEvents = (context?.mechanicEvents ?? []).slice().sort((a, b) => a.atSec - b.atSec);
   // Every cast this player made, in order — the raw material for "what were you doing then".
   const allCastTimes = Object.values(profile.castTimes).flat().sort((a, b) => a - b);
@@ -265,8 +347,9 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, he
   // What the log says this player was doing around a moment: dead, hit by a mechanic,
   // moving, or simply not casting.
   const phases = context?.phases ?? [];
-  const whatHappened = (fromSec: number, toSec: number, aliveSecLimit: number): string | null => {
-    if (aliveSecLimit < fromSec) return 'you were already dead';
+  const whatHappened = (fromSec: number, toSec: number): string | null => {
+    const dead = deadSpans.find(([a, b]) => fromSec > a && fromSec < b);
+    if (dead) return dead[1] < durationSec - 1 ? `you were dead (${fmtClock(dead[0])} to ${fmtClock(dead[1])})` : 'you were already dead';
     // An intermission the whole raid sits through is not this player's downtime.
     const inter = phases.find(p => /intermission|transition/i.test(p.name) && Math.min(p.toSec, toSec) - Math.max(p.fromSec, fromSec) >= 0.5 * (toSec - fromSec));
     if (inter) return `the intermission (${inter.name.replace(/^Intermission:?\s*/i, '').trim()}) ran ${fmtClock(inter.fromSec)}–${fmtClock(inter.toSec)}`;
@@ -282,12 +365,21 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, he
   };
   // The pool in this pull's frame: the top players on the same hero talents (when there
   // are enough), with their timings placed on this pull's phases.
-  const wholePool = poolIn && poolIn.n >= 3 ? poolIn : null;
+  // A top player reviewing their own ranked kill is a member of the pool. They are left
+  // out of it, so they are compared with the other top players and not with themselves
+  // (and so the leave-one-out check of these rules is what every top player really sees).
+  const selfIdx = poolIn ? selfInPool(poolIn, fight, profile) : -1;
+  const others = poolIn && selfIdx >= 0 ? subsetPool(poolIn, poolIn.durations.map((_, i) => i).filter(i => i !== selfIdx)) : poolIn;
+  const wholePool = others && others.n >= 3 ? others : null;
   const heroIdx = wholePool ? sameHeroMembers(wholePool, heroTree) : null;
-  const framed = wholePool ? alignPoolToPhases(heroIdx ? subsetPool(wholePool, heroIdx, heroTree) : wholePool, fight.phases) : null;
+  // The same members on their own clocks (before their times are placed on this pull's
+  // phases): what they did in their own kills, counted against their own kill lengths.
+  const ownClockPool = wholePool ? (heroIdx ? subsetPool(wholePool, heroIdx, heroTree) : wholePool) : null;
+  const framed = ownClockPool ? alignPoolToPhases(ownClockPool, fight.phases) : null;
   const pool = framed?.pool ?? null;
   const phaseAligned = framed?.aligned ?? false;
   const findings: Finding[] = [];
+  const rateDebug: string[] = []; // every cast rate and uptime that was compared (debug only)
   // Damage numbers only compare like with like: members on this fight's difficulty when
   // there are at least three, otherwise everyone (casts, buffs and consumables don't
   // depend on difficulty and always use the whole pool).
@@ -295,8 +387,8 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, he
   const dmgIdx = sameDiffIdx.length >= 3 ? sameDiffIdx : pool ? pool.memberDifficulty.map((_, i) => i) : [];
   const dmgSlice = (xs: number[]) => dmgIdx.map(i => xs[i] ?? 0);
   const dmgN = dmgIdx.length;
-  const durationSec = profile.durationMs / 1000;
-  const aliveSec = profile.aliveMs / 1000;
+  const aliveSec = profile.aliveMs / 1000; // total, over every life
+  const lostTime = aliveSec < durationSec - 5;
   const aliveMinutes = Math.max(profile.aliveMs, 1000) / 60000;
   const judgeable = aliveSec >= MIN_JUDGE_SECONDS;
   const specLabel = `${player.spec} ${player.className}`;
@@ -320,10 +412,9 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, he
     const item = itemForCast(castName);
     return !!item && !myItemNames.has(item);
   };
-  // Rates are judged over the time until the first death, so the counts must stop there
-  // too: a player who was resurrected kept casting, and those casts used to be divided
-  // by the shorter span, overstating every rate and every "possible uses" figure.
-  const whileAlive = (times: number[]) => times.filter(t => t <= aliveSec + 0.5);
+  // Rates are judged over the time alive, so the counts cover the same windows: a cast
+  // logged a moment after the killing blow (or from a spirit form) is not one of them.
+  const whileAlive = (times: number[]) => times.filter(t => isAliveAt(windows, t));
   const myCast = (name: string) => (profile.castTimes[name] ? whileAlive(profile.castTimes[name]).length : profile.casts.find(c => c.name === name)?.total ?? 0);
   const myBuff = (name: string) => profile.buffs.find(b => b.name === name);
 
@@ -459,7 +550,7 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, he
   const defensiveRows: DefensiveRow[] = [...defensiveNames].map(k => {
     const cd = k === 'Healing potion' ? null : defCd[k] != null ? Math.round(defCd[k]! * 10) / 10 : null;
     const used = defUses[k]?.length ?? 0;
-    let possible = cd ? defCharges[k] + Math.floor(aliveSec / cd) : null;
+    let possible = cd ? possibleUses(windows, cd, defCharges[k]) : null;
     if (k === 'Healing potion') possible = 1;
     if (k === 'Healthstone' && possible != null) possible = Math.min(3, possible);
     return { name: k, spellId: defSpell[k]?.spellId ?? 0, icon: defSpell[k]?.icon ?? '', cooldownSec: cd, charges: defCharges[k], used, possible };
@@ -594,6 +685,10 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, he
     if ((defCharges[k] ?? 1) < 2 || noChargeModel(k)) continue;
     const wasted = wastedDoublePresses(defUses[k] ?? [], defBands[k]);
     if (!wasted.length) continue;
+    // Not a waste if a top player presses it the same way (two presses inside the same
+    // window): the #1 Guardian Druid on Mythic Ula'tek was told "Frenzied Regeneration
+    // pressed twice within 3.2s", which is how the top bears spend its charges on a spike.
+    if ((ownClockPool?.castStarts[k] ?? []).some(m => wastedDoublePresses(m, defBands[k]).length > 0)) continue;
     const w = wasted[0];
     findings.push({
       id: `double-${k}`, severity: 'warn', category: 'survival', impact: 42, icon: defSpell[k]?.icon, spellId: defSpell[k]?.spellId,
@@ -644,6 +739,15 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, he
   let avoidableTotal = 0;
   if (pool) {
     const totalTaken = profile.damageTaken.reduce((s, t) => s + t.total, 0) || 1;
+    // More than every top player on this difficulty takes (or picks up), per minute. Every
+    // mechanic check needs it on top of its own line. Was: twice the median for damage
+    // everyone takes, and any hit at all from something at most 30% of the top players
+    // take — which, by construction, flagged up to 30% of the top players for each such
+    // ability. Leave-one-out on 2026-11-16: "Too much damage from Vessel of Awakening" on
+    // the #1 Retribution Paladin and the #1 Havoc Demon Hunter, "Slithering Flame hit you
+    // 1 time" on the #3 Retribution Paladin, "Picked up Invoke 1 time" on the #1
+    // Marksmanship Hunter and the #12 Holy Paladin.
+    const beyondAll = (mine: number, theirs: number[] | undefined) => mine > ABOVE_ALL * highestOf(dmgSlice(theirs ?? []));
     const mech: Finding[] = [];
     const soaks: string[] = [];
     for (const t of profile.damageTaken) {
@@ -656,7 +760,7 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, he
         const e = pool.taken[t.name];
         const med = e ? median(dmgSlice(e.perMin)) : 0;
         const userPerMin = t.total / aliveMinutes;
-        if (med > 0 && userPerMin > 2 * med && t.total / totalTaken >= 0.03) {
+        if (med > 0 && userPerMin > 2 * med && beyondAll(userPerMin, e?.perMin) && t.total / totalTaken >= 0.03) {
           mech.push({
             id: `over-${t.name}`, severity: 'warn', category: 'mechanics', icon: t.icon, spellId: t.spellId, explain: explain(t.name, t.spellId),
             impact: 40 + Math.min(15, Math.round(userPerMin / med)),
@@ -664,7 +768,7 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, he
             text: kind === 'defensive'
               ? `DBM flags ${t.name} as the hit to press a defensive for, and you took ${(userPerMin / med).toFixed(1)}× what ${topWord} take from it.`
               : `Everyone takes ${t.name}, but you took ${(userPerMin / med).toFixed(1)}× what ${topWord} take from it.`,
-            evidence: `${fmtNum(userPerMin)} per minute vs ${fmtNum(med)} for top players`,
+            evidence: `${fmtNum(userPerMin)} per minute vs ${fmtNum(med)} for top players, and more than any one of them`,
           });
         }
         continue;
@@ -677,7 +781,10 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, he
       const frac = e ? countPresent(dmgSlice(e.perMin)) / dmgN : 0;
       const landed = t.hits > 0 ? `hit you ${plural(t.hits, 'time')}` : `ticked on you ${plural(t.ticks, 'time')}`;
       if (frac <= 0.3) {
-        const who = e ? `Only ${countPresent(dmgSlice(e.perMin))} of ${dmgN}` : `None of the ${dmgN}`;
+        // A few of the top players take it too: only worth a card when this is more of it
+        // than any of them took.
+        if (frac > 0 && !beyondAll(t.total / aliveMinutes, e?.perMin)) continue;
+        const who = frac > 0 ? `Only ${countPresent(dmgSlice(e.perMin))} of ${dmgN}` : `None of the ${dmgN}`;
         // A hit that leaves a burn is one mistake, not one per tick.
         const count = t.hits > 0 ? t.hits : t.ticks;
         avoidableTotal += t.total;
@@ -697,18 +804,18 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, he
           id: `avoid-${t.name}`, severity: sev, category: 'mechanics', icon: t.icon, spellId: t.spellId, explain: explain(t.name, t.spellId),
           impact: 55 + Math.min(20, count * 2) + Math.round(25 * share),
           title: `${t.name} ${landed}`,
-          text: `${who} top ${specLabel}s on this boss took any damage from ${t.name}.${what}`,
+          text: `${who} top ${specLabel}s on this boss took any damage from ${t.name}${frac > 0 ? ', and none of them as much as you' : ''}.${what}`,
           evidence: `${fmtNum(t.total)} damage taken${t.source ? ` from ${t.source}` : ''}, ${pct(100 * share)} of everything that hit you`,
         });
       } else {
         const userPerMin = t.total / aliveMinutes;
         const med = median(dmgSlice(e.perMin));
-        if (med > 0 && userPerMin > 2 * med && share >= 0.03) {
+        if (med > 0 && userPerMin > 2 * med && beyondAll(userPerMin, e.perMin) && share >= 0.03) {
           mech.push({
             id: `over-${t.name}`, severity: 'warn', category: 'mechanics', icon: t.icon, spellId: t.spellId, explain: explain(t.name, t.spellId),
             impact: 45 + Math.min(15, Math.round(userPerMin / med)),
             title: `Too much damage from ${t.name}`,
-            text: `You took ${(userPerMin / med).toFixed(1)}× what ${topWord} take from ${t.name}. They take some of it too; the difference is how long or how often you were in it.`,
+            text: `You took ${(userPerMin / med).toFixed(1)}× what ${topWord} take from ${t.name}, more than any one of them. They take some of it too; the difference is how long or how often you were in it.`,
             evidence: `${fmtNum(userPerMin)} per minute vs ${fmtNum(med)} for top players`,
           });
         }
@@ -721,18 +828,19 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, he
       const e = pool.debuffs[d.name];
       const frac = e ? countPresent(dmgSlice(e.perMin)) / dmgN : 0;
       if (frac > 0.3) continue;
+      if (frac > 0 && !beyondAll(d.count / aliveMinutes, e?.perMin)) continue; // some top players pick it up as often
       const kind = classify(d.name, d.spellId)?.type;
       if (kind === 'soak' || isUnavoidableType(kind) || kind === 'debuff' || kind === 'targeted') continue;
       // With a journal for this boss, only its own debuffs count — a priest's own Angelic
       // Bulwark proc or an evoker's Rescue on you is not a mechanic.
       if (boss?.sources.journal && !lookupJournal(boss, d.name, d.spellId) && !lookupLabel(boss, d.name, d.spellId)) continue;
-      const who = e ? `Only ${countPresent(dmgSlice(e.perMin))} of ${dmgN}` : `None of the ${dmgN}`;
+      const who = frac > 0 ? `Only ${countPresent(dmgSlice(e.perMin))} of ${dmgN}` : `None of the ${dmgN}`;
       mech.push({
         cost: 4 * Math.min(1, Math.max(0.3, d.count / 4)),
         id: `debuff-${d.name}`, severity: 'warn', category: 'mechanics', icon: d.icon, spellId: d.spellId, explain: explain(d.name, d.spellId),
         impact: 38 + Math.min(15, d.count * 3),
         title: `Picked up ${d.name} ${plural(d.count, 'time')}`,
-        text: `${who} top ${specLabel}s on this boss ever had this debuff. The description below says what it is.`,
+        text: `${who} top ${specLabel}s on this boss ever had this debuff${frac > 0 ? ', and none of them as often as you' : ''}. The description below says what it is.`,
       });
     }
     mech.sort((a, b) => b.impact - a.impact);
@@ -775,9 +883,10 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, he
       if (isTalentGap(name)) continue;
       const mine = myCast(name);
       const myCpm = mine / aliveMinutes;
+      if (wantDebug) rateDebug.push(`cast ${name}: mine ${myCpm.toFixed(2)}/min, top median ${med.toFixed(2)}, lowest ${lowestOf(e.cpm).toFixed(2)}, present ${present}/${pool.n}`);
       const band: 'cooldown' | 'situational' | 'rotation' = med < 1.2 ? 'cooldown' : med < 3 ? 'situational' : 'rotation';
       const category: Category = band === 'rotation' ? 'rotation' : 'cooldowns';
-      const whileAlive = aliveSec < durationSec - 5 ? ' in the time you were alive' : ' in a fight this long';
+      const whileAlive = lostTime ? ' in the time you were alive' : ' in a fight this long';
       const ownedItem = !!itemForCast(name) && !unownedItemCast(name);
       if (mine === 0 && buildDiffers && !ownedItem) { missingByBuild.push(name); continue; }
       if (mine > 0 && buildDiffers && myCpm < 0.15 * med && !ownedItem) { missingByBuild.push(name); continue; }
@@ -791,7 +900,8 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, he
           title: `You never used ${name}`,
           text: `${present === pool.n ? 'Every one' : `${present} of ${pool.n}`} of ${topWord} uses it, about ${plural(Math.round(expected), 'time')}${whileAlive}.`,
         });
-      } else if (myCpm < 0.6 * med) {
+      } else if (myCpm < 0.6 * med && myCpm < BELOW_ALL * lowestOf(e.cpm)) {
+        const lowest = lowestOf(e.cpm);
         const text = band === 'cooldown'
           ? `${ucFirst(topWord)} press it about ${Math.round(expected)} times in a pull this long; you pressed it ${plural(mine, 'time')}.`
           : band === 'situational'
@@ -802,7 +912,7 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, he
           impact: (band === 'cooldown' ? 50 : band === 'situational' ? 35 : 45) + Math.round(10 * (1 - myCpm / med)),
           title: `${name}: ${plural(mine, 'cast')}, top players get about ${Math.round(expected)}`,
           text: buildDiffers && band !== 'cooldown' ? `${ucFirst(topWord)} run a different build, so their ${name} count is a reference, not a target for yours.` : text,
-          evidence: `${myCpm.toFixed(1)} per minute vs ${med.toFixed(1)} for top players`,
+          evidence: `${myCpm.toFixed(1)} per minute vs ${med.toFixed(1)} for top players; the lowest of the ${countPresent(e.cpm)} who use it is at ${lowest.toFixed(1)}`,
         });
       } else if (myCpm >= 0.9 * med) {
         matched.push({ name, med });
@@ -827,28 +937,59 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, he
     });
   }
 
+  // The share of the presses the cooldown allowed that each top player made, in their own
+  // kill and on their own clock (capped at 1: cooldown reduction can beat the tooltip).
+  // Empty when the pool does not press this button.
+  const poolUseRatios = (poolName: string, cd: number, rowCharges: number, lastSec: number): number[] => {
+    const starts = ownClockPool?.castStarts[poolName];
+    if (!ownClockPool || !starts) return [];
+    const buffKey = Object.keys(ownClockPool.buffs).find(b => baseName(b) === baseName(poolName));
+    const atPull = buffKey ? ownClockPool.buffs[buffKey].atPull : [];
+    return starts.map((s, i) => {
+      if (!s.length) return 0;
+      const presses = s.length + ((atPull[i] ?? 0) > 0 && !s.some(t => t <= 2) ? 1 : 0); // a press before the pull, as for this player
+      return Math.min(1, presses / possibleUses([[0, (ownClockPool.durations[i] ?? 0) / 1000]], cd, rowCharges, lastSec));
+    }).filter(x => x > 0);
+  };
+
   // ── Your own on-use trinkets ──
   const onUseTrinkets = (trinkets ?? []).filter(t => t.onUse);
   if (judgeable) {
     for (const t of onUseTrinkets) {
       const cast = profile.casts.find(c => (t.useSpellId && c.spellId === t.useSpellId) || c.name === t.useSpellName || c.name === t.name);
+      // Already said by the cast-rate check, under the cast's name or the item's.
+      if (reportedCasts.has(t.name) || (cast && reportedCasts.has(cast.name)) || (t.useSpellName && reportedCasts.has(t.useSpellName))) continue;
       const uses = cast ? (profile.castTimes[cast.name] ? whileAlive(profile.castTimes[cast.name]).length : cast.total) : 0;
       // Never used, but no top player's log shows this effect being cast either: it may
       // not log as a cast at all. Say nothing rather than something wrong.
       if (uses === 0 && !(t.useSpellName && pool?.casts[t.useSpellName]) && !pool?.casts[t.name]) continue;
-      const possible = t.cooldownSec ? 1 + Math.floor(aliveSec / t.cooldownSec) : null;
+      const possible = t.cooldownSec ? possibleUses(windows, t.cooldownSec) : null;
       const icon = cast?.icon ?? '';
+      // Where at least a handful of the top players wear the same trinket, their own use of
+      // it is the bar (see BELOW_ALL): some trinkets are held for damage windows, and the
+      // #1 Holy Paladin was told "1 use, about 3 possible" for one the top healers hold.
+      const poolTrinket = t.cooldownSec ? poolUseRatios(cast?.name ?? t.useSpellName ?? t.name, t.cooldownSec, 1, 0) : [];
+      const poolTrinketLow = poolTrinket.length >= USES_MIN_MEMBERS ? Math.min(...poolTrinket) : null;
       if (uses === 0) {
+        reportedCasts.add(t.name);
         findings.push({
           id: `trinket-${t.itemId}`, severity: 'bad', category: 'cooldowns', impact: 62, icon, spellId: t.useSpellId ?? undefined,
           title: `You never used ${t.name}`,
           text: `Your ${t.slot === 12 || t.slot === 13 ? 'trinket' : (GEAR_SLOT_NAMES[t.slot] ?? 'item').toLowerCase()} has an on-use effect${t.cooldownSec ? ` on a ${fmtCdWords(t.cooldownSec)} cooldown` : ''}, which is ${possible ? `about ${plural(possible, 'use')}` : 'several uses'} in a fight this long. Macro it to a cooldown if remembering it is the problem.`,
         });
-      } else if (possible && uses < possible * 0.6) {
+      } else if (possible && uses < possible * 0.6 && (poolTrinketLow == null || uses / possible < BELOW_ALL * poolTrinketLow)) {
+        reportedCasts.add(t.name);
+        if (cast) reportedCasts.add(cast.name);
+        // A warning only with the top players' own use of the same trinket behind it.
+        // Without them (fewer than USES_MIN_MEMBERS wear it) the cooldown alone cannot say
+        // whether it is meant to be pressed on cooldown or saved: the #1 Shadow Priest on
+        // Mythic Nek'zali got "Hex Lord's Dooming Idol: 3 uses, about 10 possible" as a fault.
         findings.push({
-          id: `trinket-${t.itemId}`, severity: 'warn', category: 'cooldowns', impact: 44, icon, spellId: cast?.spellId,
+          id: `trinket-${t.itemId}`, severity: poolTrinketLow != null ? 'warn' : 'info', category: 'cooldowns', impact: 44, icon, spellId: cast?.spellId,
           title: `${t.name}: ${plural(uses, 'use')}, about ${possible} possible`,
-          text: `A ${fmtCdWords(t.cooldownSec!)} on-use effect allows about ${possible} presses in a pull this long. Yours sat idle for most of it.`,
+          text: poolTrinketLow != null
+            ? `A ${fmtCdWords(t.cooldownSec!)} on-use effect allows about ${possible} presses in a pull this long, and every top player who wears it got at least ${pct(100 * poolTrinketLow)} of what the cooldown allowed. Yours sat idle for most of it.`
+            : `A ${fmtCdWords(t.cooldownSec!)} on-use effect allows about ${possible} presses in a pull this long. Too few of ${topWord} wear it to say whether it is pressed on cooldown or saved for damage windows, so this is a number to know, not a mistake.`,
         });
       } else {
         findings.push({
@@ -882,7 +1023,7 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, he
     return (cooldowns?.[name] ?? 0) >= MAJOR_CD_SEC || MAJOR_UNDER_60.has(name);
   };
   const timeline = pool
-    ? buildTimeline(profile, pool, durationSec, aliveSec,
+    ? buildTimeline(profile, pool, durationSec, profile.deaths.length ? firstLifeEndSec : durationSec, !!wantDebug,
         name => unownedItemCast(name) || isTalentGap(name) || (!hasAbility(name) && !reportedNever.has(name)) || (cooldowns?.[name] ?? minReuseGap(pool.castStarts[name] ?? []) ?? 0) < 20,
         name => itemForCast(name) ?? name,
         name => !!itemForCast(name),
@@ -915,10 +1056,19 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, he
     return m && m.cooldown > 0 ? m.cooldown : null;
   };
   if (timeline) for (const row of timeline.rows) {
-    row.used = row.mine.filter(([s]) => s <= aliveSec + 0.5).length;
+    row.used = row.mine.filter(([s]) => isAliveAt(windows, s)).length;
     const cd = row.kind === 'cooldown' && row.origin !== 'potion' && row.origin !== 'external' ? majorCooldownOf(row) : null;
     row.cooldownSec = cd;
-    row.possible = cd && cd >= MAJOR_CD_SEC ? Math.max(1, charges?.[row.poolName] ?? 1) + Math.floor(Math.max(0, aliveSec - 15) / cd) : null;
+    row.possible = null;
+    if (!cd || cd < MAJOR_CD_SEC) continue;
+    const rowCharges = Math.max(1, charges?.[row.poolName] ?? 1);
+    const ratios = poolUseRatios(row.poolName, cd, rowCharges, USES_LAST_SEC);
+    const onCooldown = ratios.length >= USES_MIN_MEMBERS && median(ratios) >= USES_ON_CD_RATIO;
+    row.poolUseRatios = ratios;
+    // The player's own trinket keeps its count on the timeline (the trinket card judges it);
+    // any other button gets one only when the top players press it on cooldown.
+    if (onCooldown || (row.origin === 'trinket' && !ratios.length)) row.possible = possibleUses(windows, cd, rowCharges, USES_LAST_SEC);
+    if (onCooldown) row.poolUseLow = Math.min(...ratios);
   }
   // ── Cooldown timing: each press against the top players' median for that press ──
   // For every major cooldown row, the top players' 1st, 2nd, 3rd… presses are compared
@@ -935,9 +1085,10 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, he
       const preCast = buffKey
         ? { pool: countPresent(pool.buffs[buffKey].atPull) / pool.n >= 0.5, mine: !!profile.buffs.find(b => b.name === buffKey)?.atPull }
         : null;
-      const j = judgeTiming(row, aliveSec, preCast, phaseAligned ? (fight.phases ?? []).map(ph => ph.atSec) : [0]);
+      const j = judgeTiming(row, firstLifeEndSec, preCast, phaseAligned ? (fight.phases ?? []).map(ph => ph.atSec) : [0]);
       row.medians = j.medians;
       row.bands = j.bands;
+      row.timing = j.detail;
       // Pre-pull potions happen before the log's events start, so the pool's "first" potion
       // is really its second. The row's verdict comes from a fact the log does hold: was
       // a potion buff already running at the pull, for this player and for the top players.
@@ -954,11 +1105,12 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, he
       judgedRows++;
       if (j.verdict.kind === 'good') { onTimeRows++; continue; }
       if (j.verdict.kind !== 'warn' || !j.finding) continue;
+      if (reportedCasts.has(row.name) || reportedCasts.has(row.poolName)) continue; // already has its card
       reportedCasts.add(row.name);
       let why = '';
       const worstAt = j.worstAt;
       if (worstAt && worstAt.mine > worstAt.med) {
-        const w = whatHappened(worstAt.med, Math.min(worstAt.mine, worstAt.med + 15), aliveSec);
+        const w = whatHappened(worstAt.med, Math.min(worstAt.mine, worstAt.med + 15));
         // A press delayed while nothing was cast at all is a different story from one
         // delayed by a mechanic.
         const idle = !w && !allCastTimes.some(t => t >= worstAt.med && t <= worstAt.med + 6);
@@ -985,8 +1137,9 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, he
   // Two different questions: timing (above) asks whether the presses sat where the top
   // players' do; this asks whether a press that the cooldown allowed never happened.
   if (timeline && judgeable) {
-    const eligible = timeline.rows.filter(r => r.possible != null && r.kind === 'cooldown' && !isTalentGap(r.poolName) && !unownedItemCast(r.poolName) && !TWO_STEP.has(r.poolName) && !reportedNever.has(r.poolName) && !reportedNever.has(r.name));
-    const short = eligible.filter(r => (r.used ?? 0) < (r.possible ?? 0) && !reportedCasts.has(r.name)).sort((a, b) => ((b.possible ?? 0) - (b.used ?? 0)) - ((a.possible ?? 0) - (a.used ?? 0)));
+    const eligible = timeline.rows.filter(r => r.possible != null && r.poolUseLow != null && r.kind === 'cooldown' && !isTalentGap(r.poolName) && !unownedItemCast(r.poolName) && !TWO_STEP.has(r.poolName) && !reportedNever.has(r.poolName) && !reportedNever.has(r.name));
+    // Short of what the cooldown allowed, and by more than any top player is in their own kill.
+    const short = eligible.filter(r => (r.used ?? 0) < (r.possible ?? 0) && (r.used ?? 0) / (r.possible ?? 1) < BELOW_ALL * (r.poolUseLow ?? 0) && !reportedCasts.has(r.name)).sort((a, b) => ((b.possible ?? 0) - (b.used ?? 0)) - ((a.possible ?? 0) - (a.used ?? 0)));
     for (const r of short.slice(0, 2)) {
       const used = r.used ?? 0, possible = r.possible ?? 0;
       const src = cooldowns?.[r.poolName] || cooldowns?.[r.name] ? 'Wowhead' : 'lorrgs';
@@ -995,16 +1148,23 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, he
       findings.push({
         id: `uses-${r.name}`, severity: 'warn', category: 'cooldowns', impact: 28 + 4 * (possible - used), icon: r.icon, spellId: r.spellId,
         title: `${r.name}: ${plural(used, 'use')} of ${possible} possible`,
-        text: `Its cooldown is ${fmtClock(r.cooldownSec ?? 0)} (${src}), so the ${fmtClock(aliveSec)} you were alive allowed ${possible} presses${r.prePull ? ', counting the one before the pull' : ''}. ${used === 0 ? 'It was never pressed.' : lastPress != null ? `Your last press was at ${fmtClock(lastPress)}, leaving ${fmtClock(Math.max(0, aliveSec - lastPress))} at the end with it unused.` : ''}`.trim(),
+        text: `Its cooldown is ${fmtClock(r.cooldownSec ?? 0)} (${src}), so the ${fmtClock(aliveSec)} you were alive allowed ${possible} presses${r.prePull ? ', counting the one before the pull' : ''}. ${ucFirst(topWord)} press it nearly every time it is ready: the one who used it least got ${pct(100 * (r.poolUseLow ?? 0))} of what the cooldown allowed in their own kill. ${used === 0 ? 'It was never pressed.' : lastPress != null && lastAliveSec - lastPress >= (r.cooldownSec ?? 0) ? `Your last press was at ${fmtClock(lastPress)}, leaving ${fmtClock(Math.max(0, lastAliveSec - lastPress))} at the end with it unused.` : ''}`.trim(),
       });
     }
-    if (eligible.length >= 2 && eligible.every(r => (r.used ?? 0) >= (r.possible ?? 0)) && !short.length) {
+    if (eligible.length >= 2 && eligible.every(r => (r.used ?? 0) >= (r.possible ?? 0))) {
       findings.push({
         id: 'uses-good', severity: 'good', category: 'cooldowns', impact: 0,
         title: 'Every major cooldown used as often as its cooldown allowed',
         text: `${eligible.map(r => `${r.name} ${r.used}/${r.possible}`).join(', ')} — presses against what each cooldown allowed in ${fmtClock(aliveSec)} alive.`,
       });
     }
+  }
+  // A row with no timing verdict shows its uses against the cooldown instead: amber only
+  // where the review made a card of it, so the timeline and the cards agree.
+  if (timeline) for (const r of timeline.rows) {
+    if (r.verdict || r.possible == null) continue;
+    const flagged = findings.some(f => f.id === `uses-${r.name}`);
+    r.verdict = { kind: flagged ? 'warn' : (r.used ?? 0) >= r.possible ? 'good' : 'info', text: `${r.used ?? 0} of ${r.possible} uses by cooldown` };
   }
   // ── Bloodlust: when it went out, against the top players' raids ──
   const lustSec = profile.lustSec ?? null;
@@ -1061,7 +1221,10 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, he
           title: `${row.name} never came up`,
           text: `${ucFirst(topWord)} have it running by ${fmtClock(firstMed)}. Yours never appeared in this pull.`,
         });
-      } else if (myFirst > firstMed + 10) {
+      } else if (myFirst > firstMed + 10 && myFirst > highestOf(firsts)) {
+        // Later than every top player's first press, not only ten seconds past their middle
+        // one: the #3 Protection Warrior on Mythic Ula'tek was told "Late start on Avatar:
+        // 0:23 vs 0:01" for an opener a few of the top 30 also hold.
         late.push({
           id: `late-${row.name}`, severity: 'warn', category: 'cooldowns', icon: row.icon, spellId: row.spellId, impact: 38,
           title: `Late start on ${row.name}: ${fmtClock(myFirst)} vs ${fmtClock(firstMed)}`,
@@ -1073,8 +1236,10 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, he
   }
 
   // ── Buffs: consumables at the pull, pre-pull casts, uptime ──
+  const missingAtPull: Array<{ label: string; have: number; n: number }> = [];
   if (pool) {
     const missingPersistent: string[] = [];   // flask/food/rune: up ~all fight for the pool
+    const familyHave = (family: string) => Array.from({ length: pool.n }, (_, i) => Object.entries(pool.buffs).some(([n, e]) => buffFamily(n) === family && (e.atPull[i] ?? 0) > 0)).filter(Boolean).length;
     const missingPrePull: string[] = [];      // things top players cast before the pull timer ends
     const flagged = new Set<string>();
     const seenFamilies = new Set<string>();
@@ -1088,7 +1253,7 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, he
       if (isTalentGap(name)) continue;
       if (myFamiliesAtPull.has(family)) continue;
       flagged.add(name);
-      if (family in FAMILY_LABEL) missingPersistent.push(familyLabel(family, name));
+      if (family in FAMILY_LABEL) { missingPersistent.push(familyLabel(family, name)); missingAtPull.push({ label: familyLabel(family, name), have: familyHave(family), n: pool.n }); }
       else if (pool.casts[name]) missingPrePull.push(name); // a proc the top players happen to carry in is not something to pre-cast
     }
     if (missingPersistent.length) {
@@ -1123,9 +1288,30 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, he
         const family = buffFamily(name);
         const mineAll = family === name ? [myBuff(name)].filter((b): b is NonNullable<typeof b> => !!b) : profile.buffs.filter(b => buffFamily(b.name) === family);
         const myPct = mineAll.length ? Math.min(100, 100 * Math.max(...mineAll.map(b => b.uptimeMs)) / profile.aliveMs) : 0;
-        if (myPct < 0.6 * med) {
-          const isConsumable = family in FAMILY_LABEL;
-          if (!isConsumable && !mineAll.length && buildDiffers) { missingByBuild.push(name); continue; }
+        const isConsumable = family in FAMILY_LABEL;
+        if (wantDebug) rateDebug.push(`uptime ${name}: mine ${Math.round(myPct)}%, top median ${Math.round(med)}%, lowest ${Math.round(lowestOf(e.uptimePct))}%, present ${countPresent(e.uptimePct)}/${pool.n}`);
+        // A buff this player never had at all is a talent, an item or an enchant they do
+        // not have. Nothing is said unless every top player has it (the bar "you never
+        // used X" is held to, for the same reason: at 80% a fifth of the top players were
+        // told they were missing something they chose not to take — 45 times over 300 top
+        // parses). Where every one of them does have it: a button they all press is the
+        // never-used card's business; anything else (a proc from gear, an enchant, a talent)
+        // is a difference in what the player has, not in how they played, and is a note.
+        if (!isConsumable && !mineAll.length) {
+          if (countPresent(e.uptimePct) < pool.n || pool.n < 8 || buildDiffers) { if (buildDiffers) missingByBuild.push(name); continue; }
+          if (reportedNever.has(name)) continue;
+          if (!pool.casts[name]) {
+            lowUptime.push({
+              id: `uptime-${name}`, severity: 'info', category: 'build', icon: e.icon, spellId: e.spellId, impact: 26,
+              title: `${name}: every top player has it, you do not`,
+              text: `All ${pool.n} of ${topWord} carry ${name}, for about ${pct(med)} of the fight. It never appeared on you in this pull, and it is not a button, so it comes from a talent, an item or an enchant you do not have. That is a difference in setup, not in how you played.`,
+            });
+            continue;
+          }
+        }
+        // See BELOW_ALL: under 60% of the median and under every top player who has it.
+        // Consumables keep the plain line; a flask is up or it is not.
+        if (myPct < 0.6 * med && (isConsumable || myPct < BELOW_ALL * lowestOf(e.uptimePct))) {
           lowUptime.push({
             id: `uptime-${name}`, severity: 'warn', category: isConsumable ? 'prep' : 'buffs', icon: e.icon, spellId: e.spellId,
             impact: 40 + Math.round(20 * (1 - myPct / med)),
@@ -1173,13 +1359,18 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, he
   // ── Potions ──
   if (pool && judgeable && poolPotions.length) {
     const med = median(poolPotions);
-    if (med >= 1 && myPotions < med) {
+    // Fewer than nine in ten of the top players use (their 10th percentile), not fewer
+    // than the middle one. Was: under the median, which told the #1 and the #12 Holy
+    // Paladin on Mythic Nek'zali "0 combat potions used, top players use 1" while a good
+    // part of the top 30 use none either.
+    const potionFloor = poolPotions.slice().sort((a, b) => a - b)[Math.floor(poolPotions.length * 0.1)] ?? 0;
+    if (med >= 1 && myPotions < potionFloor) {
       findings.push({
         id: 'potions', severity: 'warn', category: 'prep', impact: 30,
         title: `${plural(myPotions, 'combat potion')} used, top players use ${Math.round(med)}`,
         text: `${ucFirst(topWord)} use about ${Math.round(med)} a pull${poolPrePotShare != null ? `, and ${poolPrePotShare >= 0.5 ? `${Math.round(100 * poolPrePotShare)}% of them` : poolPrePotShare > 0 ? `only ${Math.round(100 * poolPrePotShare)}% of them` : 'none of them'} have one running at the pull` : ''}.`,
       });
-    } else if (med >= 1) {
+    } else if (med >= 1 && myPotions >= med) {
       const poolPotionNames = Object.entries(pool.buffs).filter(([n]) => buffFamily(n) === 'potion').map(([n, e]) => ({ n, present: countPresent(e.uptimePct) }));
       const meta = poolPotionNames.find(x => x.present / pool.n >= CONSENSUS);
       const mineNames = profile.buffs.filter(b => buffFamily(b.name) === 'potion').map(b => b.name);
@@ -1262,16 +1453,23 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, he
   // ── Downtime, from the casts themselves ──
   // Active time is a table figure. The cast events say where the gaps were, and the
   // boss-mechanic events say what was happening in them.
+  const ownGaps: Array<{ from: number; to: number; why: string | null }> = [];
   {
     const GAP_MIN = 6;
     const gaps: Array<{ from: number; to: number; why: string | null }> = [];
-    const casts = allCastTimes.filter(t => t <= aliveSec);
-    for (let i = 1; i < casts.length; i++) {
-      const from = casts[i - 1], to = casts[i];
-      if (to - from >= GAP_MIN) gaps.push({ from, to, why: whatHappened(from, to, aliveSec) });
-    }
-    if (casts.length && casts[0] >= GAP_MIN) gaps.unshift({ from: 0, to: casts[0], why: whatHappened(0, casts[0], aliveSec) });
+    // Gaps are looked for inside each life: the stretch between a death and the first
+    // cast after the resurrection is time spent dead, not a casting gap.
+    const casts = allCastTimes.filter(t => isAliveAt(windows, t, 0));
+    windows.forEach(([wFrom, wTo], wi) => {
+      const inLife = casts.filter(t => t >= wFrom && t <= wTo);
+      if (wi === 0 && inLife.length && inLife[0] - wFrom >= GAP_MIN) gaps.push({ from: wFrom, to: inLife[0], why: whatHappened(wFrom, inLife[0]) });
+      for (let i = 1; i < inLife.length; i++) {
+        const from = inLife[i - 1], to = inLife[i];
+        if (to - from >= GAP_MIN) gaps.push({ from, to, why: whatHappened(from, to) });
+      }
+    });
     const own = gaps.filter(g => !/^the intermission/.test(g.why ?? ''));
+    ownGaps.push(...own);
     const totalGap = own.reduce((s, g) => s + (g.to - g.from), 0);
     const explained = own.filter(g => g.why).reduce((s, g) => s + (g.to - g.from), 0);
     const share = aliveSec > 0 ? totalGap / aliveSec : 0;
@@ -1303,8 +1501,11 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, he
       findings.push({ id: `resource-${w.type}`, severity: 'good', category: 'rotation', impact: 10, title: `${w.name} spent cleanly: ${pct(100 * share)} wasted`, text: `${fmtNum(w.wasted)} of ${fmtNum(w.gained)} ${w.name} generated went over the cap.` });
       continue;
     }
+    // Context, never a fault. It was a warning from 20% up, but there is nothing to compare
+    // it with (resource events are not fetched for the top players) and the line was a
+    // guess: the #1 Retribution Paladin on Mythic Nek'zali wastes 21% of their Holy Power.
     findings.push({
-      id: `resource-${w.type}`, severity: share >= 0.2 ? 'warn' : 'info', category: 'rotation', impact: share >= 0.2 ? 34 : 16,
+      id: `resource-${w.type}`, severity: 'info', category: 'rotation', impact: share >= 0.2 ? 34 : 16,
       title: `${pct(100 * share)} of ${w.name} wasted at the cap`,
       text: `${fmtNum(w.wasted)} of the ${fmtNum(w.gained)} ${w.name} you generated was thrown away because the bar was already full. Resource over the cap is generation that never became a cast.`,
     });
@@ -1315,7 +1516,7 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, he
   const metricLabel = player.role === 'healer' ? 'HPS' : 'DPS';
   const stats: ReviewStat[] = [
     { label: metricLabel, value: fmtNum(perSec) },
-    { label: 'Active', value: pct(myActivePct), note: aliveSec < durationSec - 5 ? 'while alive' : undefined },
+    { label: 'Active', value: pct(myActivePct), note: lostTime ? 'while alive' : undefined },
     { label: 'Deaths', value: String(profile.deaths.length), note: realDeaths.length ? `first at ${fmtClock(realDeaths[0].atSec)}` : profile.deaths.length ? 'only the wipe' : undefined },
     { label: 'Potions', value: String(myPotions), note: poolPotions.length ? `top use ${Math.round(median(poolPotions))}` : undefined },
     { label: 'Item level', value: player.ilvl ? String(Math.round(player.ilvl)) : '—', note: pool && pool.ilvl.length ? `top ~${Math.round(median(pool.ilvl))}` : undefined },
@@ -1327,15 +1528,20 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, he
   if (talentNames) {
     stats.push({ label: 'Build', value: talentDiffNames.length <= 2 ? 'Meta' : talentDiffNames.length <= 5 ? 'Near meta' : 'Off-meta', note: talentDiffNames.length ? `${plural(talentDiffNames.length, 'pick')} differ` : 'matches top players' });
   }
-  let verdict = `${fmtNum(perSec)} ${metricLabel}${aliveSec < durationSec - 5 ? `, dead at ${fmtClock(aliveSec)}` : ', alive the whole pull'}`;
+  const life = lifeWords(profile) ?? 'alive the whole pull';
+  let verdict = `${fmtNum(perSec)} ${metricLabel}, ${life}`;
   let strong = false;
   if (pool && pool.output.length) {
     const med = median(pool.output);
     const ratio = med > 0 ? perSec / med : 0;
     stats[0].note = `${pct(100 * ratio)} of top-${pool.n} median`;
     strong = ratio >= 0.9 && realDeaths.length === 0;
-    verdict = `${fmtNum(perSec)} ${metricLabel}, ${pct(100 * ratio)} of the top-${pool.n} median${aliveSec < durationSec - 5 ? `, dead at ${fmtClock(aliveSec)}` : ', alive the whole pull'}`;
-    const deadNote = aliveSec < durationSec - 5 ? ` You were dead for ${fmtClock(durationSec - aliveSec)} of a ${fmtClock(durationSec)} pull, which is most of the gap on its own.` : '';
+    verdict = `${fmtNum(perSec)} ${metricLabel}, ${pct(100 * ratio)} of the top-${pool.n} median, ${life}`;
+    // What the time dead cost, had the rest of the pull gone at the same rate: "most of
+    // the gap" only when that is at least half of it.
+    const deadShare = (durationSec - aliveSec) / durationSec;
+    const deadCost = deadShare < 1 ? ratio * deadShare / (1 - deadShare) : 1;
+    const deadNote = lostTime && ratio < 0.85 ? ` You were dead for ${fmtClock(durationSec - aliveSec)} of a ${fmtClock(durationSec)} pull, which is ${ratio < 1 && deadCost >= 0.5 * (1 - ratio) ? 'most of the gap on its own' : 'part of the gap'}.` : '';
     const healerNote = player.role === 'healer' ? ' Healing parses reward raids that take damage, so a low number here is not automatically a problem.' : '';
     findings.push({
       id: 'output', severity: ratio >= 0.85 ? 'good' : ratio >= 0.6 ? 'info' : 'warn', category: 'output', impact: 35,
@@ -1410,21 +1616,37 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, he
   else if (sameDiffIdx.length < pool.n) poolNote = `Compared against ${pool.n} top ${specLabel} parses: ${sameDiffIdx.length} on ${diffLabel}, the rest on Heroic. Damage comparisons use only the ${diffLabel} ones.`;
   else if (pool.n < 10 && !heroNote) poolNote = `Compared against the ${pool.n} top ${specLabel} parses available for this boss.`;
   if (heroNote) poolNote = poolNote ? `${heroNote} ${poolNote.replace(/^Compared against [^:]*: /, 'Of those, ')}` : heroNote;
+  if (selfIdx >= 0 && poolIn && pool) poolNote = [`This parse is one of the top ${poolIn.n} itself, so it is compared with the other ${poolIn.n - 1}.`, poolNote].filter(Boolean).join(' ');
   if (roleOut?.poolNote) poolNote = [poolNote, roleOut.poolNote].filter(Boolean).join(' ');
 
-  const debug = {
+  const nextPull = buildNextPull({
+    player, fight, profile, pool, phaseAligned, dmgIdx, phases, bossCasts: (context?.bossCasts ?? []).filter(b => b.atSec <= durationSec), windows, judgeable,
+    kindOf: (name, spellId) => classify(name, spellId)?.type,
+    isWipeDeath,
+    canPress: name => !isTalentGap(name) && !unownedItemCast(name),
+    buildDiffers,
+    defensives: defensiveRows, defUses, defCd, defCharges, defBands, spellTexts: spellTexts ?? {},
+    perSec, rows: timeline?.rows ?? [], findings, gaps: ownGaps, activePct: myActivePct,
+    myPotions, poolPotions, prePotShare: poolPrePotShare, missingAtPull,
+    mitigationNames: (role?.tank?.mitigation ?? []).map(m => m.name),
+    debug: !!wantDebug,
+  });
+
+  const debug: Record<string, unknown> = !wantDebug ? {} : {
+    findings: findings.map(f => `${f.severity} ${f.id} | ${f.title}`),
+    nextPull: { actions: nextPull.actions.map(a => `${a.kind} | ${planText(a.parts)} || ${a.evidence}`), clean: nextPull.clean, defensivePlan: (nextPull.defensivePlan?.rows ?? []).map(defensiveRowText), ...nextPull.debug },
+    aliveWindows: windows, aliveSec, selfInPool: selfIdx, rates: rateDebug,
+    usesVsCooldown: (timeline?.rows ?? []).filter(r => r.cooldownSec).map(r => `${r.name}: cd=${r.cooldownSec} mine=${r.used}/${r.possible ?? '-'} pool n=${r.poolUseRatios?.length ?? 0} median=${r.poolUseRatios?.length ? median(r.poolUseRatios).toFixed(2) : '-'} low=${r.poolUseRatios?.length ? Math.min(...r.poolUseRatios).toFixed(2) : '-'}`),
     poolN: pool?.n ?? 0, poolTalentN: pool?.talentN ?? 0, poolGearN: pool?.gearN ?? 0,
     myTalentNodes: profile.talentNodes?.length ?? 0, layoutNodes: talents ? Object.keys(talents.nodeNames).length : 0,
     entryNames: talents ? Object.keys(talents.entryNames).length : 0, myTalentNames: talentNames?.mine.size ?? 0,
     talentDiffNames, talentGaps, missingByBuild, buildDiffers,
     myItemNames: [...myItemNames], poolItemNames: pool?.itemNames.length ?? 0, poolCastStarts: Object.keys(pool?.castStarts ?? {}),
     timelineSkips: Object.entries(pool?.castStarts ?? {}).map(([name, starts]) => `${name}: present=${countPresent(starts.map(x => x.length))} cd=${cooldowns?.[name] ?? '?'}/${minReuseGap(starts) ?? '?'} item=${unownedItemCast(name)} gap=${isTalentGap(name)}`),
-    buffRowDebug: Object.entries(pool?.buffs ?? {}).filter(([n]) => /Metamorph|Devoured Strength|Golden Luster|Impending/.test(n)).map(([n, e]) => { const mine = profile.buffs.find(b => b.name === n); return `${n}: present=${countPresent(e.uptimePct)}/${pool?.n} poolCountMed=${median(e.starts.map(x => x.length))} uptimeMed=${Math.round(median(e.uptimePct))} mineBands=${mine?.bands.length ?? 'none'} mineDur=${mine?.bands.length ? Math.round(median(mine.bands.map(([x, y]) => y - x))) : '-'} icon=${e.icon} cd=${cooldowns?.[n] ?? 'undef'} family=${buffFamily(n) === n}`; }),
-    knownPotions: [...KNOWN_POTIONS], potionBuffs: profile.buffs.filter(b => /potential|luster|potion|draught/i.test(b.name)).map(b => `${b.name}:${b.uses}`),
+    knownPotions: [...KNOWN_POTIONS], potionBuffs: profile.buffs.filter(b => buffFamily(b.name) === 'potion').map(b => `${b.name}:${b.uses}`),
     trinkets: (trinkets ?? []).map(t => `${t.name}#${t.itemId} use=${t.onUse} cd=${t.cooldownSec ?? '?'}`), cooldownsKnown: Object.keys(cooldowns ?? {}).length,
     resourceWaste: (profile.resourceWaste ?? []).map(w => `${w.name}: ${w.wasted}/${w.gained}`), deathRecaps: (profile.deathRecaps ?? []).map(r => `${r.atSec}: ${r.hits.length} hits, ${r.healCount} heals, auras ${r.aurasAtDeath.map(a => a.name).join('/')}`),
     defensiveRoster: defensiveRows.map(r => `${r.name}:${r.used}/${r.possible ?? '?'} cd=${r.cooldownSec ?? '?'} ch=${r.charges}`),
-    potionCasts: profile.casts.filter(c => /potion|heal/i.test(c.name)).map(c => `${JSON.stringify(c.name)} codes=${[...c.name].map(ch => ch.charCodeAt(0)).join(",")} id=${c.spellId} key=${defensiveKey(c.name)} def=${DEFENSIVES.has(defensiveKey(c.name))} fam=${buffFamily(c.name)}`),
     buffTrace: timeline?.trace ?? [],
     timelineRows: (timeline?.rows ?? []).map(r => `${r.name} <${r.poolName}> ${r.kind}/${r.origin} #${r.spellId} mine=${r.mine.length} pool=${r.pool.length} medians=${r.medians.map(fmtClock).join('/')} verdict=${r.verdict ? r.verdict.kind + ':' + r.verdict.text : '-'}`),
     majorSpells: (majorSpells ?? []).map(m => `${m.name}#${m.spellId}${m.cooldown ? '@' + m.cooldown : ''}:${m.kind}`), notMajorSpells: (notMajorSpells ?? []).map(m => m.name), lorrgsLoaded: !!majorSpells,
@@ -1432,12 +1654,19 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, he
     role: roleOut?.debug ?? null,
     classified: profile.damageTaken.map(t => `${t.name}: ${classify(t.name, t.spellId)?.type ?? '-'} (${classify(t.name, t.spellId)?.via ?? ''})`),
   };
-  return { headline, summary, verdict, strong, stats, findings, timeline: timeline ? { durationSec: timeline.durationSec, aliveSec: timeline.aliveSec, phases: context?.phases ?? [], bossCasts: (context?.bossCasts ?? []).filter(c => c.atSec <= durationSec), lustSec, lustPoolMedian, phaseAligned, rows: timeline.rows.map(r => ({ name: r.name, icon: r.icon, spellId: r.spellId, kind: r.kind, mine: r.mine, pool: r.pool, poolN: r.poolN, medians: r.medians, bands: r.bands, verdict: r.verdict, used: r.used, possible: r.possible, cooldownSec: r.cooldownSec, prePull: r.prePull })) } : null, defensives: defensiveRows, poolNote, sourcesNote, debug };
+  return { headline, summary, verdict, strong, stats, findings, timeline: timeline ? { durationSec: timeline.durationSec, aliveSec: timeline.aliveSec, deadSpans, phases: context?.phases ?? [], bossCasts: (context?.bossCasts ?? []).filter(c => c.atSec <= durationSec), lustSec, lustPoolMedian, phaseAligned, rows: timeline.rows.map(r => ({ name: r.name, icon: r.icon, spellId: r.spellId, kind: r.kind, mine: r.mine, pool: r.pool, poolN: r.poolN, medians: r.medians, bands: r.bands, verdict: r.verdict, used: r.used, possible: r.possible, cooldownSec: r.cooldownSec, prePull: r.prePull })) } : null, defensives: defensiveRows, poolNote, sourcesNote, nextPull, debug };
 }
 
 // ─── Timeline ─────────────────────────────────────────────────────────────────
 
-interface TimelineRowInternal extends TimelineRow { poolName: string; firstMed: number; origin: 'pool' | 'potion' | 'own' | 'buff' | 'trinket' | 'external'; members: number[][] }
+interface TimelineRowInternal extends TimelineRow {
+  poolName: string; firstMed: number; origin: 'pool' | 'potion' | 'own' | 'buff' | 'trinket' | 'external'; members: number[][];
+  // Each top player's presses as a share of what the cooldown allowed in their own kill,
+  // and the lowest of them when the button is one they press on cooldown (else null).
+  poolUseRatios?: number[];
+  poolUseLow?: number | null;
+  timing?: TimingDetail;
+}
 
 // Rows, lorrgs-style: the spec's major cooldowns (see isMajorCooldown in reviewPlayer),
 // combat potions as one row, and the player's own on-use trinkets with a cooldown of a
@@ -1453,7 +1682,24 @@ const TIMING_MIN_SHARE = 0.6;
 const ordinal = (k: number) => ['first', 'second', 'third', 'fourth', 'fifth'][k] ?? `${k + 1}th`;
 const shortOrdinal = (k: number) => ['1st', '2nd', '3rd'][k] ?? `${k + 1}th`;
 
+// One press of a cooldown as the top players make it, for the forward-looking plan
+// (lib/nextPull.ts): where their middle half sits, when this player's matching press
+// came (null: it never did), and whether the cooldown was even back at that point.
+export interface TimingPress {
+  med: number; lo: number; hi: number;
+  mineAt: number | null;
+  // Every top player who has the button made this press; `share` is how many of them did.
+  everyone: boolean;
+  share: number;
+  // This player's cooldown was not back at the top players' time, and — when the press
+  // that spent it is one the top players do not make there — when that press was.
+  blocked: boolean;
+  heldBy: number | null;
+}
+export interface TimingDetail { presses: TimingPress[]; aliveSec: number }
+
 interface TimingJudgement {
+  detail?: TimingDetail;
   medians: number[];
   bands: Array<{ k: number; med: number; lo: number; hi: number }>;
   verdict: TimelineRow['verdict'];
@@ -1467,6 +1713,9 @@ interface TimingJudgement {
 // stage two against the top players' second press of stage two — because pairing by
 // overall count breaks as soon as one pull's first phase is long enough for one more
 // press: every later press then reads as a whole cooldown early.
+// `aliveSec` is the end of the player's FIRST life: after a death and a resurrection the
+// press counts no longer line up with the top players' (who did not lose that time), so
+// nothing past it is paired or judged.
 function judgeTiming(row: TimelineRowInternal, aliveSec: number, preCast: { pool: boolean; mine: boolean } | null, segments: number[] = [0]): TimingJudgement {
   const none: TimingJudgement = { medians: [], bands: [], verdict: null, finding: null };
   const members = row.members.map(s => s.slice().sort((a, b) => a - b));
@@ -1475,19 +1724,30 @@ function judgeTiming(row: TimelineRowInternal, aliveSec: number, preCast: { pool
   const mine = row.mine.map(([s]) => s).sort((a, b) => a - b);
   const segs = segments.length ? segments : [0];
   const byPhase = segs.length > 1;
-  const bands: Array<{ k: number; med: number; lo: number; hi: number; agree: boolean; mineAt: number | null }> = [];
+  // `first`/`last`: the earliest and latest top player on that press. `everyone`: every
+  // top player who presses the button at all made this press too.
+  const bands: Array<{ k: number; med: number; lo: number; hi: number; agree: boolean; mineAt: number | null; first: number; last: number; everyone: boolean }> = [];
+  const pressers = members.filter(m => m.length).length;
+  // This player's presses that pair with no press of the top players (one more in a
+  // phase than they make there).
+  const unpaired: number[] = [];
+  const shareOf = new Map<number, number>();
   segs.forEach((start, si) => {
     const end = segs[si + 1] ?? Infinity;
     const inSeg = (t: number) => t >= start && t < end;
     const mem = byPhase ? members.map(m => m.filter(inSeg)) : members;
     const my = byPhase ? mine.filter(inSeg) : mine;
+    let paired = 0;
     for (let k = 0; k < 40; k++) { // every press the top players make, not just the first few
       const kth = mem.map(m => m[k]).filter((x): x is number => x != null).sort((a, b) => a - b);
       if (kth.length < n * TIMING_MIN_SHARE) break;
       const lo = kth[Math.floor(kth.length * 0.25)];
       const hi = kth[Math.min(kth.length - 1, Math.floor(kth.length * 0.75))];
-      bands.push({ k: bands.length, med: median(kth), lo, hi, agree: hi - lo <= TIMING_BAND_SEC, mineAt: my[k] ?? null });
+      shareOf.set(bands.length, pressers ? kth.length / pressers : 0);
+      bands.push({ k: bands.length, med: median(kth), lo, hi, agree: hi - lo <= TIMING_BAND_SEC, mineAt: my[k] ?? null, first: kth[0], last: kth[kth.length - 1], everyone: kth.length >= pressers });
+      paired++;
     }
+    if (byPhase) unpaired.push(...my.slice(paired));
   });
   const medians = bands.filter(b => b.agree).map(b => b.med);
   const agreed = bands.filter(b => b.agree).map(b => ({ k: b.k, med: b.med, lo: b.lo, hi: b.hi }));
@@ -1543,22 +1803,37 @@ function judgeTiming(row: TimelineRowInternal, aliveSec: number, preCast: { pool
   };
   // Presses the top players had made while this player was still alive (with a little
   // slack: a press due at 2:00 is not "missed" by someone who died at 2:05).
-  const dueBands = bands.filter(b => b.med <= aliveSec - 15 && !onCooldownAt(b));
+  // Due: a press EVERY top player (who has the button) made. Was: one 60% of them made,
+  // so up to 40% of the top players were themselves "a use short" — the #12 Holy Paladin
+  // on Mythic Nek'zali got "Aura Mastery: 0 uses where top players get 1".
+  const detail: TimingDetail = {
+    aliveSec,
+    presses: bands.filter(b => b.agree && b.med <= aliveSec).map(b => {
+      const blocked = onCooldownAt(b);
+      const prev = blocked ? mine.filter(t => t < b.med - 1).pop() : undefined;
+      return { med: b.med, lo: b.lo, hi: b.hi, mineAt: b.mineAt != null && b.mineAt <= aliveSec + 0.5 ? b.mineAt : null, everyone: b.everyone, share: shareOf.get(b.k) ?? 0, blocked, heldBy: prev != null && unpaired.includes(prev) ? prev : null };
+    }),
+  };
+  const dueBands = bands.filter(b => b.everyone && b.med <= aliveSec - 15 && !onCooldownAt(b));
   const due = dueBands.length;
   const offs: Array<{ k: number; myK: number; mineAt: number; diff: number; med: number }> = [];
   let judged = 0;
   for (const b of bands) {
     if (!b.agree || b.mineAt == null || onCooldownAt(b)) continue;
+    if (b.med > aliveSec || b.mineAt > aliveSec + 0.5) continue;
     const diff = b.mineAt - b.med;
     // Phase by phase, an early press is not judged: the top players' cooldown may simply
     // not have been back yet at that point of their (shorter) kill.
     if (byPhase && diff < -tol(b)) continue;
     judged++;
-    if (Math.abs(diff) > tol(b)) offs.push({ k: b.k, myK: mine.indexOf(b.mineAt), mineAt: b.mineAt, diff, med: b.med });
+    // Off: outside the tolerance AND later than the latest top player (or earlier than
+    // the earliest). Was the tolerance alone; the #3 Protection Warrior on Mythic Ula'tek
+    // got "first use at 0:23, top players at 0:01" for a press inside the top 30's range.
+    if (Math.abs(diff) > tol(b) && (b.mineAt > b.last || b.mineAt < b.first)) offs.push({ k: b.k, myK: mine.indexOf(b.mineAt), mineAt: b.mineAt, diff, med: b.med });
   }
   const missing = dueBands.filter(b => b.mineAt == null).length;
   const pressed = due - missing;
-  if (!judged && !missing) return { medians, bands: agreed, verdict: null, finding: null };
+  if (!judged && !missing) return { medians, bands: agreed, verdict: null, finding: null, detail };
   offs.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
   const parts: string[] = [];
   const two = offs.slice(0, 2);
@@ -1569,7 +1844,7 @@ function judgeTiming(row: TimelineRowInternal, aliveSec: number, preCast: { pool
   }
   if (missing) parts.push(`${plural(pressed, 'use')} vs ${due}`);
   if (!parts.length) {
-    return { medians, bands: agreed, verdict: { kind: 'good', text: judged === 1 ? 'on time' : `${judged} of ${judged} on time` }, finding: null };
+    return { medians, bands: agreed, verdict: { kind: 'good', text: judged === 1 ? 'on time' : `${judged} of ${judged} on time` }, finding: null, detail };
   }
   const worst = offs[0];
   const title = missing && !worst
@@ -1581,6 +1856,7 @@ function judgeTiming(row: TimelineRowInternal, aliveSec: number, preCast: { pool
       ? `press it around ${fmtClock(worst.med)} on your pull's clock (the same distance into the phase as in their kills). Yours was ${Math.round(Math.abs(worst.diff))}s ${worst.diff > 0 ? 'later' : 'earlier'}${missing ? `, and you ended ${plural(missing, 'use')} short of them` : ''}.`
       : `press their ${ordinal(worst.k)} ${row.name} around ${fmtClock(worst.med)} — usually a phase or a damage window. Yours was ${Math.round(Math.abs(worst.diff))}s ${worst.diff > 0 ? 'later' : 'earlier'}${missing ? `, and you ended ${plural(missing, 'use')} short of them` : ''}.`;
   return {
+    detail,
     medians,
     bands: agreed,
     verdict: { kind: 'warn', text: parts.join(' · ') },
@@ -1589,7 +1865,7 @@ function judgeTiming(row: TimelineRowInternal, aliveSec: number, preCast: { pool
   };
 }
 const baseName = (name: string) => name.replace(/\s*\([^)]*\)\s*$/, '').toLowerCase();
-function buildTimeline(profile: PlayerProfile, pool: PoolSummary, durationSec: number, aliveSec: number, skip: (name: string) => boolean, labelFor: (name: string) => string, isItemEffect: (name: string) => boolean, ownTrinkets: Array<{ label: string; castName: string; spellId: number; cooldownSec: number }>, cooldowns: Record<string, number>, isMajor: (name: string, spellId: number) => boolean): { durationSec: number; aliveSec: number; rows: TimelineRowInternal[]; trace: string[] } {
+function buildTimeline(profile: PlayerProfile, pool: PoolSummary, durationSec: number, aliveSec: number, wantTrace: boolean, skip: (name: string) => boolean, labelFor: (name: string) => string, isItemEffect: (name: string) => boolean, ownTrinkets: Array<{ label: string; castName: string; spellId: number; cooldownSec: number }>, cooldowns: Record<string, number>, isMajor: (name: string, spellId: number) => boolean): { durationSec: number; aliveSec: number; rows: TimelineRowInternal[]; trace: string[] } {
   const rows: TimelineRowInternal[] = [];
   const buffDuration = (name: string) => {
     const b = profile.buffs.find(x => x.name === name);
@@ -1652,7 +1928,7 @@ function buildTimeline(profile: PlayerProfile, pool: PoolSummary, durationSec: n
   // effect under the same name can add hundreds of applications.
   const trace: string[] = [];
   for (const [name, e] of Object.entries(pool.buffs)) {
-    const T = (why: string) => { if (/Metamorph/.test(name)) trace.push(`${name}: ${why}`); };
+    const T = (why: string) => { if (wantTrace) trace.push(`${name}: ${why}`); };
     if (rows.some(r => r.poolName === name || r.name === name)) { T("dup"); continue; }
     // "Stasis" the buff is "Stasis (Store)" the cast: one button, one row.
     if (rows.some(r => baseName(r.poolName) === baseName(name) || baseName(r.name) === baseName(name))) { T("basename dup"); continue; }

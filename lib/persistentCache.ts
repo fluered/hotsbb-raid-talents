@@ -137,6 +137,24 @@ export async function getPersistentReadOnly<T>(key: string): Promise<T | null> {
   }
 }
 
+// The same read-only peek for many keys in one round trip (MGET), decoded but otherwise
+// as stored: an SWR entry comes back in its { __at, v } wrapper. A missing or unreadable
+// entry is null in its slot; null for the whole call means Redis could not be reached,
+// which a caller that caches its result needs to tell apart from "nothing stored".
+export async function getPersistentManyReadOnly(keys: string[]): Promise<Array<unknown | null> | null> {
+  if (keys.length === 0) return [];
+  try {
+    const redis = await getClient();
+    const raw = await withTimeout(redis.mGet(keys), CACHE_TIMEOUT_MS, 'Redis mget');
+    return raw.map(r => {
+      if (r == null) return null;
+      try { return decodeValue<unknown>(r); } catch { return null; }
+    });
+  } catch {
+    return null;
+  }
+}
+
 // Plain write. ttlSeconds omitted ⇒ no expiry — reserve that for small, effectively
 // static data (e.g. the talent entry→node map): under volatile-lru or the headroom
 // janitor, non-expiring keys are exactly the ones that survive.

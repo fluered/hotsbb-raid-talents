@@ -51,6 +51,9 @@ export default function TimelineChart({ timeline }: { timeline: Timeline }) {
   // lorrgs' colours are "rgb(r, g, b)" strings; anything else falls back to violet.
   const bossColor = (c: string) => (/^(rgb|#)/.test(c) ? c : '#a78bfa');
   const lustSec = timeline.lustSec ?? null;
+  // The stretches the player spent dead: one per death, ending at the resurrection or
+  // the end of the pull. A death in the last two seconds is the wipe and is not drawn.
+  const deadSpans = (timeline.deadSpans ?? (timeline.aliveSec < dur ? [[timeline.aliveSec, dur] as [number, number]] : [])).filter(([from]) => from < dur - 2);
 
   return (
     <div ref={box} className="relative" onMouseMove={move} onMouseLeave={hide}>
@@ -98,12 +101,14 @@ export default function TimelineChart({ timeline }: { timeline: Timeline }) {
             <text x={x(t)} y={H - 6} fill="#71717a" fontSize={10} textAnchor="middle" fontFamily="var(--font-geist-mono), monospace">{fmtClock(t)}</text>
           </g>
         ))}
-        {timeline.aliveSec < dur - 2 && (
-          <g>
-            <rect x={x(timeline.aliveSec)} y={TOP} width={Math.max(0, x(dur) - x(timeline.aliveSec))} height={H - AXIS - TOP} fill="#ef4444" opacity={0.06} />
-            <line x1={x(timeline.aliveSec)} x2={x(timeline.aliveSec)} y1={TOP} y2={H - AXIS + 4} stroke="#ef4444" strokeWidth={1} strokeDasharray="3 3" opacity={0.7} />
+        {deadSpans.map(([from, to], i) => (
+          <g key={`dead${i}`}>
+            <rect x={x(from)} y={TOP} width={Math.max(0, x(to) - x(from))} height={H - AXIS - TOP} fill="#ef4444" opacity={0.06} />
+            <line x1={x(from)} x2={x(from)} y1={TOP} y2={H - AXIS + 4} stroke="#ef4444" strokeWidth={1} strokeDasharray="3 3" opacity={0.7} />
+            {/* Back up: the shading stops where the player was resurrected. */}
+            {to < dur - 2 && <line x1={x(to)} x2={x(to)} y1={TOP} y2={H - AXIS + 4} stroke="#34d399" strokeWidth={1} strokeDasharray="3 3" opacity={0.6} />}
           </g>
-        )}
+        ))}
         {lustSec != null && lustSec <= dur && (
           <g style={{ cursor: 'default' }}
             onMouseLeave={hide} onMouseEnter={e => show(e, { tone: 'lust', title: 'Bloodlust', lines: [`On you at ${fmtClock(lustSec)} (the Sated debuff)`, ...(timeline.lustPoolMedian != null ? [`Top players' raids: median ${fmtClock(timeline.lustPoolMedian)}`] : [])] })}>

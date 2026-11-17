@@ -1,5 +1,6 @@
 import { MetadataRoute } from 'next';
 import { POPULAR_SPECS, getSeasonState } from '../lib/wow';
+import { getRaidBosses, type RaidBoss } from '../lib/bossPage';
 
 const BASE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://hotsbbtalents.io';
 
@@ -23,6 +24,14 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     { url: `${BASE_URL}/tier-list/tanks?difficulty=${altDiff}`, changeFrequency: 'daily', priority: 0.4 },
     { url: `${BASE_URL}/tier-list/healers?difficulty=${altDiff}`, changeFrequency: 'daily', priority: 0.4 },
   ];
+
+  // One page per raid boss, at the bare URL (the season's default difficulty). The other
+  // difficulty is left out: its rankings are rarely cached, which leaves a thinner page.
+  const bosses = await getRaidBosses().catch((): RaidBoss[] => []);
+  if (bosses.length) entries.push({ url: `${BASE_URL}/boss`, changeFrequency: 'weekly', priority: 0.6 });
+  for (const boss of bosses) {
+    entries.push({ url: `${BASE_URL}/boss/${boss.slug}`, changeFrequency: 'daily', priority: 0.8 });
+  }
 
   for (const cls of POPULAR_SPECS) {
     const c = encodeURIComponent(cls.class);

@@ -1,6 +1,7 @@
+import { aliveWindowsOf, isAliveAt } from './analyze';
 import type { FightPlayer, PlayerProfile, PoolSummary, ReportFight, TankHit } from './analyze';
 import type { Finding, ReviewStat, Severity } from './analyzeRules';
-import { buffFamily, fmtClock, fmtNum, median, plural } from './analyzeRules';
+import { BELOW_ALL, buffFamily, fmtClock, fmtNum, lifeWords, lowestOf, median, plural, ucFirst } from './analyzeRules';
 import type { MechanicType } from './bossMechanics';
 import { DEFENSIVES, defensiveKey } from './defensives';
 
@@ -263,8 +264,9 @@ function reviewTank(c: RoleContext): RoleResult {
   };
 
   // ── Tank hits with nothing running ──
-  // Direct hits only: a ticking debuff is not something mitigation is timed for.
-  const hits = (t?.hits ?? []).filter(h => h.atSec <= aliveSec + 0.5);
+  // Direct hits only: a ticking debuff is not something mitigation is timed for. Every
+  // hit counts, in every life: only a living tank is hit.
+  const hits = t?.hits ?? [];
   const direct = hits.filter(h => h.spellId !== MELEE_ID && !h.tick);
   const melee = hits.filter(h => h.spellId === MELEE_ID);
   let hitsJudged: { covered: number; total: number } | null = null;
@@ -335,20 +337,22 @@ function reviewTank(c: RoleContext): RoleResult {
   const meleeCover = melee.length >= TANK_MELEE_MIN && mitNames.length
     ? melee.filter(h => runningAt(h).some(r => r.kind !== 'external')).length / melee.length : null;
   let mitigationWarn = false;
-  // Only for a tank who lived to the end: the buff table's uptime covers the whole pull,
-  // so after a death and a resurrection it cannot be put over the time alive (dividing
-  // it by the time to the first death read 100% for a tank who died at 2:08 of 9:41).
-  if (pool && c.judgeable && mitNames.length && aliveSec >= durationSec - 5) {
+  // The buff table's uptime covers the whole pull and a dead tank carries no mitigation,
+  // so it goes over the total time alive (profile.aliveMs: every life, not just the first).
+  if (pool && c.judgeable && mitNames.length) {
     const rows = mitNames.map(name => {
       const e = pool.buffs[name];
       const mine = profile.buffs.find(b => b.name === name);
-      return { name, med: e ? median(e.uptimePct) : 0, mine: mine ? Math.min(100, 100 * mine.uptimeMs / profile.aliveMs) : 0, has: !!mine };
+      return { name, med: e ? median(e.uptimePct) : 0, lowest: e ? lowestOf(e.uptimePct) : 0, mine: mine ? Math.min(100, 100 * mine.uptimeMs / profile.aliveMs) : 0, has: !!mine };
     }).filter(r => r.med >= MITIGATION_JUDGED_UPTIME && (r.has || c.canJudge(r.name))).sort((a, b) => b.med - a.med).slice(0, 3);
     if (rows.length) {
       const worst = rows.slice().sort((a, b) => a.mine / a.med - b.mine / b.med)[0];
       const low = worst.mine < MITIGATION_LOW * worst.med;
       const matched = rows.every(r => r.mine >= MITIGATION_MATCHED * r.med);
-      const fault = low && (hitsJudged ? hitsWarn : worst.mine < MITIGATION_VERY_LOW * worst.med);
+      // Without a hit check behind it: under half the median AND under every top tank (see
+      // BELOW_ALL in analyzeRules), since the top tanks' own uptimes spread widely — Ignore
+      // Pain runs from 37% to well over 56% among the top 30 Protection Warriors.
+      const fault = low && (hitsJudged ? hitsWarn : worst.mine < MITIGATION_VERY_LOW * worst.med && worst.mine < BELOW_ALL * worst.lowest);
       mitigationWarn = fault;
       const sev: Severity = fault ? 'warn' : matched ? 'good' : 'info';
       const detail = rows.map(r => `${r.name} ${pct(r.mine)} (top tanks ${pct(r.med)})`).join(', ');
@@ -398,7 +402,7 @@ function reviewTank(c: RoleContext): RoleResult {
 
   // ── Framing: survival first ──
   const dps = `${fmtNum(c.perSec)} DPS${c.outputRatio != null && pool ? `, ${pct(100 * c.outputRatio)} of the top-${pool.n} median` : ''}`;
-  const lived = realDeaths.length === 0 ? (profile.deaths.length ? 'Alive until the wipe' : 'Alive the whole pull') : `Dead at ${fmtClock(realDeaths[0].atSec)}`;
+  const lived = realDeaths.length === 0 ? (profile.deaths.length ? 'Alive until the wipe' : 'Alive the whole pull') : ucFirst(lifeWords(profile) ?? `dead at ${fmtClock(realDeaths[0].atSec)}`);
   // Survival leads; the tank-hit card reaches the short version on its own cost (as a
   // problem) or as the strength, so it is not repeated here.
   out.verdict = `${lived}; ${dps}`;
@@ -410,7 +414,7 @@ function reviewTank(c: RoleContext): RoleResult {
     out.patch.output = {
       // Never a fault on its own: a tank behind on damage costs the raid seconds, not the kill.
       severity: r >= 0.85 ? 'good' : 'info',
-      text: `Damage is a tank's second job. ${r >= 0.85 ? 'Yours is level with the best tank parses on this boss.' : 'The gap is to the tanks who do the most damage on this boss, which is how Warcraft Logs ranks tanks; it shortens the fight, but nothing in this review ranks it above staying alive and taking the tank hits well.'}${aliveSec < durationSec - 5 ? ` You were dead for ${fmtClock(durationSec - aliveSec)} of a ${fmtClock(durationSec)} pull, which is part of the gap.` : ''}`,
+      text: `Damage is a tank's second job. ${r >= 0.85 ? 'Yours is level with the best tank parses on this boss.' : 'The gap is to the tanks who do the most damage on this boss, which is how Warcraft Logs ranks tanks; it shortens the fight, but nothing in this review ranks it above staying alive and taking the tank hits well.'}${r < 0.85 && aliveSec < durationSec - 5 ? ` You were dead for ${fmtClock(durationSec - aliveSec)} of a ${fmtClock(durationSec)} pull, which is part of the gap.` : ''}`,
     };
     out.poolNote = `Tanks are compared with the top ${c.specLabel}s by damage, the only tank ranking Warcraft Logs keeps: they are strong tanks, not a list of who survives best, so the survival comparisons say what good tanks do, not what the best-surviving ones do.`;
   }
@@ -446,7 +450,8 @@ function reviewHealer(c: RoleContext): RoleResult {
   const realDeaths = profile.deaths.filter(d => !c.isWipeDeath(d));
   const topHealers = `the top ${c.specLabel}s`;
   const raidCds = c.role?.healer?.raidCooldowns ?? [];
-  const usesWhileAlive = (name: string) => (profile.castTimes[name] ?? []).filter(x => x <= aliveSec + 0.5).sort((a, b) => a - b);
+  const windows = aliveWindowsOf(profile);
+  const usesWhileAlive = (name: string) => (profile.castTimes[name] ?? []).filter(x => isAliveAt(windows, x)).sort((a, b) => a - b);
 
   // ── Overhealing ──
   const total = profile.outputTotal + (profile.overheal ?? 0);
@@ -482,7 +487,7 @@ function reviewHealer(c: RoleContext): RoleResult {
   if (mineCds.length) {
     // Raidmates' deaths this healer was alive for; not the wipe itself, and not a death
     // to something typed as dodgeable (no cooldown heals a missed dodge).
-    const deaths = profile.raidDeaths.filter(d => d.id !== player.id && d.atSec <= aliveSec && !c.isWipeDeath(d) && c.kindOf(d.killer, d.killerSpellId) !== 'avoid');
+    const deaths = profile.raidDeaths.filter(d => d.id !== player.id && isAliveAt(windows, d.atSec) && !c.isWipeDeath(d) && c.kindOf(d.killer, d.killerSpellId) !== 'avoid');
     const rows = deaths.map(d => {
       const ready = mineCds.map(cd => {
         const last = cd.times.filter(x => x <= d.atSec).pop();
@@ -548,7 +553,7 @@ function reviewHealer(c: RoleContext): RoleResult {
   }
 
   // ── Framing: HPS is how much there was to heal as much as how well it was healed ──
-  const lived = realDeaths.length === 0 ? (profile.deaths.length ? 'alive until the wipe' : 'alive the whole pull') : `dead at ${fmtClock(realDeaths[0].atSec)}`;
+  const lived = realDeaths.length === 0 ? (profile.deaths.length ? 'alive until the wipe' : 'alive the whole pull') : lifeWords(profile) ?? `dead at ${fmtClock(realDeaths[0].atSec)}`;
   if (pool && c.outputRatio != null) {
     const r = c.outputRatio;
     out.verdict = `${fmtNum(c.perSec)} HPS, ${pct(100 * r)} of the top-${pool.n} median (HPS follows how much damage the raid takes), ${lived}`;
@@ -556,7 +561,7 @@ function reviewHealer(c: RoleContext): RoleResult {
     out.patch.output = {
       // Never a fault on its own: the same healer parses higher in a raid that takes more damage.
       severity: r >= 0.85 ? 'good' : 'info',
-      text: `${r >= 0.85 ? 'That is level with the best healing parses on this boss.' : 'Read this as context, not a grade.'} HPS measures how much there was to heal as much as how well you healed it: the top parses come from raids that took more damage, often with fewer healers sharing it. What you control is in the other cards: cooldowns, overhealing and staying alive.${aliveSec < durationSec - 5 ? ` You were dead for ${fmtClock(durationSec - aliveSec)} of a ${fmtClock(durationSec)} pull, which is part of the gap.` : ''}`,
+      text: `${r >= 0.85 ? 'That is level with the best healing parses on this boss.' : 'Read this as context, not a grade.'} HPS measures how much there was to heal as much as how well you healed it: the top parses come from raids that took more damage, often with fewer healers sharing it. What you control is in the other cards: cooldowns, overhealing and staying alive.${r < 0.85 && aliveSec < durationSec - 5 ? ` You were dead for ${fmtClock(durationSec - aliveSec)} of a ${fmtClock(durationSec)} pull, which is part of the gap.` : ''}`,
     };
   }
   out.debug = {

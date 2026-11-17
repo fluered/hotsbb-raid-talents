@@ -42,6 +42,12 @@ export function tierListCanonical(p: { role: 'dps' | 'tanks' | 'healers'; diffic
   return `${path}${q([['difficulty', p.difficulty === p.defaultDifficulty ? null : p.difficulty], ['boss', boss], ['bossName', boss ? p.bossName : null]])}`;
 }
 
+// Boss pages follow the tier lists: the season's default difficulty at the bare URL.
+export function bossCanonical(p: { slug?: string | null; difficulty: number; defaultDifficulty: number }): string {
+  if (!p.slug) return '/boss';
+  return `/boss/${p.slug}${q([['difficulty', p.difficulty === p.defaultDifficulty ? null : p.difficulty]])}`;
+}
+
 // ─── Names for titles ──────────────────────────────────────────────────────────
 //
 // Titles, canonicals and headings used to echo ?class=, ?spec=, ?bossName= and

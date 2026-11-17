@@ -2,8 +2,9 @@ import { unstable_cache } from 'next/cache';
 import Link from 'next/link';
 import Image from 'next/image';
 import { getWclRankingsForRegionMode, getBlizzardToken, POPULAR_SPECS, SPEC_IDS } from '../../lib/wow';
+import { bossSlug } from '../../lib/bossPage';
 
-function fixedTierAssignments(sortedAvgDps: number[], thresholds: { S: number; A: number; B: number }): Array<'S' | 'A' | 'B' | 'C'> {
+export function fixedTierAssignments(sortedAvgDps: number[], thresholds: { S: number; A: number; B: number }): Array<'S' | 'A' | 'B' | 'C'> {
   const top = sortedAvgDps[0];
   return sortedAvgDps.map(dps => {
     const pct = (dps / top) * 100;
@@ -43,18 +44,18 @@ function computeTierAssignments(sortedAvgDps: number[]): Array<'S' | 'A' | 'B' |
 // Class colours are Tailwind arbitrary values (text-[#C41E3A]) except Priest's, which
 // is the named text-white: without that case both Priest specs fell through to the
 // grey fallback and their bars read as "no data".
-function classHex(color: string): string {
+export function classHex(color: string): string {
   const m = color.match(/\[([^\]]+)\]/);
   if (m) return m[1];
   return color === 'text-white' ? '#ffffff' : '#71717a';
 }
 
-function fmtDps(dps: number): string {
+export function fmtDps(dps: number): string {
   if (dps >= 1_000_000) return `${(dps / 1_000_000).toFixed(1)}M`;
   return `${(dps / 1_000).toFixed(1)}k`;
 }
 
-const TIER_CONFIG = {
+export const TIER_CONFIG = {
   S: { color: 'text-amber-400', bg: 'bg-amber-500/10', border: 'border-amber-500/30', hex: '#f59e0b' },
   A: { color: 'text-emerald-400', bg: 'bg-emerald-500/10', border: 'border-emerald-500/30', hex: '#34d399' },
   B: { color: 'text-sky-400', bg: 'bg-sky-500/10', border: 'border-sky-500/30', hex: '#38bdf8' },
@@ -173,6 +174,9 @@ export default async function TierListContent({
         <p className="text-xs text-zinc-500 mt-1">
           {diffLabel} · avg {metricLabel} of top 50 parses per spec · {region.toUpperCase()}
         </p>
+        <Link href={`/boss/${bossSlug(bossName)}?difficulty=${difficulty}`} className="inline-block text-xs font-semibold text-amber-400/90 hover:text-amber-300 mt-2">
+          {`${bossName} mechanics, kill times and every spec’s build →`}
+        </Link>
       </div>
 
       <div className="space-y-6">

@@ -128,7 +128,9 @@ export const BASELINE_BY_CLASS: Record<string, string[]> = {
 // Wowhead's spell text at review time (restores health); the name test is a fallback.
 const KNOWN_HEALING_POTIONS = new Set<string>();
 export function registerHealingPotionNames(names: Iterable<string>): void { for (const n of names) KNOWN_HEALING_POTIONS.add(n); }
-export const isHealingPotion = (name: string) => KNOWN_HEALING_POTIONS.has(name) || /heal(th|ing) potion/i.test(name);
+// A healthstone also "restores health" in Wowhead's words, so it can end up registered
+// here; it is its own button (its own cooldown, and it needs a Warlock), never a potion.
+export const isHealingPotion = (name: string) => !/healthstone/i.test(name) && (KNOWN_HEALING_POTIONS.has(name) || /heal(th|ing) potion/i.test(name));
 export const defensiveKey = (name: string) => (isHealingPotion(name) ? 'Healing potion' : /healthstone/i.test(name) ? 'Healthstone' : name);
 export const isDefensive = (name: string) => DEFENSIVES.has(defensiveKey(name));
 
@@ -201,31 +203,7 @@ export function wastedDoublePresses(uses: number[], bands: Array<[number, number
   return out;
 }
 
-// Usage proves charges: the most uses one player fit inside one cooldown length.
-// `minPlayers` guards inference from other people's logs — one top player with a
-// cooldown-reset talent must not give everyone a second charge.
-export function chargesFromUsage(starts: number[][], cooldownSec: number | undefined, minPlayers = 1): number {
-  if (!cooldownSec) return 1;
-  const perPlayer: number[] = [];
-  for (const s of starts) {
-    const sorted = s.slice().sort((a, b) => a - b);
-    let best = 1;
-    for (let i = 0; i < sorted.length; i++) {
-      let n = 1;
-      // Only a press inside HALF the cooldown proves a charge; a reduced-cooldown talent
-      // can explain anything closer to the full length.
-      for (let j = i + 1; j < sorted.length && sorted[j] - sorted[i] < cooldownSec * 0.5; j++) n++;
-      if (n > best) best = n;
-    }
-    perPlayer.push(best);
-  }
-  for (let charges = 2; charges >= 2; charges--) {
-    if (perPlayer.filter(x => x >= charges).length >= minPlayers) return charges;
-  }
-  return 1;
-}
-
-// Talent text proves charges too: "Survival of the Fittest gains an additional charge".
+// Talent text proves charges: "Survival of the Fittest gains an additional charge".
 export function chargesFromTalents(name: string, takenTalentDescriptions: string[]): number {
   const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const re = new RegExp(`${esc}[^.]*?(additional|extra|second|1 more)\\s+charge|${esc}[^.]*?\\b2 charges`, 'i');

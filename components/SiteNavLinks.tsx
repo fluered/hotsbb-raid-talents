@@ -5,7 +5,7 @@ import MobileNav from './MobileNav';
 // lit. The finder and dungeons headers carry their own copy of the last two (they have
 // extra toggles to fit around); this is for every other page so no section is a dead end.
 // Below sm the links give way to the menu button.
-export default function SiteNavLinks({ active, difficulty }: { active: 'builds' | 'tiers' | 'addon' | 'analyze'; difficulty?: number }) {
+export default function SiteNavLinks({ active, difficulty }: { active: 'builds' | 'tiers' | 'addon' | 'analyze' | 'bosses'; difficulty?: number }) {
   const diff = difficulty ? `?difficulty=${difficulty}` : '';
   const base = 'hidden sm:inline-flex px-2.5 py-1 rounded-md text-xs font-bold transition-colors whitespace-nowrap';
   const idle = 'text-zinc-400 hover:text-zinc-200';
