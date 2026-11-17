@@ -413,7 +413,7 @@ export default function NightView({ night, reportTitle, discordText }: { night: 
               <p className="text-xs text-zinc-500">
                 Each player&apos;s deaths before the wipes, and at how many of them a major defensive of theirs was ready, with which ones. Ready is not the same as &quot;would have lived&quot;, but it is the first thing to ask about.
                 Major means a cooldown of a minute or more (Wowhead): a button that is back in 15 to 45 seconds is ready most of the time for everyone, so finding it ready says little.
-                A player&apos;s defensives are the ones they pressed at some point tonight.{rd.instant > 0 ? ` ${plural(rd.instant, 'death')} before the wipes ${rd.instant === 1 ? 'was an instant kill, which' : 'were instant kills, which'} no defensive stops: ${rd.instant === 1 ? 'it is' : 'they are'} left out here.` : ''} Healthstones and healing potions are counted separately, below.
+                A player&apos;s defensives are the ones they pressed at some point tonight.{rd.instant > 0 ? ` ${plural(rd.instant, 'death')} before the wipes ${rd.instant === 1 ? 'was an instant kill or a hit the fight has its own answer to, which' : 'were instant kills or hits the fight has its own answer to, which'} no defensive stops: ${rd.instant === 1 ? 'it is' : 'they are'} left out here.` : ''} Healthstones and healing potions are counted separately, below.
               </p>
             </>
           )}
@@ -490,7 +490,7 @@ export default function NightView({ night, reportTitle, discordText }: { night: 
             const top = m.players[0];
             const defined = m.via === 'wipefest';
             const counts = `${plural(m.players.length, 'player')}, ${m.times} separate ${m.times === 1 ? 'time' : 'times'}, on ${m.pulls} of ${plural(pulls.length, 'pull')}${m.damage ? ` · ${fmtNum(m.damage)} taken` : ''}.`;
-            const why = defined ? '' : m.type ? ` It is ${MECHANIC_WORDS[m.type]} (${m.via === 'dbm' ? 'the boss addons flag it' : 'top raids do not take it'}).` : '';
+            const why = defined ? '' : m.type ? ` It is ${MECHANIC_WORDS[m.type]} (${m.via === 'dbm' ? 'the boss addons flag it' : m.via === 'journal' ? 'going by the dungeon journal\'s wording' : m.via === 'ruling' ? 'checked by hand' : 'top raids do not take it'}).` : '';
             return (
               <Card key={m.key} severity={m.assigned && m.players.length <= 4 ? 'info' : m.players.length >= raidSize / 2 || m.pulls >= pulls.length * 0.75 ? 'bad' : 'warn'} icon={m.icon} spellId={m.spellId}
                 title={defined ? m.title : `${m.title}, on ${m.pulls} of ${plural(pulls.length, 'pull')}`}

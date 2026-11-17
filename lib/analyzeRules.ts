@@ -1,6 +1,6 @@
 import type { FightPlayer, PlayerProfile, PoolSummary, RaidMechanicStats, ReportFight } from './analyze';
 import { DIFFICULTY_LABELS, GEAR_SLOT_NAMES, aliveWindowsOf, isAliveAt, possibleUses } from './analyze';
-import { lookupJournal, lookupLabel, lookupNote, MECHANIC_WORDS, type BossKnowledge, type MechanicType } from './bossMechanics';
+import { lookupJournal, lookupLabel, lookupNote, normalizeName, readJournal, saysDodge, wardFor, MECHANIC_OVERRIDES, MECHANIC_WORDS, type BossKnowledge, type MechanicType } from './bossMechanics';
 import { BASELINE_BY_CLASS, DEFENSIVES, REPLACED_BY, TWO_STEP, isMovement, isUtility, noChargeModel, chargesFromTalents, defensiveKey, defensivesAt, minReuseGap, wastedDoublePresses } from './defensives';
 import { LORRGS_CREDIT, MAJOR_CD_SEC, MAJOR_UNDER_60, type MajorSpell } from './lorrgsSpells';
 import { timesWord } from './summary';
@@ -275,11 +275,16 @@ export function buffFamily(name: string): string {
 const FAMILY_LABEL: Record<string, string> = { food: 'a food buff', flask: 'a flask', potion: 'a combat potion', rune: 'an augment rune', vantus: 'a Vantus rune' };
 const familyLabel = (family: string, exampleName: string) => FAMILY_LABEL[family] ?? exampleName;
 
-// What a boss ability IS: DBM's label first, then the whole-raid pattern in the top
-// logs (nobody takes it ⇒ avoid; everybody ⇒ raid-wide; only tanks ⇒ tank). "Soak"
-// needs DBM to say so: a few top raiders clipped by a dodge looks identical to an
-// assigned soak. null when neither source knows.
-export function classifyAbility(boss: BossKnowledge | null | undefined, raidStats: RaidMechanicStats | null | undefined, name: string, spellId?: number): { type: MechanicType; via: 'dbm' | 'logs' } | null {
+// What a boss ability IS: DBM's label first, then what the top logs settle beyond doubt
+// (nobody takes it ⇒ avoid; everybody ⇒ raid-wide; only tanks ⇒ tank), then the
+// dungeon journal's wording (readJournal: a cone, "on contact", "to all players"), then
+// the logs' weaker patterns. The journal sits above those because a few top raiders
+// clipped by a cone in every kill looks, in the logs alone, like damage that picks a
+// target. null when no source knows — and what is null is never given a defensive.
+export type ClassifiedVia = 'dbm' | 'logs' | 'journal' | 'ruling';
+export function classifyAbility(boss: BossKnowledge | null | undefined, raidStats: RaidMechanicStats | null | undefined, name: string, spellId?: number): { type: MechanicType; via: ClassifiedVia } | null {
+  const ruled = MECHANIC_OVERRIDES[normalizeName(name)];
+  if (ruled) return { type: ruled.type, via: 'ruling' };
   const rs = raidStats?.abilities[name];
   const share = rs && rs.share.length >= 2 ? median(rs.share) : null;
   const tank = rs && rs.share.length >= 2 ? median(rs.tankShare) : null;
@@ -292,6 +297,11 @@ export function classifyAbility(boss: BossKnowledge | null | undefined, raidStat
     if ((label.type === 'avoid' || label.type === 'spread' || label.type === 'fixate') && share != null && share >= 0.6) return { type: 'raidwide', via: 'logs' };
     return { type: label.type, via: 'dbm' };
   }
+  const everyFightHit = !!rs && rs.share.every(x => x > 0);
+  if (share != null && share <= 0.05 && !everyFightHit) return { type: 'avoid', via: 'logs' };
+  if (share != null && share >= 0.6) return { type: 'raidwide', via: 'logs' };
+  const read = readJournal(boss, name, spellId);
+  if (read) return { type: read.type, via: 'journal' };
   if (share != null && rs) {
     // Nobody in the top raids takes it ⇒ a dodge. Someone takes it in EVERY top raid,
     // but only a few ⇒ it picks a target (a grab, a mark): being that target is not a
@@ -651,7 +661,7 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, he
     findings.push({
       id: `death-${i}`, severity: 'bad', category: 'survival', impact: 100 - i * 5, icon: d.killerIcon, spellId: d.killerSpellId,
       title: `Died at ${fmtClock(d.atSec)} to ${d.killer}`,
-      text: (`${lead}${hitNote}${verdict}${defensiveNote(d.atSec)}${externalNote(d.atSec)}`) + recapText,
+      text: (`${lead}${hitNote}${wardFor(boss, d.killer, d.killerSpellId) ? '' : verdict}${(() => { const w = wardFor(boss, d.killer, d.killerSpellId); return w ? ` The fight has its own answer to this: ${w.name}${w.pct ? ` takes ${w.pct}% off it` : ''}. Having that on you is what stops this death, not a defensive.` : `${defensiveNote(d.atSec)}${externalNote(d.atSec)}`; })()}`) + recapText,
       events: recapEvents,
       explain: explain(d.killer, d.killerSpellId),
       evidence: `${plural(defUses['Healthstone']?.length ?? player.healthstoneUse, 'healthstone')} used in the fight`,
@@ -1622,6 +1632,8 @@ export function reviewPlayer({ player, fight, profile, pool: poolIn, talents, he
   const nextPull = buildNextPull({
     player, fight, profile, pool, phaseAligned, dmgIdx, phases, bossCasts: (context?.bossCasts ?? []).filter(b => b.atSec <= durationSec), windows, judgeable,
     kindOf: (name, spellId) => classify(name, spellId)?.type,
+    wardOf: (name, spellId) => wardFor(boss, name, spellId),
+    saysDodge: (name, spellId) => saysDodge(boss, name, spellId),
     isWipeDeath,
     canPress: name => !isTalentGap(name) && !unownedItemCast(name),
     buildDiffers,

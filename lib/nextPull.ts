@@ -1,7 +1,7 @@
 import type { FightPlayer, PlayerProfile, PoolSummary, ReportFight } from './analyze';
 import type { BossCastMark, DefensiveRow, Finding, TimingDetail } from './analyzeRules';
 import { BELOW_ALL, buffFamily, fmtClock, fmtNum, median } from './analyzeRules';
-import type { MechanicType } from './bossMechanics';
+import type { MechanicType, Ward } from './bossMechanics';
 import { DEFENSIVES, TWO_STEP, defensiveKey, defensivesAt, isMovement, isUtility } from './defensives';
 
 // ─── Log review: the next pull ─────────────────────────────────────────────────
@@ -54,7 +54,9 @@ export interface DefensivePlanRow {
   // 'skip':  the same kind of damage, which the top players cover with a button of theirs,
   //          where nothing of this player's is free.
   // 'dodge': damage to step out of — never given a defensive.
-  kind: 'cover' | 'skip' | 'dodge';
+  // 'ward':  damage the fight itself gives an answer to (see wardFor in lib/bossMechanics.ts).
+  kind: 'cover' | 'skip' | 'dodge' | 'ward';
+  ward?: PlanSpell & { pct: number | null };
   // When it landed in this pull (seconds), and how much of the health bar a burst took.
   times: number[];
   sizePct: number | null;
@@ -98,6 +100,10 @@ export interface NextPullContext {
   windows: Array<[number, number]>;
   judgeable: boolean;
   kindOf: (name: string, spellId?: number) => MechanicType | undefined;
+  // The fight's own answer to an ability, when its journal text names one.
+  wardOf: (name: string, spellId?: number) => Ward | null;
+  // The addons or the journal call it something to get out of (whatever the logs say).
+  saysDodge: (name: string, spellId?: number) => boolean;
   isWipeDeath: (d: { killer: string; atSec: number }) => boolean;
   // False for a button this player's talents or gear do not give them.
   canPress: (name: string) => boolean;
@@ -262,13 +268,14 @@ export function buildNextPull(c: NextPullContext): NextPull {
   const dmgN = c.dmgIdx.length;
   const takers = (name: string) => (pool?.taken[name] ? c.dmgIdx.filter(i => (pool.taken[name].perMin[i] ?? 0) > 0).length : 0);
   // Meant to be taken (so a defensive can be planned for it), to be stepped out of, or neither.
-  const categoryOf = (name: string, spellId?: number): 'cover' | 'dodge' | 'other' => {
+  const categoryOf = (name: string, spellId?: number): 'cover' | 'dodge' | 'ward' | 'other' => {
     if (/^melee$/i.test(name)) return 'other'; // a tank's swings are active mitigation's job
+    if (c.wardOf(name, spellId)) return 'ward';
     const kind = c.kindOf(name, spellId);
     // Labelled a dodge, but judged against this spec's top players: most of them never
     // take it (a dodge), nearly all of them do (for this role it is part of the fight —
     // Caustic Waves on Vel'thara hits all 30 top Protection Warriors), or neither.
-    if (kind === 'avoid') return !pool || dmgN < 3 || takers(name) / dmgN <= 0.3 ? 'dodge' : takers(name) / dmgN >= 0.8 ? 'cover' : 'other';
+    if (kind === 'avoid' || c.saysDodge(name, spellId)) return !pool || dmgN < 3 || takers(name) / dmgN <= 0.3 ? 'dodge' : takers(name) / dmgN >= 0.8 ? 'cover' : 'other';
     if (kind === 'raidwide' || kind === 'defensive' || kind === 'soak' || kind === 'targeted') return 'cover';
     if (kind === 'tank') return player.role === 'tank' ? 'cover' : 'other';
     if (kind && kind !== 'unknown') return 'other';
@@ -314,7 +321,7 @@ export function buildNextPull(c: NextPullContext): NextPull {
     for (const t of profile.damageTaken) for (const x of t.byId) byId.set(x.spellId, t.name);
     const named = hits.map(h => ({ ...h, name: byId.get(h.spellId) ?? '', size: h.amount + h.absorbed })).filter(h => h.name && h.atSec < lostAt);
     const schoolOf = new Map(profile.damageTaken.map(t => [t.name, t.school]));
-    const cat = new Map<string, 'cover' | 'dodge' | 'other'>();
+    const cat = new Map<string, 'cover' | 'dodge' | 'ward' | 'other'>();
     for (const t of profile.damageTaken) cat.set(t.name, categoryOf(t.name, t.spellId));
 
     // Bursts: the heaviest five seconds of coverable damage, taken one at a time.
@@ -416,6 +423,15 @@ export function buildNextPull(c: NextPullContext): NextPull {
       return { t, visits: ts.filter((x, i) => i === 0 || x - ts[i - 1] > VISIT_GAP_SEC) };
     }).filter(x => x.visits.length && x.t.total >= BURST_MIN_SHARE * maxHp).sort((a, b) => b.t.total - a.t.total).slice(0, 2);
     for (const d of dodge) rows.push({ ability: bossSpell(d.t.name), kind: 'dodge', times: d.visits, sizePct: Math.round(100 * d.t.total / maxHp), assign: [], poolNote: null, bare: [] });
+    // Damage the fight gives its own answer to: listed with that answer, never a defensive.
+    for (const t of profile.damageTaken) {
+      if (cat.get(t.name) !== 'ward') continue;
+      const w = c.wardOf(t.name, t.spellId);
+      const ts = named.filter(h => h.name === t.name);
+      if (!w || !ts.length) continue;
+      const visits = ts.map(h => h.atSec).filter((x, i, a) => i === 0 || x - a[i - 1] > VISIT_GAP_SEC);
+      rows.push({ ability: bossSpell(t.name), kind: 'ward', ward: { name: w.name, spellId: w.spellId, icon: '', pct: w.pct }, times: visits, sizePct: Math.round(100 * Math.max(...ts.map(h => h.size)) / maxHp), assign: [], poolNote: null, bare: [] });
+    }
     if (c.debug) debug.damage = { maxHp, hits: hits.length, complete: profile.hitsComplete ?? null, moments: moments.map(m => `${fmtClock(m.t)} ${m.lead} ${Math.round(100 * m.total / maxHp)}% ran=${ranAt(m).join('/') || '-'} poolAny=${poolClockOk(m.t) ? poolNearAny(m.t) : '?'}`), categories: [...cat.entries()].map(([k, v]) => `${k}: ${v}`), reactive: c.defensives.filter(r => isReactive(r.name)).map(r => r.name) };
     // Thin data: nothing to plan a press for and nothing the top players can be quoted on.
     if (!rows.some(r => r.kind === 'cover')) return null;
@@ -457,6 +473,15 @@ export function buildNextPull(c: NextPullContext): NextPull {
     const recapTotal = recap ? recap.hits.reduce((s, h) => s + h.amount, 0) : 0;
     const recapWords = recap && recap.hits.length ? `You took ${fmtNum(recapTotal)} in the ten seconds before it${recap.healCount ? '' : ', and no healing landed'}.` : '';
     coveredKillers.add(d.killer);
+    if (where === 'ward') {
+      const w = c.wardOf(d.killer, d.killerSpellId)!;
+      push({
+        id: `death-${d.killer}`, kind: 'death', score: 100, spell: bossSpell(d.killer),
+        parts: [T('Have '), { t: 'spell', name: w.name, spellId: w.spellId, icon: '' }, T(' on you for '), B(d.killer), T(' — it killed you at '), C(fmtClock(d.atSec)), T(`. That is the fight's answer to it${w.pct ? `, ${w.pct}% off` : ''}; a defensive is not.`)],
+        evidence: `Dungeon journal, ${w.name}: ${w.description}`,
+      });
+      return;
+    }
     if (where === 'dodge') {
       push({
         id: `death-${d.killer}`, kind: 'death', score: 100, spell: bossSpell(d.killer),
@@ -755,6 +780,6 @@ export function assignWords(r: DefensivePlanRow): string {
 
 export function defensiveRowText(r: DefensivePlanRow): string {
   const head = `${r.ability.name} (${approxTimes(r.times)})`;
-  const what = r.kind === 'dodge' ? 'step out of it, no defensive' : r.kind === 'skip' ? 'nothing of yours is free for it' : assignWords(r);
+  const what = r.kind === 'ward' && r.ward ? `have ${r.ward.name} on you for it${r.ward.pct ? ` (${r.ward.pct}% off)` : ''}, not a defensive` : r.kind === 'dodge' ? 'step out of it, no defensive' : r.kind === 'skip' ? 'nothing of yours is free for it' : assignWords(r);
   return `${head}: ${[what, r.poolNote].filter(Boolean).join(' — ')}`;
 }

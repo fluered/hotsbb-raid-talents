@@ -84,10 +84,11 @@ export function DefensivePlanSection({ plan }: { plan: DefensivePlan }) {
             <p className="text-sm leading-relaxed text-zinc-300 flex flex-wrap items-baseline gap-x-2 gap-y-1">
               <Spell spell={r.ability} />
               <Chip>{approxTimes(r.times)}</Chip>
-              {r.sizePct != null && <span className="text-xs text-zinc-500">{r.kind === 'dodge' ? `${r.sizePct}% of your health over the pull` : `about ${r.sizePct}% of your health in 5 seconds`}</span>}
+              {r.sizePct != null && <span className="text-xs text-zinc-500">{r.kind === 'ward' ? `up to ${r.sizePct}% of your health in one hit` : r.kind === 'dodge' ? `${r.sizePct}% of your health over the pull` : `about ${r.sizePct}% of your health in 5 seconds`}</span>}
             </p>
             <p className="text-sm leading-relaxed text-zinc-300 pl-3 border-l-2 border-zinc-700 flex flex-wrap items-baseline gap-x-2 gap-y-1">
               {r.kind === 'dodge' && <span className="text-amber-300 font-semibold">Step out of it. No defensive.</span>}
+              {r.kind === 'ward' && r.ward && <span className="text-amber-300 font-semibold inline-flex flex-wrap items-baseline gap-x-1.5">Have <Spell spell={r.ward} strong /> on you for it{r.ward.pct ? ` (${r.ward.pct}% off)` : ''}. No defensive.</span>}
               {r.kind === 'skip' && <span className="text-zinc-400">Nothing of yours is free for it.</span>}
               {r.assign.map((a, i) => (
                 <span key={a.spell.name} className="inline-flex flex-wrap items-baseline gap-x-1.5">

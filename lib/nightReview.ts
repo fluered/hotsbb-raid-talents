@@ -1,7 +1,7 @@
 import { unstable_cache } from 'next/cache';
 import { wclQuery, isRateLimitError, mapConcurrent } from './wow';
 import { defensiveKey, defensivesAt, isDefensive, noChargeModel } from './defensives';
-import { getSpellInfo, isHealingPotionSpell } from './bossMechanics';
+import { getSpellInfo, isHealingPotionSpell, saysDodge, wardFor } from './bossMechanics';
 import { filterAbilityIds, getWipefestFightConfig, requireIds, wipefestCredit, type WipefestFightConfig, type WipefestInsightConfig } from './wipefestConfig';
 import { evaluateInsights, fetchNightEvents, insightSentence } from './wipefestInsights';
 import { MAJOR_CD_SEC } from './lorrgsSpells';
@@ -9,7 +9,7 @@ import {
   buildProfile, DIFFICULTY_LABELS, isPlayerSourcedDamage, mapPlayerDetails,
   type FightPlayer, type RaidDeath, type RaidMechanicStats, type ReportFight, type ReportOverview, type Role, type WclEventsPage, type WclReportData, type WclTable,
 } from './analyze';
-import { classifyAbility, fmtClock, fmtNum, median, plural } from './analyzeRules';
+import { classifyAbility, fmtClock, fmtNum, median, plural, type ClassifiedVia } from './analyzeRules';
 import { MECHANIC_WORDS, type BossKnowledge, type MechanicType } from './bossMechanics';
 import { countWord, timesWord } from './summary';
 import { getPersistentReadOnly } from './persistentCache';
@@ -315,7 +315,7 @@ export function splitPullDeaths(fight: ReportFight, deaths: RaidDeath[] | null):
 export interface NightHitRow { ability: string; playerId: number; fightId: number; events: number; ticks: number; times: number; damage: number }
 export interface NightHits { rows: NightHitRow[]; truncated: boolean; requests: number }
 
-export interface PickedAbility extends NightAbility { type: MechanicType; via: 'dbm' | 'logs' }
+export interface PickedAbility extends NightAbility { type: MechanicType; via: ClassifiedVia }
 
 // The night's avoidable-type abilities by damage, capped. `known` tells a night with
 // nothing avoidable apart from one where nothing could be classified at all.
@@ -695,7 +695,7 @@ export interface NightMechanic {
   spellId: number;
   // null for a Wipefest definition (its sentence says what the mechanic is).
   type: MechanicType | null;
-  via: 'dbm' | 'logs' | 'wipefest';
+  via: ClassifiedVia | 'wipefest';
   damage: number;
   times: number;
   pulls: number;
@@ -974,6 +974,11 @@ export function buildNightReview(opts: {
   const instant = new Set<RaidDeath>();
   for (const f of fights) for (const d of base.deaths[f.id] ?? []) if ((base.instant?.[f.id] ?? []).some(([id, at]) => id === d.id && at === d.atSec)) instant.add(d);
 
+  // The same goes for a hit the fight gives its own answer to (wardFor): the answer is that
+  // mechanic, so the death is never held against a defensive.
+  const warded = new Set<RaidDeath>();
+  for (const f of fights) for (const d of base.deaths[f.id] ?? []) if (!instant.has(d) && wardFor(boss, d.killer, d.killerSpellId || undefined)) { instant.add(d); warded.add(d); }
+
   // Names for everyone seen: the roster, and anyone the death tables name beyond it.
   const people = new Map<number, NightPlayerRef & { role: Role | null }>(base.roster.map(p => [p.id, { id: p.id, name: p.name, className: p.className, role: p.role }]));
   for (const ds of Object.values(base.deaths)) for (const d of ds ?? []) if (!people.has(d.id)) people.set(d.id, { id: d.id, name: d.name, className: d.className, role: null });
@@ -999,7 +1004,7 @@ export function buildNightReview(opts: {
     const c = classifyAbility(boss, raidStats, name, list[0].d.killerSpellId || undefined);
     return {
       name, icon: list[0].d.killerIcon, spellId: list[0].d.killerSpellId, avoidable: false,
-      typeWords: c && c.type !== 'unknown' ? MECHANIC_WORDS[c.type] : null,
+      typeWords: (w => (w ? `a hit the fight answers with ${w.name}${w.pct ? ` (${w.pct}% off)` : ''}` : c && c.type !== 'unknown' ? MECHANIC_WORDS[c.type] : null))(wardFor(boss, name, list[0].d.killerSpellId || undefined)),
       pulls: new Set(list.map(x => x.fightId)).size, deaths: list.length,
       players: [...byPlayer.entries()].map(([id, xs]) => ({ ...ref(id), count: xs.length, pullNumbers: [...new Set(xs.map(x => numberOf.get(x.fightId)!))], fightId: xs[xs.length - 1].fightId }))
         .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name)),
@@ -1363,15 +1368,37 @@ export function buildNightReview(opts: {
 
   // The abilities that keep killing people who had a major defensive unused, and when they land.
   const when: Record<string, string> = {};
+  // Abilities no source could type. A defensive is only called for damage something
+  // positively says is meant to be taken; "we do not know what this is" is not that.
+  const unread = new Set<string>();
   for (const k of killers) {
     // "Stay out of it" is said only when nothing contradicts it: an ability the addons or
     // the top raids' logs type as raid-wide stays a defensive call even where a definition
     // counts part of it (a wave inside it) against players.
     const cls = classifyAbility(boss, raidStats, k.name, k.spellId || undefined);
-    k.avoidable = cls && cls.type !== 'unknown' ? AVOIDABLE_TYPES.includes(cls.type) : individual.some(m => !m.assigned && sameAbility(m.name, k.name));
+    // Where the addons or the journal call it a dodge and the logs say everyone is hit, it
+    // stays "stay out of it, and press something when it catches you".
+    k.avoidable = saysDodge(boss, k.name, k.spellId || undefined) || (cls && cls.type !== 'unknown' ? AVOIDABLE_TYPES.includes(cls.type) : individual.some(m => !m.assigned && sameAbility(m.name, k.name)));
+    // No source says what this ability is: nothing is called for it (see below).
+    if (!k.avoidable && (!cls || cls.type === 'unknown')) unread.add(k.name);
   }
   for (const k of killers) {
     if (/^melee$/i.test(k.name) || k.name === 'unknown damage') continue;
+    // Deaths to a hit the fight answers itself: the step is that answer.
+    const ward = wardFor(boss, k.name, k.spellId || undefined);
+    const wardDeaths = ward ? counted.filter(x => x.d.killer === k.name && warded.has(x.d)) : [];
+    const wardPulls = new Set(wardDeaths.map(x => x.fightId));
+    if (ward && wardDeaths.length >= DEFENSIVE_STEP_MIN_DEATHS && wardPulls.size >= DEFENSIVE_STEP_MIN_PULLS) {
+      const often = tally(wardDeaths.map(x => x.d.id)).filter(([, n]) => n >= 2).slice(0, 3).map(([id, n]) => `${ref(id).name} (${n})`);
+      candidates.push({
+        kind: 'defensive', subject: k.name, icon: k.icon, spellId: k.spellId, weight: wardPulls.size,
+        text: `Everyone: have ${ward.name} on you for ${k.name}.`,
+        evidence: `It caused ${plural(wardDeaths.length, 'death')} before the wipes over ${plural(wardPulls.size, 'pull')}. ${ward.name} is the fight's answer to it${ward.pct ? ` (${ward.pct}% off)` : ''}, not a defensive.${often.length ? ` Most often: ${listWords(often)}.` : ''}`,
+        scope: `killed someone on ${wardPulls.size} of ${pulls.length} pulls`,
+        also: `It also killed people before the wipes: ${plural(wardDeaths.length, 'death')}; ${ward.name} is the answer to it.`,
+      });
+      continue;
+    }
     const list = counted.filter(x => x.d.killer === k.name && !instant.has(x.d));
     if (!list.length) continue;
     const lands = whenWords(list.map(x => ({ fightId: x.fightId, atSec: x.d.atSec })), phases, phaseNames);
@@ -1380,6 +1407,7 @@ export function buildNightReview(opts: {
     const judged = list.filter(x => readyAt.has(x.d) && ownsMajor(x.d.id));
     const readyPulls = new Set(ready.map(x => x.fightId));
     if (ready.length < DEFENSIVE_STEP_MIN_DEATHS || readyPulls.size < DEFENSIVE_STEP_MIN_PULLS || ready.length < judged.length / 2) continue;
+    if (unread.has(k.name)) continue;
     const avoidable = k.avoidable;
     const often = tally(ready.map(x => x.d.id)).filter(([, n]) => n >= 2).slice(0, 3).map(([id, n]) => `${ref(id).name} (${n})`);
     const share = `at ${ready.length === list.length ? 'every one' : ready.length} of them a major defensive was ready and unpressed`;
@@ -1526,7 +1554,7 @@ export async function loadNightReview(token: string, code: string, group: NightG
 }): Promise<NightReview> {
   // The finished review is kept six hours when every part of it loaded, so a second
   // visit skips the classification inputs as well (they are the slow part when warm).
-  return cacheUnlessPartial<NightReview>(`analyze-night-review-v21-${cacheKey(code, group.fights)}`, 6 * 3600, async () => {
+  return cacheUnlessPartial<NightReview>(`analyze-night-review-v23-${cacheKey(code, group.fights)}`, 6 * 3600, async () => {
     const r = await computeNightReview(token, code, group, deps);
     return { value: r.review, partial: r.partial };
   });

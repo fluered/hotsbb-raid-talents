@@ -1,6 +1,6 @@
 import { unstable_cache } from 'next/cache';
 import { getWclToken, getBlizzardToken, getRaidStructure, getSeasonState, MIDNIGHT_RAIDS, RAID_JOURNAL_ID_FALLBACK, DPS_SPECS, POPULAR_SPECS } from './wow';
-import { getBossKnowledge, lookupJournal, normalizeName, type MechanicType } from './bossMechanics';
+import { getBossKnowledge, lookupJournal, normalizeName, readJournal, wardFor, MECHANIC_WORDS, type BossKnowledge, type MechanicType } from './bossMechanics';
 import { getPersistentManyReadOnly } from './persistentCache';
 import type { WclRankingRow } from './wclTypes';
 import type { PoolSummary, RaidMechanicStats } from './analyze';
@@ -182,7 +182,9 @@ export async function getBossStats(bossId: number, difficulty: number): Promise<
 
 // ─── Mechanics at a glance ────────────────────────────────────────────────────
 
-export interface BossMechanic { name: string; spellId: number; alt: string | null; description: string }
+// `reading`: what the site takes the ability to be, for the ones no addon types — read
+// from the journal's wording, shown so a wrong reading can be seen and reported.
+export interface BossMechanic { name: string; spellId: number; alt: string | null; description: string; reading?: string | null }
 export interface BossMechanicGroup { type: MechanicType; items: BossMechanic[] }
 export interface BossFailureNote { name: string; spellId: number; note: string; mythicOnly: boolean }
 
@@ -208,6 +210,17 @@ function shorten(text: string): string {
   if (t.length <= DESCRIPTION_MAX) return t;
   const cutAt = t.lastIndexOf(' ', DESCRIPTION_MAX - 1);
   return `${t.slice(0, cutAt > 120 ? cutAt : DESCRIPTION_MAX - 1).replace(/[,;:.]$/, '')}…`;
+}
+
+// What every source says about a boss, for the mechanics audit (app/api/debug-mechanics).
+export async function getBossSources(boss: RaidBoss, difficulty: number): Promise<{ knowledge: BossKnowledge; raidStats: RaidMechanicStats | null }> {
+  const [season, blizzToken] = await Promise.all([getSeasonState(), getBlizzardToken()]);
+  const journalId = boss.journalId || RAID_JOURNAL_ID_FALLBACK[boss.id] || null;
+  const [knowledge, values] = await Promise.all([
+    getBossKnowledge({ expansionName: season.expansionName, zoneName: boss.zoneName, bossName: boss.name, blizzToken, encounterId: boss.id, journalId }),
+    getPersistentManyReadOnly([raidMechKey(boss.id, difficulty)]),
+  ]);
+  return { knowledge, raidStats: (values?.[0] as RaidMechanicStats | null) ?? null };
 }
 
 async function readBossMechanics(boss: RaidBoss): Promise<BossMechanics> {
@@ -244,7 +257,12 @@ async function readBossMechanics(boss: RaidBoss): Promise<BossMechanics> {
   const other = k.sources.journal
     ? k.journal
       .filter(j => j.name && j.description && !seen.has(normalizeName(j.name)) && !foreign.has(normalizeName(j.name)))
-      .map(j => ({ name: j.name, spellId: j.spellId, alt: null, description: shorten(j.description) }))
+      .map(j => {
+        const ward = wardFor(k, j.name, j.spellId);
+        const read = readJournal(k, j.name, j.spellId);
+        const reading = ward ? `answered by ${ward.name}${ward.pct ? ` (${ward.pct}% off)` : ''}, not a defensive` : read ? MECHANIC_WORDS[read.type] : null;
+        return { name: j.name, spellId: j.spellId, alt: null, description: shorten(j.description), reading };
+      })
     : [];
 
   const failures = k.notes
@@ -264,7 +282,7 @@ async function readBossMechanics(boss: RaidBoss): Promise<BossMechanics> {
 // kilobytes of them. Kept six hours in the data cache. A failure is not cached.
 export async function getBossMechanics(boss: RaidBoss): Promise<BossMechanics | null> {
   try {
-    return await unstable_cache(() => readBossMechanics(boss), [`boss-page-mechanics-v2-${boss.id}`], { revalidate: 6 * 3600 })();
+    return await unstable_cache(() => readBossMechanics(boss), [`boss-page-mechanics-v3-${boss.id}`], { revalidate: 6 * 3600 })();
   } catch (err) {
     console.error('boss page: mechanics unavailable', err);
     return null;

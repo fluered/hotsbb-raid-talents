@@ -218,7 +218,7 @@ export default async function BossPage({ params, searchParams }: PageProps) {
                 <p className={sectionSub}>
                   {mechanics.groups.length > 0
                     ? <>Grouped by what Deadly Boss Mods tells you to do when it warns for each ability; the descriptions are the dungeon journal&apos;s. This is every ability with a typed warning, not every ability in the fight.</>
-                    : <>Deadly Boss Mods has no typed warnings for this boss yet, so this is the dungeon journal&apos;s ability list as it stands.</>}
+                    : <>Deadly Boss Mods has no typed warnings for this boss yet, so this is the dungeon journal&apos;s ability list. The note in amber after a name is how this site reads the ability from the journal&apos;s wording; an ability without one is not given advice either way.</>}
                 </p>
               </div>
               {mechanics.overview && (
@@ -447,6 +447,7 @@ function MechanicItem({ m }: { m: BossMechanic }) {
       <p className="text-sm">
         <a href={WOWHEAD(m.spellId)} target="_blank" rel="noopener noreferrer" className="font-bold text-zinc-100 hover:text-amber-200">{m.name}</a>
         {m.alt && <span className="ml-2 text-[10px] font-bold uppercase tracking-wider text-zinc-500">{m.alt}</span>}
+        {m.reading && <span className="ml-2 text-[11px] font-semibold text-amber-300/90">{m.reading}</span>}
       </p>
       {m.description && <p className="text-xs text-zinc-400 leading-relaxed mt-0.5">{m.description}</p>}
     </li>

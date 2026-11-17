@@ -489,6 +489,92 @@ export function lookupLabel(k: BossKnowledge | null | undefined, name: string, s
   return k.labels.find(l => l.name && normalizeName(l.name) === n && l.type !== 'unknown') ?? null;
 }
 
+// ─── Reading the journal's wording ────────────────────────────────────────────
+//
+// What an ability asks of a player, read from how Blizzard words it. Used where the
+// addons have no typed warning (a new boss, an ability DBM does not announce), so that
+// a frontal cone is never mistaken for raid damage because a few players in the top
+// kills happened to be clipped by it. `why` is the phrase that decided it, so the
+// reading can be shown and checked (see scripts/mechanics-audit.mjs).
+// Only text that inflicts damage is read, in this order: the first rule that fits wins.
+export interface JournalReading { type: MechanicType; why: string }
+const JOURNAL_RULES: Array<{ type: MechanicType; re: RegExp }> = [
+  { type: 'tank', re: /\b(current|primary) target\b(?![^]*\bto all players\b(?! in))/i },
+  { type: 'gather', re: /\b(split|divided|shared) (evenly )?(between|among|amongst|by)\b/i },
+  { type: 'soak', re: /\bsoak\w*\b|\babsorbed by (a |any )?players?\b/i },
+  { type: 'avoid', re: /\bin a (\d+ yd )?(frontal )?(cone|line)\b|\bfrontal cone\b|\bcone in front\b|\bin front of (it|him|her|them|the caster)\b|\bin (its|his|her|their) path\b|\b(any |all )?(players|enemies) (hit|caught|struck)\b|\bcaught (within|in|by)\b|\b(on|upon) contact\b|\bstanding (in|within)\b/i },
+  { type: 'raidwide', re: /\b(to|at) all (players|enemies)\b(?! in a)|\ball players (every|within the)\b/i },
+  { type: 'spread', re: /\b(other|nearby) players within \d+/i },
+  { type: 'targeted', re: /\b(a )?random (players?|enem(y|ies))\b/i },
+];
+export function readJournal(k: BossKnowledge | null | undefined, name: string, spellId?: number): JournalReading | null {
+  const j = lookupJournal(k, name, spellId);
+  if (!k || !j?.description || !/\binflict|instantly kill/i.test(j.description)) return null;
+  // Something that hurts the raid when it gets through ("Eclipse Fragments that reach
+  // Liadrin inflict …") is there to be intercepted, however its own text is worded.
+  const plural = new RegExp(`\\b${j.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}s? that reach`, 'i');
+  const reach = j.name.length >= 4 ? k.journal.find(o => o !== j && o.description && plural.test(o.description)) : undefined;
+  if (reach) return { type: 'soak', why: `${reach.name}: "${reach.description.match(plural)?.[0] ?? ''} …"` };
+  // Damage that only happens when something else went wrong ("… that reach Liadrin inflict
+  // … to all players") is a consequence, not raid damage to plan for: left untyped.
+  const conditional = /that reach|unless|if (not|no|any)|failw*/i.test(j.description);
+  for (const r of JOURNAL_RULES) {
+    if (conditional && r.type === 'raidwide') continue;
+    const m = j.description.match(r.re);
+    if (m) return { type: r.type, why: `"${m[0]}"` };
+  }
+  return null;
+}
+
+// Does the addons' label or the journal's wording call this something to get out of?
+// Asked where the logs say everybody is hit by it anyway: such an ability is taken in
+// practice and avoidable on paper, so it is neither blamed on a player nor planned a
+// defensive for on the logs' word alone.
+const DODGE_TYPES: MechanicType[] = ['avoid', 'spread', 'fixate'];
+export function saysDodge(k: BossKnowledge | null | undefined, name: string, spellId?: number): boolean {
+  const o = MECHANIC_OVERRIDES[normalizeName(name)];
+  if (o) return DODGE_TYPES.includes(o.type);
+  const label = lookupLabel(k, name, spellId);
+  const read = readJournal(k, name, spellId);
+  return (!!label && DODGE_TYPES.includes(label.type)) || (!!read && DODGE_TYPES.includes(read.type));
+}
+
+// A person's ruling on an ability the sources get wrong or disagree about, by ability
+// name (normalised). It is the last word: above the addons, the journal and the logs.
+// The audit (scripts/mechanics-audit.mjs) lists what needs a ruling; every entry here
+// says who decided and why, so it can be undone when the fight changes.
+export const MECHANIC_OVERRIDES: Record<string, { type: MechanicType; note: string }> = {
+};
+
+// Wording that usually means there is more to an ability than taking the hit. An ability
+// with one of these and no reading from any source is what the audit lists for a look.
+export const JOURNAL_HINTS = /\bunless\b|\bremov\w+\b|\bimmun\w+\b|\bprotect\w*\b|\breduc\w+\b|\babsorb\w*\b|\bline of sight\b|\bbehind\b|\binterrupt\w*\b|\bdispel\w*\b|\binstantly kill\w*\b|\bif (not|no|any)\b|\bfail\w*\b/i;
+
+// The fight's own answer to a hit: another ability of the same boss that the hit's journal
+// text names, and whose own text is a damage reduction on players. Extinguish on Kith'ix
+// ("inflicts 2500220 Shadow damage to all players and removes Light's Embrace") is answered
+// by Light's Embrace ("motes of soothing Light that envelop players on contact, reducing all
+// Shadow damage they take by 80%"): a mechanic to do, not a hit to press a defensive for.
+// Reads the journal's wording only; nothing here names a boss.
+export interface Ward { name: string; spellId: number; pct: number | null; description: string }
+const WARD_TEXT = /reduc\w+ (all |the )?([a-z]+ )?damage (they |you |players )?(take|taken)|damage (they |you |players )?(take|taken)( is)? reduced/i;
+export function wardFor(k: BossKnowledge | null | undefined, name: string, spellId?: number): Ward | null {
+  const hit = lookupJournal(k, name, spellId);
+  // Only a hit has an answer: "Exhausted" names Light's Embrace too, and does no damage.
+  if (!k || !hit?.description || !/\binflict/i.test(hit.description)) return null;
+  const text = hit.description.toLowerCase();
+  for (const w of k.journal) {
+    if (w === hit || w.name.length < 4 || !w.description || normalizeName(w.name) === normalizeName(hit.name)) continue;
+    if (!text.includes(w.name.toLowerCase())) continue;
+    // A reduction on players: the aqir's "reducing all damage they take by 90%" is not one.
+    // Nor is anything that also deals damage (Dark Frenzy) a protection.
+    if (!WARD_TEXT.test(w.description) || !/\bplayers?\b/i.test(w.description) || /\binflict/i.test(w.description)) continue;
+    const pct = w.description.match(/(?:take|taken)[^.]*? by (\d+)%/i)?.[1];
+    return { name: w.name, spellId: w.spellId, pct: pct ? parseInt(pct) : null, description: w.description };
+  }
+  return null;
+}
+
 export function lookupJournal(k: BossKnowledge | null | undefined, name: string, spellId?: number): JournalAbility | null {
   if (!k) return null;
   const byId = spellId ? k.journal.find(j => j.spellId === spellId) : undefined;
