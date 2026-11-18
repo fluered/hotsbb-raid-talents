@@ -543,7 +543,23 @@ export function saysDodge(k: BossKnowledge | null | undefined, name: string, spe
 // name (normalised). It is the last word: above the addons, the journal and the logs.
 // The audit (scripts/mechanics-audit.mjs) lists what needs a ruling; every entry here
 // says who decided and why, so it can be undone when the fight changes.
+// Keys are normalizeName(ability name): lower case, letters and digits only.
 export const MECHANIC_OVERRIDES: Record<string, { type: MechanicType; note: string }> = {
+  // Ruled by the site owner, 2026-11-17, from playing the fights (The Venomous Abyss).
+  possessionbarrage: { type: 'tank', note: "Nek'zali: a tank buster, though its splash reaches everyone in the logs." },
+  shiftingprotovenom: { type: 'debuff', note: 'Entombed Sentinels: a debuff cleared by touching another carrier; touching a clean player knocks them back and hurts them.' },
+  blinknova: { type: 'targeted', note: 'The Lost Explorers: aimed at a player, damage falls off with distance.' },
+  viscouscyst: { type: 'soak', note: 'Sszorak: the bubble players pop on purpose to stay on the platform.' },
+  causticglobule: { type: 'soak', note: 'The Twin Fangs: the main mechanic; players pick them up, but too many kills.' },
+  axegrinder: { type: 'avoid', note: 'The Coiled Altar: a thrown axe to dodge.' },
+  gloombomb: { type: 'targeted', note: 'The Coiled Altar: put on players, who must pick up their ghost afterwards or die.' },
+  sever: { type: 'tank', note: 'The Coiled Altar: the tank buster cone.' },
+  soulsever: { type: 'tank', note: 'The Coiled Altar: the tank buster cone of the later phases.' },
+  frostfirevolley: { type: 'spread', note: 'The Lost Explorers: only deadly when two targets overlap.' },
+  // 'unknown': known, and deliberately given no advice of its own.
+  calcifiedcorpse: { type: 'unknown', note: "Ula'tek: what happens when an ability is not soaked; it wipes the raid. The mistake is the missed soak." },
+  nullify: { type: 'avoid', note: "Kith'ix: from the orbs that float around; three stacks kill. Dodge them." },
+  nullgate: { type: 'spread', note: "Kith'ix: put on players, who have to get away from everyone else." },
 };
 
 // Wording that usually means there is more to an ability than taking the hit. An ability

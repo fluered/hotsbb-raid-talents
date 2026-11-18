@@ -1,6 +1,6 @@
 import { unstable_cache } from 'next/cache';
 import { getWclToken, getBlizzardToken, getRaidStructure, getSeasonState, MIDNIGHT_RAIDS, RAID_JOURNAL_ID_FALLBACK, DPS_SPECS, POPULAR_SPECS } from './wow';
-import { getBossKnowledge, lookupJournal, normalizeName, readJournal, wardFor, MECHANIC_WORDS, type BossKnowledge, type MechanicType } from './bossMechanics';
+import { getBossKnowledge, lookupJournal, normalizeName, readJournal, wardFor, MECHANIC_OVERRIDES, MECHANIC_WORDS, type BossKnowledge, type MechanicType } from './bossMechanics';
 import { getPersistentManyReadOnly } from './persistentCache';
 import type { WclRankingRow } from './wclTypes';
 import type { PoolSummary, RaidMechanicStats } from './analyze';
@@ -260,7 +260,8 @@ async function readBossMechanics(boss: RaidBoss): Promise<BossMechanics> {
       .map(j => {
         const ward = wardFor(k, j.name, j.spellId);
         const read = readJournal(k, j.name, j.spellId);
-        const reading = ward ? `answered by ${ward.name}${ward.pct ? ` (${ward.pct}% off)` : ''}, not a defensive` : read ? MECHANIC_WORDS[read.type] : null;
+        const ruled = MECHANIC_OVERRIDES[normalizeName(j.name)];
+        const reading = ruled ? MECHANIC_WORDS[ruled.type] : ward ? `answered by ${ward.name}${ward.pct ? ` (${ward.pct}% off)` : ''}, not a defensive` : read ? MECHANIC_WORDS[read.type] : null;
         return { name: j.name, spellId: j.spellId, alt: null, description: shorten(j.description), reading };
       })
     : [];
@@ -282,7 +283,7 @@ async function readBossMechanics(boss: RaidBoss): Promise<BossMechanics> {
 // kilobytes of them. Kept six hours in the data cache. A failure is not cached.
 export async function getBossMechanics(boss: RaidBoss): Promise<BossMechanics | null> {
   try {
-    return await unstable_cache(() => readBossMechanics(boss), [`boss-page-mechanics-v3-${boss.id}`], { revalidate: 6 * 3600 })();
+    return await unstable_cache(() => readBossMechanics(boss), [`boss-page-mechanics-v4-${boss.id}`], { revalidate: 6 * 3600 })();
   } catch (err) {
     console.error('boss page: mechanics unavailable', err);
     return null;

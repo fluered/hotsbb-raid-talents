@@ -1554,7 +1554,7 @@ export async function loadNightReview(token: string, code: string, group: NightG
 }): Promise<NightReview> {
   // The finished review is kept six hours when every part of it loaded, so a second
   // visit skips the classification inputs as well (they are the slow part when warm).
-  return cacheUnlessPartial<NightReview>(`analyze-night-review-v23-${cacheKey(code, group.fights)}`, 6 * 3600, async () => {
+  return cacheUnlessPartial<NightReview>(`analyze-night-review-v24-${cacheKey(code, group.fights)}`, 6 * 3600, async () => {
     const r = await computeNightReview(token, code, group, deps);
     return { value: r.review, partial: r.partial };
   });
